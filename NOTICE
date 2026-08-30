@@ -1,0 +1,8 @@
+Rig2Cast
+
+Copyright holders and contributors retain copyright in their contributions.
+See the repository history and AUTHORS file for attribution.
+
+Hamlib is a separate project and is not included in Rig2Cast. Any protocol research
+derived from third-party sources must be recorded according to
+docs/protocol-provenance.md.
