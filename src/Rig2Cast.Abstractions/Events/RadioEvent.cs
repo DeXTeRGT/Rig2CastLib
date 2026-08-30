@@ -8,6 +8,7 @@ public enum RadioEventKind
     AuthorizationChanged,
     LeaseChanged,
     ConnectionChanged,
+    ControlChanged,
     Diagnostic
 }
 

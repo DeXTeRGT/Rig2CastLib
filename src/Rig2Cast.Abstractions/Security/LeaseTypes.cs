@@ -15,3 +15,8 @@ public sealed record LeaseToken(
 public sealed record LeaseSnapshot(
     long Revision,
     IReadOnlyList<LeaseToken> Active);
+
+public sealed class LeaseUnavailableException(string kind)
+    : InvalidOperationException($"The '{kind}' lease is already held by another client.");
+
+public sealed class InvalidLeaseException(string message) : InvalidOperationException(message);

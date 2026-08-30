@@ -1,4 +1,6 @@
 using Rig2Cast.Abstractions.Radios;
+using Rig2Cast.Abstractions.Controls;
+using Rig2Cast.Abstractions.Meters;
 
 namespace Rig2Cast.Abstractions.Capabilities;
 
@@ -33,4 +35,8 @@ public sealed record RadioCapabilities(
     FrequencyCapability Frequency,
     ModeCapability Modes,
     FeatureDescriptor Transmit,
+    IReadOnlyDictionary<RadioControlId, NumericControlDescriptor> Controls,
+    IReadOnlyDictionary<RadioSwitchId, SwitchControlDescriptor> Switches,
+    IReadOnlyDictionary<RadioChoiceId, ChoiceControlDescriptor> Choices,
+    IReadOnlyDictionary<RadioMeterId, RadioMeterDescriptor> Meters,
     IReadOnlyDictionary<string, object?> Extensions);

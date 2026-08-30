@@ -23,6 +23,9 @@ public enum RadioMode
     FmNarrow,
     DataLsb,
     DataUsb,
+    DataFm,
+    DataFmNarrow,
+    Psk,
     Rtty,
     RttyReverse
 }

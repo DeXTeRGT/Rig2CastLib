@@ -8,4 +8,18 @@ Hamlib in the sibling directory is reference material only. Rig2Cast is not a C#
 
 ## Status
 
-Early architecture and contract design. Public APIs are not stable.
+Early vertical-slice development. The runtime currently includes serialized radio access, logical client sessions, roles, transmit leases, exclusive operation scopes, versioned events, typed numeric/switch/choice controls and raw meters, an FTDX10-shaped simulator, and serial/in-memory transports. Public APIs are not stable.
+
+## Build and test
+
+```powershell
+dotnet build Rig2Cast.sln
+dotnet test tests\Rig2Cast.Runtime.Tests\Rig2Cast.Runtime.Tests.csproj
+dotnet run --project samples\Rig2Cast.Demo\Rig2Cast.Demo.csproj
+```
+
+The physical-radio smoke utility performs identification, state, and raw meter queries only:
+
+```powershell
+dotnet run --project samples\Rig2Cast.Ftdx10Smoke\Rig2Cast.Ftdx10Smoke.csproj -- --port COM11 --baud 38400
+```
