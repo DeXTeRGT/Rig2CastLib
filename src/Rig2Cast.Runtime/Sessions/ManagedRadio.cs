@@ -20,6 +20,7 @@ public sealed class ManagedRadio : IAsyncDisposable
     private readonly RadioEventHub _events = new();
     private readonly CancellationTokenSource _stopping = new();
     private readonly Task _leaseMonitor;
+    private readonly Task _observationMonitor;
     private RadioState _state;
     private long _availabilityRevision = 1;
     private int _disposed;
@@ -37,6 +38,9 @@ public sealed class ManagedRadio : IAsyncDisposable
         _leases = leases;
         _state = initialState;
         _leaseMonitor = MonitorLeasesAsync();
+        _observationMonitor = driver is IRadioObservationSource source
+            ? MonitorObservationsAsync(source)
+            : Task.CompletedTask;
     }
 
     public string RadioId { get; }
@@ -408,6 +412,87 @@ public sealed class ManagedRadio : IAsyncDisposable
         }
     }
 
+    private async Task MonitorObservationsAsync(IRadioObservationSource source)
+    {
+        try
+        {
+            await foreach (RadioDriverObservation observation in
+                source.WatchObservationsAsync(_stopping.Token).ConfigureAwait(false))
+            {
+                await _scheduler.ExecuteAsync(
+                    _ =>
+                    {
+                        ApplyObservation(observation);
+                        return ValueTask.CompletedTask;
+                    },
+                    cancellationToken: _stopping.Token).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            _state = _state with
+            {
+                Revision = _state.Revision + 1,
+                Connection = ConnectionStatus.Faulted,
+                ObservedAt = DateTimeOffset.UtcNow
+            };
+            _events.Publish(RadioEventKind.ConnectionChanged, exception.Message);
+        }
+    }
+
+    private void ApplyObservation(RadioDriverObservation observation)
+    {
+        if (observation.Kind == RadioDriverObservationKind.Ignored)
+        {
+            return;
+        }
+
+        RadioState updated = observation.Kind switch
+        {
+            RadioDriverObservationKind.FrequencyChanged
+                when observation.Vfo is VfoId vfo && observation.FrequencyHz is long frequency =>
+                _state with
+                {
+                    FrequenciesHz = new Dictionary<VfoId, long>(_state.FrequenciesHz) { [vfo] = frequency }
+                },
+            RadioDriverObservationKind.ActiveVfoChanged when observation.Vfo is VfoId vfo =>
+                _state with { ActiveVfo = vfo },
+            RadioDriverObservationKind.ModeChanged when observation.Mode is RadioMode mode =>
+                _state with { Mode = mode },
+            RadioDriverObservationKind.SplitChanged when observation.Flag is bool split =>
+                _state with { IsSplit = split },
+            RadioDriverObservationKind.TransmitChanged when observation.Flag is bool transmitting =>
+                _state with { IsTransmitting = transmitting },
+            RadioDriverObservationKind.StateInformation
+                when observation.Vfo is VfoId vfo &&
+                     observation.FrequencyHz is long frequency &&
+                     observation.Mode is RadioMode mode =>
+                _state with
+                {
+                    FrequenciesHz = new Dictionary<VfoId, long>(_state.FrequenciesHz) { [vfo] = frequency },
+                    Mode = mode
+                },
+            _ => _state
+        };
+
+        if (observation.Kind != RadioDriverObservationKind.Unknown && HasStateChanged(_state, updated))
+        {
+            _state = updated with
+            {
+                Revision = _state.Revision + 1,
+                ObservedAt = observation.ObservedAt
+            };
+            _events.Publish(RadioEventKind.StateChanged, _state);
+        }
+        else
+        {
+            _events.Publish(RadioEventKind.Diagnostic, observation);
+        }
+    }
+
     private RadioAvailability CreateAvailability(ClientAuthorization authorization) =>
         new(
             Interlocked.Read(ref _availabilityRevision),
@@ -455,6 +540,7 @@ public sealed class ManagedRadio : IAsyncDisposable
 
         await _stopping.CancelAsync().ConfigureAwait(false);
         await _leaseMonitor.ConfigureAwait(false);
+        await _observationMonitor.ConfigureAwait(false);
         if (_state.IsTransmitting)
         {
             await ForcePttOffAsync(CancellationToken.None).ConfigureAwait(false);

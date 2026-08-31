@@ -6,6 +6,7 @@ namespace Rig2Cast.Runtime.Events;
 
 internal sealed class RadioEventHub
 {
+    private const int DefaultSubscriberCapacity = 256;
     private readonly object _gate = new();
     private readonly HashSet<Channel<RadioEvent>> _subscribers = [];
     private long _sequence;
@@ -33,10 +34,11 @@ internal sealed class RadioEventHub
     public async IAsyncEnumerable<RadioEvent> SubscribeAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
-        var channel = Channel.CreateUnbounded<RadioEvent>(new UnboundedChannelOptions
+        var channel = Channel.CreateBounded<RadioEvent>(new BoundedChannelOptions(DefaultSubscriberCapacity)
         {
             SingleReader = true,
-            SingleWriter = false
+            SingleWriter = false,
+            FullMode = BoundedChannelFullMode.DropOldest
         });
 
         lock (_gate)

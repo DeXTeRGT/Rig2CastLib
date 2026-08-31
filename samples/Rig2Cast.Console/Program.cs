@@ -14,6 +14,7 @@ using System.Globalization;
 
 bool simulator = HasFlag(args, "--simulator");
 bool allowWrite = HasFlag(args, "--allow-write");
+bool automaticInformation = HasFlag(args, "--auto-information");
 string port = GetOption(args, "--port") ?? "COM11";
 int baud = int.TryParse(GetOption(args, "--baud"), out int parsedBaud) ? parsedBaud : 38_400;
 
@@ -36,9 +37,14 @@ else
     var transport = new SerialRadioTransport(new SerialRadioTransportOptions
     {
         PortName = port,
-        BaudRate = baud
+        BaudRate = baud,
+        StopBits = System.IO.Ports.StopBits.Two,
+        Handshake = System.IO.Ports.Handshake.RequestToSend
     });
-    driver = await Ftdx10Driver.OpenAsync(transport, cancellationToken: stopping.Token);
+    driver = await Ftdx10Driver.OpenAsync(
+        transport,
+        enableAutomaticInformation: automaticInformation,
+        cancellationToken: stopping.Token);
 }
 
 await using ManagedRadio radio = await ManagedRadio.CreateAsync("ftdx10", driver, cancellationToken: stopping.Token);
@@ -309,10 +315,24 @@ static async Task<(CancellationTokenSource?, Task?)> ConfigureWatchAsync(
     Task watchTask = Task.Run(async () =>
     {
         await foreach (RadioEvent radioEvent in session.WatchEventsAsync(watchStopping.Token))
-            Console.WriteLine($"\nEVENT #{radioEvent.Sequence}: {radioEvent.Kind} -> {radioEvent.Payload}");
+            Console.WriteLine($"\nEVENT #{radioEvent.Sequence}: {radioEvent.Kind} -> {FormatEventPayload(radioEvent.Payload)}");
     }, watchStopping.Token);
     Console.WriteLine("Event watch started. Use 'watch off' to stop.");
     return (watchStopping, watchTask);
+}
+
+static string FormatEventPayload(object? payload)
+{
+    if (payload is not RadioState state)
+    {
+        return payload?.ToString() ?? "(none)";
+    }
+
+    string frequencies = string.Join(", ", state.FrequenciesHz
+        .OrderBy(pair => pair.Key)
+        .Select(pair => $"{pair.Key}={pair.Value} Hz"));
+    return $"Revision={state.Revision}, {frequencies}, Active={state.ActiveVfo}, Mode={state.Mode}, " +
+        $"Split={state.IsSplit}, TX={state.IsTransmitting}, Observed={state.ObservedAt:O}";
 }
 
 static async Task<(CancellationTokenSource?, Task?)> ConfigurePollAsync(

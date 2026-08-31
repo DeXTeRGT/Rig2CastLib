@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
+using System.Threading.Channels;
 using Rig2Cast.Abstractions.Capabilities;
 using Rig2Cast.Abstractions.Drivers;
 using Rig2Cast.Abstractions.Radios;
@@ -8,7 +10,7 @@ using Rig2Cast.Abstractions.Meters;
 
 namespace Rig2Cast.Simulator;
 
-public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMeterDriver, IRadioSwitchDriver, IRadioChoiceDriver
+public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMeterDriver, IRadioSwitchDriver, IRadioChoiceDriver, IRadioObservationSource
 {
     private readonly object _gate = new();
     private readonly Dictionary<VfoId, long> _frequencies = new()
@@ -17,6 +19,13 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
         [VfoId.B] = 7_100_000
     };
     private readonly ConcurrentQueue<string> _commandLog = new();
+    private readonly Channel<RadioDriverObservation> _observations = Channel.CreateBounded<RadioDriverObservation>(
+        new BoundedChannelOptions(256)
+        {
+            SingleReader = false,
+            SingleWriter = false,
+            FullMode = BoundedChannelFullMode.DropOldest
+        });
     private readonly Dictionary<RadioControlId, int> _controls = [];
     private readonly Dictionary<RadioMeterId, int> _meters = [];
     private readonly Dictionary<RadioSwitchId, bool> _switches = [];
@@ -63,6 +72,41 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
     public IReadOnlyList<string> CommandLog => _commandLog.ToArray();
 
     public int MaximumConcurrentOperations => Volatile.Read(ref _maxConcurrentOperations);
+
+    public async IAsyncEnumerable<RadioDriverObservation> WatchObservationsAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        await foreach (RadioDriverObservation observation in
+            _observations.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        {
+            yield return observation;
+        }
+    }
+
+    public ValueTask SimulateFrequencyChangeAsync(
+        VfoId vfo,
+        long frequencyHz,
+        CancellationToken cancellationToken = default)
+    {
+        if (!Capabilities.Frequency.Targets.Contains(vfo))
+        {
+            throw new NotSupportedException($"VFO {vfo} is not supported by this simulated radio.");
+        }
+
+        lock (_gate)
+        {
+            _frequencies[vfo] = frequencyHz;
+        }
+
+        return _observations.Writer.WriteAsync(
+            new RadioDriverObservation(
+                RadioDriverObservationKind.FrequencyChanged,
+                DateTimeOffset.UtcNow,
+                $"SIM:FREQUENCY:{vfo}:{frequencyHz}",
+                vfo,
+                frequencyHz),
+            cancellationToken);
+    }
 
     public async ValueTask<RadioState> ReadStateAsync(CancellationToken cancellationToken = default)
     {
@@ -238,6 +282,7 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
     public ValueTask DisposeAsync()
     {
         _disposed = true;
+        _observations.Writer.TryComplete();
         return ValueTask.CompletedTask;
     }
 

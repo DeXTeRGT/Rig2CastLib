@@ -273,6 +273,9 @@ replace the example port and baud rate as necessary:
 # Read-only by default
 dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --port COM11 --baud 38400
 
+# Enhanced USB CAT port: receive supported front-panel changes without polling
+dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --port COM11 --baud 38400 --auto-information
+
 # Explicitly enable non-transmitting setters
 dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --port COM11 --baud 38400 --allow-write
 ```

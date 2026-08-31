@@ -3,12 +3,142 @@ using Rig2Cast.Drivers.Yaesu.Ftdx10;
 using Rig2Cast.Drivers.Yaesu.Protocol;
 using Rig2Cast.Abstractions.Controls;
 using Rig2Cast.Abstractions.Meters;
+using Rig2Cast.Abstractions.Drivers;
+using Rig2Cast.Abstractions.Events;
+using Rig2Cast.Abstractions.Security;
+using Rig2Cast.Abstractions.Sessions;
+using Rig2Cast.Runtime.Sessions;
 using Capabilities = Rig2Cast.Abstractions.Capabilities;
 
 namespace Rig2Cast.Runtime.Tests;
 
 public sealed class Ftdx10DriverTests
 {
+    [Fact]
+    public async Task DisposeClosesTransportBeforeWaitingForCancellationInsensitiveReader()
+    {
+        var transport = new ScriptedRadioTransport(ignoreReadCancellation: true);
+        transport.Add("ID;", "ID0761;");
+        Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+
+        await driver.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.False(transport.IsConnected);
+    }
+
+    [Fact]
+    public async Task UnsolicitedFrequencyFrameBecomesTypedObservation()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await using IAsyncEnumerator<RadioDriverObservation> observations = driver
+            .WatchObservationsAsync(timeout.Token)
+            .GetAsyncEnumerator();
+
+        await transport.EmitAsync("FA014300000;", timeout.Token);
+
+        Assert.True(await observations.MoveNextAsync());
+        Assert.Equal(RadioDriverObservationKind.FrequencyChanged, observations.Current.Kind);
+        Assert.Equal(VfoId.A, observations.Current.Vfo);
+        Assert.Equal(14_300_000, observations.Current.FrequencyHz);
+    }
+
+    [Fact]
+    public async Task AutomaticInformationIsExplicitlyEnabledConfirmedAndDisabled()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("AI1;");
+        transport.Add("AI;", "FA014300000;AI1;");
+        transport.Add("AI0;");
+        Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(
+            transport,
+            enableAutomaticInformation: true);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await using IAsyncEnumerator<RadioDriverObservation> observations = driver
+            .WatchObservationsAsync(timeout.Token)
+            .GetAsyncEnumerator();
+
+        Assert.True(await observations.MoveNextAsync());
+        Assert.Equal(RadioDriverObservationKind.FrequencyChanged, observations.Current.Kind);
+
+        await driver.DisposeAsync();
+        transport.AssertComplete();
+    }
+
+    [Theory]
+    [InlineData("IF001014249788+000000100000;", RadioDriverObservationKind.StateInformation, 14249788, RadioMode.Lsb)]
+    [InlineData("IF001014249788+000000200000;", RadioDriverObservationKind.StateInformation, 14249788, RadioMode.Usb)]
+    public async Task InformationAnnouncementDecodesFrequencyAndMode(
+        string frame,
+        RadioDriverObservationKind expectedKind,
+        long expectedFrequency,
+        RadioMode expectedMode)
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await using IAsyncEnumerator<RadioDriverObservation> observations = driver
+            .WatchObservationsAsync(timeout.Token)
+            .GetAsyncEnumerator();
+
+        await transport.EmitAsync(frame, timeout.Token);
+
+        Assert.True(await observations.MoveNextAsync());
+        Assert.Equal(expectedKind, observations.Current.Kind);
+        Assert.Equal(expectedFrequency, observations.Current.FrequencyHz);
+        Assert.Equal(expectedMode, observations.Current.Mode);
+    }
+
+    [Fact]
+    public async Task AutomaticMeterSelectionAnnouncementIsRecognizedAndIgnored()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await using IAsyncEnumerator<RadioDriverObservation> observations = driver
+            .WatchObservationsAsync(timeout.Token)
+            .GetAsyncEnumerator();
+
+        await transport.EmitAsync("RM0006000;", timeout.Token);
+
+        Assert.True(await observations.MoveNextAsync());
+        Assert.Equal(RadioDriverObservationKind.Ignored, observations.Current.Kind);
+    }
+
+    [Fact]
+    public async Task UnsolicitedFrequencyUpdatesManagedStateAndClients()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("FA;", "FA014250000;");
+        transport.Add("FB;", "FB007100000;");
+        transport.Add("VS;", "VS0;");
+        transport.Add("MD0;", "MD02;");
+        transport.Add("ST;", "ST0;");
+        transport.Add("TX;", "TX0;");
+        Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+        await using ManagedRadio radio = await ManagedRadio.CreateAsync("ftdx10", driver);
+        await using IRadioSession session = radio.OpenSession(new ClientIdentity("gui"));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await using IAsyncEnumerator<RadioEvent> events = session
+            .WatchEventsAsync(timeout.Token)
+            .GetAsyncEnumerator();
+        Task<bool> nextEvent = events.MoveNextAsync().AsTask();
+
+        await transport.EmitAsync("FA014300000;", timeout.Token);
+
+        Assert.True(await nextEvent);
+        Assert.Equal(RadioEventKind.StateChanged, events.Current.Kind);
+        RadioState state = (await session.GetSnapshotAsync(timeout.Token)).State;
+        Assert.Equal(14_300_000, state.FrequenciesHz[VfoId.A]);
+        Assert.True(state.Revision > 1);
+    }
+
     [Fact]
     public async Task OpenVerifiesIdentificationAndReadsState()
     {

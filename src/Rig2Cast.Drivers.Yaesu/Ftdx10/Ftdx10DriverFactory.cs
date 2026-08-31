@@ -15,7 +15,17 @@ public sealed class Ftdx10DriverFactory : IRadioDriverFactory
             "FTDX10",
             new HashSet<RadioTransportKind> { RadioTransportKind.Serial, RadioTransportKind.Simulator },
             Ftdx10CatProfile.SupportedBaudRates,
-            38_400)]);
+            38_400,
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["serial.dataBits"] = "8",
+                ["serial.stopBits"] = "2",
+                ["serial.parity"] = "None",
+                ["serial.handshake"] = "RequestToSend",
+                ["serial.dtrEnable"] = "false",
+                ["serial.rtsEnable"] = "false",
+                ["yaesu.autoInformation"] = "false"
+            })]);
 
     public async ValueTask<IRadioDriver> OpenAsync(
         RadioConnectionOptions options,
@@ -27,6 +37,11 @@ public sealed class Ftdx10DriverFactory : IRadioDriverFactory
             throw new NotSupportedException($"Model '{options.ModelId}' is not supported by this driver factory.");
         }
 
-        return await Ftdx10Driver.OpenAsync(transport, cancellationToken: cancellationToken).ConfigureAwait(false);
+        bool enableAutomaticInformation = options.Settings.TryGetValue("yaesu.autoInformation", out string? configured) &&
+            bool.TryParse(configured, out bool enabled) && enabled;
+        return await Ftdx10Driver.OpenAsync(
+            transport,
+            enableAutomaticInformation: enableAutomaticInformation,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 }

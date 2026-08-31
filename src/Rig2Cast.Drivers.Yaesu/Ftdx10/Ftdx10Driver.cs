@@ -10,7 +10,7 @@ using Rig2Cast.Drivers.Yaesu.Protocol;
 
 namespace Rig2Cast.Drivers.Yaesu.Ftdx10;
 
-public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMeterDriver, IRadioSwitchDriver, IRadioChoiceDriver
+public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMeterDriver, IRadioSwitchDriver, IRadioChoiceDriver, IRadioObservationSource
 {
     private static readonly Dictionary<RadioSwitchId, SwitchCommand> SwitchCommands = new()
     {
@@ -99,12 +99,17 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         };
     private readonly IRadioTransport _transport;
     private readonly YaesuAsciiProtocol _protocol;
+    private readonly bool _automaticInformationEnabled;
     private bool _disposed;
 
-    private Ftdx10Driver(IRadioTransport transport, YaesuAsciiProtocol protocol)
+    private Ftdx10Driver(
+        IRadioTransport transport,
+        YaesuAsciiProtocol protocol,
+        bool automaticInformationEnabled)
     {
         _transport = transport;
         _protocol = protocol;
+        _automaticInformationEnabled = automaticInformationEnabled;
         Capabilities = CreateCapabilities();
     }
 
@@ -113,6 +118,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
     public static async ValueTask<Ftdx10Driver> OpenAsync(
         IRadioTransport transport,
         TimeSpan? responseTimeout = null,
+        bool enableAutomaticInformation = false,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(transport);
@@ -131,11 +137,29 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
                     $"Expected FTDX10 identification ID{Ftdx10CatProfile.Identification}; but received '{identification}'.");
             }
 
-            return new Ftdx10Driver(transport, protocol);
+            if (enableAutomaticInformation)
+            {
+                await protocol.SendAsync("AI1", cancellationToken).ConfigureAwait(false);
+                string automaticInformation = await protocol.QueryAsync("AI", "AI", cancellationToken).ConfigureAwait(false);
+                if (!StringComparer.Ordinal.Equals(automaticInformation, "AI1;"))
+                {
+                    throw new YaesuProtocolException(
+                        $"The FTDX10 did not confirm automatic information mode: '{automaticInformation}'.");
+                }
+            }
+
+            return new Ftdx10Driver(transport, protocol, enableAutomaticInformation);
         }
         catch
         {
-            await transport.DisposeAsync().ConfigureAwait(false);
+            try
+            {
+                await transport.DisposeAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                await protocol.DisposeAsync().ConfigureAwait(false);
+            }
             throw;
         }
     }
@@ -206,6 +230,16 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
     {
         EnsureActive();
         return _protocol.SendAsync(enabled ? "TX1" : "TX0", cancellationToken);
+    }
+
+    public async IAsyncEnumerable<RadioDriverObservation> WatchObservationsAsync(
+        [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        await foreach (string frame in _protocol.WatchUnsolicitedFramesAsync(cancellationToken).ConfigureAwait(false))
+        {
+            yield return ParseObservation(frame);
+        }
     }
 
     public async ValueTask<RadioControlValue> ReadControlAsync(
@@ -424,7 +458,29 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         if (!_disposed)
         {
             _disposed = true;
-            await _transport.DisposeAsync().ConfigureAwait(false);
+            if (_automaticInformationEnabled)
+            {
+                using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+                try
+                {
+                    await _protocol.SendAsync("AI0", cleanup.Token).ConfigureAwait(false);
+                }
+                catch (Exception exception) when (exception is IOException or InvalidOperationException or OperationCanceledException or TimeoutException)
+                {
+                    // Best-effort cleanup; transport disposal remains mandatory.
+                }
+            }
+
+            try
+            {
+                // Closing the transport is what reliably unblocks SerialPort.BaseStream.ReadAsync
+                // on Windows; cancellation alone is not sufficient on every driver/runtime pair.
+                await _transport.DisposeAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                await _protocol.DisposeAsync().ConfigureAwait(false);
+            }
         }
     }
 
@@ -470,6 +526,51 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         _ => throw new YaesuProtocolException($"Invalid transmit response '{response}'.")
     };
 
+    private static RadioDriverObservation ParseObservation(string frame)
+    {
+        DateTimeOffset observedAt = DateTimeOffset.UtcNow;
+        try
+        {
+            if (frame.StartsWith("FA", StringComparison.OrdinalIgnoreCase))
+                return new(RadioDriverObservationKind.FrequencyChanged, observedAt, frame, VfoId.A, ParseFrequency(frame));
+            if (frame.StartsWith("FB", StringComparison.OrdinalIgnoreCase))
+                return new(RadioDriverObservationKind.FrequencyChanged, observedAt, frame, VfoId.B, ParseFrequency(frame));
+            if (frame.StartsWith("VS", StringComparison.OrdinalIgnoreCase))
+                return new(RadioDriverObservationKind.ActiveVfoChanged, observedAt, frame, ParseVfo(frame));
+            if (frame.StartsWith("MD", StringComparison.OrdinalIgnoreCase))
+                return new(RadioDriverObservationKind.ModeChanged, observedAt, frame, Mode: ParseMode(frame));
+            if (frame.StartsWith("ST", StringComparison.OrdinalIgnoreCase))
+                return new(RadioDriverObservationKind.SplitChanged, observedAt, frame, Flag: ParseBoolean(frame));
+            if (frame.StartsWith("TX", StringComparison.OrdinalIgnoreCase))
+                return new(RadioDriverObservationKind.TransmitChanged, observedAt, frame, Flag: ParseTransmit(frame));
+            if (frame.StartsWith("IF", StringComparison.OrdinalIgnoreCase))
+            {
+                if (frame.Length != 28 || frame[^1] != ';' ||
+                    !long.TryParse(frame.AsSpan(5, 9), NumberStyles.None, CultureInfo.InvariantCulture, out long frequency) ||
+                    !Ftdx10CatProfile.Modes.TryGetValue(frame[21], out RadioMode mode))
+                {
+                    throw new YaesuProtocolException($"Invalid information response '{frame}'.");
+                }
+
+                return new(
+                    RadioDriverObservationKind.StateInformation,
+                    observedAt,
+                    frame,
+                    VfoId.A,
+                    frequency,
+                    mode);
+            }
+            if (frame.StartsWith("RM0", StringComparison.OrdinalIgnoreCase))
+                return new(RadioDriverObservationKind.Ignored, observedAt, frame);
+        }
+        catch (YaesuProtocolException)
+        {
+            // Preserve malformed or unsupported announcements as diagnostics.
+        }
+
+        return new(RadioDriverObservationKind.Unknown, observedAt, frame);
+    }
+
     private static RadioCapabilities CreateCapabilities()
     {
         var readWrite = new FeatureDescriptor(CapabilitySupport.Supported, FeatureAccess.Read | FeatureAccess.Write);
@@ -499,6 +600,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
                 ["serial.stopBits"] = 2,
                 ["serial.parity"] = "None",
                 ["serial.handshake"] = "RequestToSend",
+                ["yaesu.autoInformation.supportedOnUsb"] = true,
                 ["rig2cast.coverage"] = "core-vfo-mode-split-ptt-controls-meters-features"
             });
     }

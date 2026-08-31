@@ -8,15 +8,21 @@ string portName = GetOption(args, "--port") ?? "COM11";
 int baudRate = int.TryParse(GetOption(args, "--baud"), out int configuredBaudRate)
     ? configuredBaudRate
     : 38_400;
+bool automaticInformation = args.Any(value =>
+    StringComparer.OrdinalIgnoreCase.Equals(value, "--auto-information"));
 
 var transport = new SerialRadioTransport(new SerialRadioTransportOptions
 {
     PortName = portName,
-    BaudRate = baudRate
+    BaudRate = baudRate,
+    StopBits = System.IO.Ports.StopBits.Two,
+    Handshake = System.IO.Ports.Handshake.RequestToSend
 });
 
 Console.WriteLine($"Opening {portName} at {baudRate} baud for read-only FTDX10 validation...");
-await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(
+    transport,
+    enableAutomaticInformation: automaticInformation);
 RadioState state = await driver.ReadStateAsync();
 
 Console.WriteLine("FTDX10 identification verified: ID0761");

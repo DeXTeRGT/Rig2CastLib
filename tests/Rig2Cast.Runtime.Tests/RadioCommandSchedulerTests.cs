@@ -5,6 +5,40 @@ namespace Rig2Cast.Runtime.Tests;
 public sealed class RadioCommandSchedulerTests
 {
     [Fact]
+    public async Task OperationDeadlineProducesTimeout()
+    {
+        await using var scheduler = new RadioCommandScheduler(
+            operationTimeout: TimeSpan.FromMilliseconds(50));
+
+        await Assert.ThrowsAsync<TimeoutException>(() => scheduler.ExecuteAsync(
+            async token => await Task.Delay(Timeout.InfiniteTimeSpan, token)).AsTask());
+    }
+
+    [Fact]
+    public async Task CancellationAfterStartDoesNotInterruptInFlightOperation()
+    {
+        await using var scheduler = new RadioCommandScheduler();
+        using var callerStopping = new CancellationTokenSource();
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool operationTokenWasCancelled = false;
+
+        Task operation = scheduler.ExecuteAsync(async token =>
+        {
+            started.SetResult();
+            await release.Task;
+            operationTokenWasCancelled = token.IsCancellationRequested;
+        }, cancellationToken: callerStopping.Token).AsTask();
+
+        await started.Task;
+        callerStopping.Cancel();
+        release.SetResult();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation);
+        Assert.False(operationTokenWasCancelled);
+    }
+
+    [Fact]
     public async Task SafetyWorkRunsBeforeQueuedNormalWork()
     {
         await using var scheduler = new RadioCommandScheduler();

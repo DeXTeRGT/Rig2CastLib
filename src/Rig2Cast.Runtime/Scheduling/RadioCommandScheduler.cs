@@ -4,13 +4,33 @@ namespace Rig2Cast.Runtime.Scheduling;
 
 public sealed class RadioCommandScheduler : IAsyncDisposable
 {
-    private readonly Channel<IWorkItem> _safety = Channel.CreateUnbounded<IWorkItem>();
-    private readonly Channel<IWorkItem> _normal = Channel.CreateUnbounded<IWorkItem>();
+    private readonly Channel<IWorkItem> _safety;
+    private readonly Channel<IWorkItem> _normal;
+    private readonly SemaphoreSlim _available = new(0);
     private readonly CancellationTokenSource _stopping = new();
+    private readonly TimeSpan _operationTimeout;
     private readonly Task _processor;
     private int _disposed;
 
-    public RadioCommandScheduler() => _processor = ProcessAsync();
+    public RadioCommandScheduler(int queueCapacity = 256, TimeSpan? operationTimeout = null)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(queueCapacity);
+        _operationTimeout = operationTimeout ?? TimeSpan.FromSeconds(10);
+        if (_operationTimeout <= TimeSpan.Zero && _operationTimeout != Timeout.InfiniteTimeSpan)
+        {
+            throw new ArgumentOutOfRangeException(nameof(operationTimeout));
+        }
+
+        var options = new BoundedChannelOptions(queueCapacity)
+        {
+            FullMode = BoundedChannelFullMode.Wait,
+            SingleReader = true,
+            SingleWriter = false
+        };
+        _safety = Channel.CreateBounded<IWorkItem>(options);
+        _normal = Channel.CreateBounded<IWorkItem>(options);
+        _processor = ProcessAsync();
+    }
 
     public ValueTask ExecuteAsync(
         Func<CancellationToken, ValueTask> operation,
@@ -36,6 +56,7 @@ public sealed class RadioCommandScheduler : IAsyncDisposable
             : _normal.Writer;
 
         await writer.WriteAsync(item, cancellationToken).ConfigureAwait(false);
+        _available.Release();
         return await item.Completion.Task.ConfigureAwait(false);
     }
 
@@ -45,21 +66,18 @@ public sealed class RadioCommandScheduler : IAsyncDisposable
         {
             while (!_stopping.IsCancellationRequested)
             {
+                await _available.WaitAsync(_stopping.Token).ConfigureAwait(false);
+
                 if (_safety.Reader.TryRead(out IWorkItem? safetyItem))
                 {
-                    await safetyItem.RunAsync(_stopping.Token).ConfigureAwait(false);
+                    await safetyItem.RunAsync(_operationTimeout, _stopping.Token).ConfigureAwait(false);
                     continue;
                 }
 
                 if (_normal.Reader.TryRead(out IWorkItem? normalItem))
                 {
-                    await normalItem.RunAsync(_stopping.Token).ConfigureAwait(false);
-                    continue;
+                    await normalItem.RunAsync(_operationTimeout, _stopping.Token).ConfigureAwait(false);
                 }
-
-                Task<bool> safetyReady = _safety.Reader.WaitToReadAsync(_stopping.Token).AsTask();
-                Task<bool> normalReady = _normal.Reader.WaitToReadAsync(_stopping.Token).AsTask();
-                await Task.WhenAny(safetyReady, normalReady).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
@@ -91,11 +109,12 @@ public sealed class RadioCommandScheduler : IAsyncDisposable
         await _stopping.CancelAsync().ConfigureAwait(false);
         await _processor.ConfigureAwait(false);
         _stopping.Dispose();
+        _available.Dispose();
     }
 
     private interface IWorkItem
     {
-        ValueTask RunAsync(CancellationToken schedulerToken);
+        ValueTask RunAsync(TimeSpan operationTimeout, CancellationToken schedulerToken);
 
         void Cancel(CancellationToken cancellationToken);
     }
@@ -107,7 +126,7 @@ public sealed class RadioCommandScheduler : IAsyncDisposable
         public TaskCompletionSource<T> Completion { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public async ValueTask RunAsync(CancellationToken schedulerToken)
+        public async ValueTask RunAsync(TimeSpan operationTimeout, CancellationToken schedulerToken)
         {
             if (callerToken.IsCancellationRequested)
             {
@@ -115,14 +134,33 @@ public sealed class RadioCommandScheduler : IAsyncDisposable
                 return;
             }
 
-            using var linked = CancellationTokenSource.CreateLinkedTokenSource(callerToken, schedulerToken);
+            using var operationStopping = CancellationTokenSource.CreateLinkedTokenSource(schedulerToken);
+            if (operationTimeout != Timeout.InfiniteTimeSpan)
+            {
+                operationStopping.CancelAfter(operationTimeout);
+            }
+
             try
             {
-                Completion.TrySetResult(await operation(linked.Token).ConfigureAwait(false));
+                T result = await operation(operationStopping.Token).ConfigureAwait(false);
+                if (callerToken.IsCancellationRequested)
+                {
+                    Completion.TrySetCanceled(callerToken);
+                }
+                else
+                {
+                    Completion.TrySetResult(result);
+                }
             }
-            catch (OperationCanceledException) when (linked.IsCancellationRequested)
+            catch (OperationCanceledException exception) when (
+                operationStopping.IsCancellationRequested && !schedulerToken.IsCancellationRequested)
             {
-                Completion.TrySetCanceled(linked.Token);
+                Completion.TrySetException(new TimeoutException(
+                    $"The radio operation exceeded its {operationTimeout} deadline.", exception));
+            }
+            catch (OperationCanceledException) when (schedulerToken.IsCancellationRequested)
+            {
+                Completion.TrySetCanceled(schedulerToken);
             }
             catch (Exception exception)
             {

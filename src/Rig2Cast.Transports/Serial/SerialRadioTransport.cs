@@ -30,10 +30,15 @@ public sealed class SerialRadioTransport(SerialRadioTransportOptions options) : 
             options.StopBits)
         {
             Handshake = options.Handshake,
+            DtrEnable = options.DtrEnable,
             ReadTimeout = ToMilliseconds(options.ReadTimeout),
             WriteTimeout = ToMilliseconds(options.WriteTimeout),
             Encoding = System.Text.Encoding.ASCII
         };
+        if (options.Handshake is not Handshake.RequestToSend and not Handshake.RequestToSendXOnXOff)
+        {
+            port.RtsEnable = options.RtsEnable;
+        }
 
         try
         {

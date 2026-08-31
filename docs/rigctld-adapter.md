@@ -70,6 +70,10 @@ Ensure no other program has COM11 open, then start read-only:
 dotnet run --project samples\Rig2Cast.RigctldHost -- --model yaesu.ftdx10 --serial-port COM11 --baud 38400
 ```
 
+For the FTDX10 enhanced USB CAT port, add `--auto-information` to keep the shared
+state cache synchronized from supported front-panel announcements. The Yaesu manual
+documents `AI` as USB-only, so do not enable this option for an RS-232 connection.
+
 Enable non-PTT setters explicitly with `--allow-write`. Write-enabled connections
 receive the Controller role so composite operations such as mode plus passband can
 hold an exclusive-control lease. Other options are

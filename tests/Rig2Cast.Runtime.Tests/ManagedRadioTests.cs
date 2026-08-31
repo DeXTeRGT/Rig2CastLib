@@ -174,6 +174,20 @@ public sealed class ManagedRadioTests
     }
 
     [Fact]
+    public async Task UnsolicitedSimulatorChangeUpdatesCacheWithoutPolling()
+    {
+        await using TestContext context = await TestContext.CreateAsync();
+        await using IRadioSession session = context.Radio.OpenSession(new ClientIdentity("gui"), ClientRole.Observer);
+
+        await context.Driver.SimulateFrequencyChangeAsync(VfoId.A, 14_275_000);
+        await WaitUntilAsync(
+            async () => (await session.GetSnapshotAsync()).State.FrequenciesHz[VfoId.A] == 14_275_000,
+            TimeSpan.FromSeconds(2));
+
+        Assert.Equal(14_275_000, (await session.GetSnapshotAsync()).State.FrequenciesHz[VfoId.A]);
+    }
+
+    [Fact]
     public async Task UnchangedLiveRefreshDoesNotIncrementRevision()
     {
         await using TestContext context = await TestContext.CreateAsync();

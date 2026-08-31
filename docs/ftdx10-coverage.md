@@ -14,6 +14,7 @@ Status meanings:
 | Native feature | CAT | Software | Physical FTDX10 | Next action |
 |---|---|---|---|---|
 | Identification | `ID` | Complete | Read validated | None |
+| USB automatic information | `AI`, `IF`, `FA`, `FB`, `MD`, `VS`, `ST`, `TX` | Complete, opt-in with confirmation and shutdown cleanup | Enabled and front-panel announcements validated | Continue expanding typed handling for useful announced controls |
 | VFO A/B frequency | `FA`, `FB` | Complete | Read validated; interactive setter testing passed | None |
 | Active VFO | `VS` | Complete | Read validated; interactive setter testing passed | None |
 | Operating mode | `MD` | Complete | Read validated; interactive setter testing passed | None |
@@ -44,8 +45,7 @@ Status meanings:
 
 The audit shows that the previously proposed first control batch (gain, squelch,
 power, microphone, clarifier, noise reduction, notch, contour and raw meters) is
-already implemented natively. The immediate missing-control batch is therefore
-The immediate missing-control batch identified by this audit is now complete:
+already implemented natively. The immediate missing-control batch is now complete:
 CW pitch, keyer speed, VOX delay, APF parameters, and mode-aware tuning step.
 
 ## Implemented command summary
@@ -53,6 +53,7 @@ CW pitch, keyer speed, VOX delay, APF parameters, and mode-aware tuning step.
 | Area | CAT commands |
 |---|---|
 | Identification | `ID` |
+| USB automatic information | `AI` |
 | VFO A/B frequency | `FA`, `FB` |
 | Active VFO | `VS` |
 | Operating mode | `MD` |

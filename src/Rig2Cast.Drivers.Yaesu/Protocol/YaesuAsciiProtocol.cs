@@ -1,19 +1,62 @@
-using System.Buffers;
+using System.Runtime.CompilerServices;
 using System.Text;
+using System.Threading.Channels;
 using Rig2Cast.Abstractions.Transports;
 
 namespace Rig2Cast.Drivers.Yaesu.Protocol;
 
-public sealed class YaesuAsciiProtocol(IRadioTransport transport, TimeSpan? responseTimeout = null)
+public sealed class YaesuAsciiProtocol : IAsyncDisposable
 {
     private const int MaximumResponseLength = 512;
+    private const int ReadBufferLength = 256;
     private static readonly Encoding Ascii = Encoding.ASCII;
-    private readonly TimeSpan _responseTimeout = responseTimeout ?? TimeSpan.FromSeconds(2);
+    private readonly IRadioTransport _transport;
+    private readonly TimeSpan _responseTimeout;
+    private readonly CancellationTokenSource _stopping = new();
+    private readonly SemaphoreSlim _transactionGate = new(1, 1);
+    private readonly object _pendingGate = new();
+    private readonly Channel<string> _unsolicited = Channel.CreateBounded<string>(
+        new BoundedChannelOptions(256)
+        {
+            SingleReader = false,
+            SingleWriter = true,
+            FullMode = BoundedChannelFullMode.DropOldest
+        });
+    private readonly Task _reader;
+    private PendingQuery? _pending;
+    private Exception? _terminalFailure;
+    private int _disposed;
+
+    public YaesuAsciiProtocol(IRadioTransport transport, TimeSpan? responseTimeout = null)
+    {
+        ArgumentNullException.ThrowIfNull(transport);
+        if (!transport.IsConnected)
+        {
+            throw new InvalidOperationException("The transport must be connected before starting the Yaesu protocol session.");
+        }
+
+        _transport = transport;
+        _responseTimeout = responseTimeout ?? TimeSpan.FromSeconds(2);
+        if (_responseTimeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(responseTimeout));
+        }
+
+        _reader = ReadLoopAsync();
+    }
 
     public async ValueTask SendAsync(string command, CancellationToken cancellationToken = default)
     {
-        string framed = Frame(command);
-        await transport.WriteAsync(Ascii.GetBytes(framed), cancellationToken).ConfigureAwait(false);
+        EnsureOperational();
+        await _transactionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await WriteFrameAsync(command, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _transactionGate.Release();
+        }
     }
 
     public async ValueTask<string> QueryAsync(
@@ -21,46 +64,57 @@ public sealed class YaesuAsciiProtocol(IRadioTransport transport, TimeSpan? resp
         string expectedResponsePrefix,
         CancellationToken cancellationToken = default)
     {
+        EnsureOperational();
         ValidatePrefix(expectedResponsePrefix);
-        await SendAsync(command, cancellationToken).ConfigureAwait(false);
-
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(_responseTimeout);
-        byte[] rented = ArrayPool<byte>.Shared.Rent(MaximumResponseLength);
+        await _transactionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var pending = new PendingQuery(expectedResponsePrefix);
         try
         {
-            int length = 0;
-            while (length < MaximumResponseLength)
+            lock (_pendingGate)
             {
-                int count = await transport.ReadAsync(rented.AsMemory(length, 1), timeout.Token).ConfigureAwait(false);
-                if (count == 0)
+                if (_pending is not null)
                 {
-                    throw new YaesuProtocolException("The radio closed the connection before completing its response.");
+                    throw new InvalidOperationException("Only one Yaesu query may await a response at a time.");
                 }
 
-                length += count;
-                if (rented[length - 1] == (byte)';')
-                {
-                    string response = Ascii.GetString(rented, 0, length);
-                    if (!response.StartsWith(expectedResponsePrefix, StringComparison.OrdinalIgnoreCase))
-                    {
-                        throw new YaesuProtocolException(
-                            $"Expected a '{expectedResponsePrefix}' response but received '{response}'.");
-                    }
-
-                    return response;
-                }
+                _pending = pending;
             }
 
-            throw new YaesuProtocolException($"A CAT response exceeded {MaximumResponseLength} bytes.");
-        }
-        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
-        {
-            throw new TimeoutException($"No complete CAT response was received within {_responseTimeout}.", exception);
+            await WriteFrameAsync(command, cancellationToken).ConfigureAwait(false);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(_responseTimeout);
+            try
+            {
+                return await pending.Completion.Task.WaitAsync(timeout.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+            {
+                var timeoutException = new TimeoutException(
+                    $"No matching CAT response was received within {_responseTimeout}.", exception);
+                FailSession(timeoutException);
+                throw timeoutException;
+            }
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(rented);
+            lock (_pendingGate)
+            {
+                if (ReferenceEquals(_pending, pending))
+                {
+                    _pending = null;
+                }
+            }
+
+            _transactionGate.Release();
+        }
+    }
+
+    public async IAsyncEnumerable<string> WatchUnsolicitedFramesAsync(
+        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        await foreach (string frame in _unsolicited.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+        {
+            yield return frame;
         }
     }
 
@@ -84,6 +138,141 @@ public sealed class YaesuAsciiProtocol(IRadioTransport transport, TimeSpan? resp
         return value.ToUpperInvariant();
     }
 
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        await _stopping.CancelAsync().ConfigureAwait(false);
+        try
+        {
+            await _reader.ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
+        {
+        }
+
+        FailPending(new ObjectDisposedException(nameof(YaesuAsciiProtocol)));
+        _unsolicited.Writer.TryComplete();
+        _transactionGate.Dispose();
+        _stopping.Dispose();
+    }
+
+    private async Task ReadLoopAsync()
+    {
+        byte[] buffer = new byte[ReadBufferLength];
+        byte[] frame = new byte[MaximumResponseLength];
+        int frameLength = 0;
+        try
+        {
+            while (!_stopping.IsCancellationRequested)
+            {
+                int count = await _transport.ReadAsync(buffer, _stopping.Token).ConfigureAwait(false);
+                if (count == 0)
+                {
+                    throw new YaesuProtocolException("The radio closed the connection.");
+                }
+
+                for (int index = 0; index < count; index++)
+                {
+                    byte value = buffer[index];
+                    if (value > 0x7f || value < 0x20)
+                    {
+                        frameLength = 0;
+                        FailPending(new YaesuProtocolException("A CAT frame contained a non-printable ASCII byte."));
+                        continue;
+                    }
+
+                    if (frameLength == MaximumResponseLength)
+                    {
+                        frameLength = 0;
+                        FailPending(new YaesuProtocolException(
+                            $"A CAT frame exceeded {MaximumResponseLength} bytes."));
+                    }
+
+                    frame[frameLength++] = value;
+                    if (value == (byte)';')
+                    {
+                        RouteFrame(Ascii.GetString(frame, 0, frameLength));
+                        frameLength = 0;
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
+        {
+        }
+        catch (Exception exception)
+        {
+            FailSession(exception);
+        }
+    }
+
+    private async ValueTask WriteFrameAsync(string command, CancellationToken cancellationToken)
+    {
+        string framed = Frame(command);
+        await _transport.WriteAsync(Ascii.GetBytes(framed), cancellationToken).ConfigureAwait(false);
+    }
+
+    private void RouteFrame(string frame)
+    {
+        PendingQuery? match = null;
+        lock (_pendingGate)
+        {
+            if (_pending is not null && frame.StartsWith(_pending.ExpectedPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                match = _pending;
+                _pending = null;
+            }
+        }
+
+        if (match is not null)
+        {
+            match.Completion.TrySetResult(frame);
+        }
+        else
+        {
+            _unsolicited.Writer.TryWrite(frame);
+        }
+    }
+
+    private void FailPending(Exception exception)
+    {
+        PendingQuery? pending;
+        lock (_pendingGate)
+        {
+            pending = _pending;
+            _pending = null;
+        }
+
+        pending?.Completion.TrySetException(exception);
+    }
+
+    private void FailSession(Exception exception)
+    {
+        if (Interlocked.CompareExchange(ref _terminalFailure, exception, null) is not null)
+        {
+            return;
+        }
+
+        FailPending(exception);
+        _unsolicited.Writer.TryComplete(exception);
+        _stopping.Cancel();
+    }
+
+    private void EnsureOperational()
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        if (Volatile.Read(ref _terminalFailure) is Exception failure)
+        {
+            throw new InvalidOperationException(
+                "The Yaesu protocol session is faulted and must be reconnected before issuing more commands.",
+                failure);
+        }
+    }
+
     private static void ValidatePrefix(string prefix)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(prefix);
@@ -91,5 +280,13 @@ public sealed class YaesuAsciiProtocol(IRadioTransport transport, TimeSpan? resp
         {
             throw new ArgumentException("A Yaesu response prefix must contain exactly two ASCII letters.", nameof(prefix));
         }
+    }
+
+    private sealed class PendingQuery(string expectedPrefix)
+    {
+        public string ExpectedPrefix { get; } = expectedPrefix;
+
+        public TaskCompletionSource<string> Completion { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
 }

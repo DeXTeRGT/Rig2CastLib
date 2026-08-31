@@ -14,11 +14,17 @@ dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --simul
 # Physical FTDX10, read-only
 dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --port COM11 --baud 38400
 
+# Physical FTDX10 with USB-only automatic information enabled
+dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --port COM11 --baud 38400 --auto-information
+
 # Physical FTDX10 with non-transmitting setters
 dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --port COM11 --baud 38400 --allow-write
 ```
 
 Only one application may own the serial port. Close other CAT software before opening the physical radio.
+The FTDX10 manual limits `AI` automatic information to its USB CAT connection. Use
+`--auto-information` only with the enhanced USB CAT port. Rig2Cast confirms `AI1;`
+at startup and sends `AI0;` during clean shutdown.
 
 ## Inspect the radio
 
@@ -47,7 +53,7 @@ poll start 500
 poll stop
 ```
 
-`state` and `refresh` perform a live, scheduled radio query. `GetSnapshotAsync()` remains a cache-oriented library operation. Polling refreshes that cache periodically; combine `poll start 500` with `watch on` to see frequency, active-VFO, mode, split, and PTT changes made from the front panel. Unchanged polls do not increment the state revision or publish duplicate events.
+`state` and `refresh` perform a live, scheduled radio query. `GetSnapshotAsync()` remains a cache-oriented library operation. Polling refreshes that cache periodically; combine `poll start 500` with `watch on` to see front-panel changes when automatic information is disabled. With `--auto-information`, `watch on` receives supported front-panel changes without polling. Unchanged state does not increment the state revision or publish duplicate state events.
 
 Choice capabilities include stable values, display names, write access, and applicable modes. Numeric capabilities include minimum, maximum, step, unit, and access metadata.
 

@@ -25,7 +25,8 @@ public sealed record RadioModelDescriptor(
     string Model,
     IReadOnlySet<RadioTransportKind> SupportedTransports,
     IReadOnlyList<int> SupportedBaudRates,
-    int? DefaultBaudRate = null);
+    int? DefaultBaudRate = null,
+    IReadOnlyDictionary<string, string>? DefaultConnectionSettings = null);
 
 public sealed record RadioDriverDescriptor(
     string Id,
@@ -40,6 +41,10 @@ public interface IRadioDriverFactory
 {
     RadioDriverDescriptor Descriptor { get; }
 
+    /// <summary>
+    /// Opens a driver and transfers ownership of <paramref name="transport"/> to it. The driver
+    /// must dispose the transport both after a failed open and when the driver is disposed.
+    /// </summary>
     ValueTask<IRadioDriver> OpenAsync(
         RadioConnectionOptions options,
         IRadioTransport transport,

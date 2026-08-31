@@ -10,6 +10,7 @@ using Rig2Cast.Transports.Serial;
 
 bool simulator = HasFlag("--simulator");
 bool allowWrite = HasFlag("--allow-write");
+bool automaticInformation = HasFlag("--auto-information");
 var catalog = new RadioDriverCatalog();
 catalog.Register(new Ftdx10DriverFactory());
 
@@ -55,7 +56,9 @@ else
     var transport = new SerialRadioTransport(new SerialRadioTransportOptions
     {
         PortName = serialPort,
-        BaudRate = baud
+        BaudRate = baud,
+        StopBits = System.IO.Ports.StopBits.Two,
+        Handshake = System.IO.Ports.Handshake.RequestToSend
     });
     driver = await selectedModel.Factory.OpenAsync(
         new RadioConnectionOptions(
@@ -64,7 +67,8 @@ else
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {
                 ["serial-port"] = serialPort,
-                ["baud"] = baud.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                ["baud"] = baud.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["yaesu.autoInformation"] = automaticInformation.ToString()
             }),
         transport,
         stopping.Token);
