@@ -4,6 +4,9 @@ Rig2Cast is a modular .NET 8 transceiver-control platform. It is designed as an 
 
 The current milestone establishes architectural contracts and a simulator-led vertical slice. The Yaesu FTDX10 is the first physical transceiver target.
 
+An optional, multi-client Hamlib `rigctld` compatibility adapter and host are
+documented in [docs/rigctld-adapter.md](docs/rigctld-adapter.md).
+
 Hamlib in the sibling directory is reference material only. Rig2Cast is not a C# port of Hamlib. See `docs/protocol-provenance.md`.
 
 ## Status
@@ -17,6 +20,18 @@ dotnet build Rig2Cast.sln
 dotnet test tests\Rig2Cast.Runtime.Tests\Rig2Cast.Runtime.Tests.csproj
 dotnet run --project samples\Rig2Cast.Demo\Rig2Cast.Demo.csproj
 ```
+
+The interactive diagnostic console uses the simulator by default only when explicitly requested:
+
+```powershell
+# Simulator
+dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --simulator
+
+# Physical FTDX10, read-only by default
+dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --port COM11 --baud 38400
+```
+
+See `docs/diagnostic-console.md` for capability inspection and guarded setter commands.
 
 The physical-radio smoke utility performs identification, state, and raw meter queries only:
 

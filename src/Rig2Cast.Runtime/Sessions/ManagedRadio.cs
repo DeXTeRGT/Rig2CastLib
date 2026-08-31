@@ -75,6 +75,9 @@ public sealed class ManagedRadio : IAsyncDisposable
     internal IAsyncEnumerable<RadioEvent> WatchEventsAsync(CancellationToken cancellationToken) =>
         _events.SubscribeAsync(cancellationToken);
 
+    internal ValueTask<RadioState> RefreshStateAsync(CancellationToken cancellationToken) =>
+        _scheduler.ExecuteAsync(RefreshStateCoreAsync, cancellationToken: cancellationToken);
+
     internal ValueTask SetFrequencyAsync(
         ClientAuthorization authorization,
         VfoId target,
@@ -84,6 +87,12 @@ public sealed class ManagedRadio : IAsyncDisposable
             authorization,
             token => _driver.SetFrequencyAsync(target, frequencyHz, token),
             cancellationToken);
+
+    internal ValueTask SetActiveVfoAsync(
+        ClientAuthorization authorization,
+        VfoId vfo,
+        CancellationToken cancellationToken) =>
+        ExecuteMutationAsync(authorization, token => _driver.SetActiveVfoAsync(vfo, token), cancellationToken);
 
     internal ValueTask SetModeAsync(
         ClientAuthorization authorization,
@@ -339,12 +348,31 @@ public sealed class ManagedRadio : IAsyncDisposable
         }, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
-    private async ValueTask RefreshStateCoreAsync(CancellationToken cancellationToken)
+    private async ValueTask<RadioState> RefreshStateCoreAsync(CancellationToken cancellationToken)
     {
         RadioState reported = await _driver.ReadStateAsync(cancellationToken).ConfigureAwait(false);
-        _state = reported with { Revision = _state.Revision + 1, ObservedAt = DateTimeOffset.UtcNow };
-        _events.Publish(RadioEventKind.StateChanged, _state);
+        if (HasStateChanged(_state, reported))
+        {
+            _state = reported with { Revision = _state.Revision + 1, ObservedAt = DateTimeOffset.UtcNow };
+            _events.Publish(RadioEventKind.StateChanged, _state);
+        }
+        else
+        {
+            _state = _state with { ObservedAt = DateTimeOffset.UtcNow };
+        }
+
+        return _state;
     }
+
+    private static bool HasStateChanged(RadioState current, RadioState reported) =>
+        current.Connection != reported.Connection ||
+        current.ActiveVfo != reported.ActiveVfo ||
+        current.Mode != reported.Mode ||
+        current.IsSplit != reported.IsSplit ||
+        current.IsTransmitting != reported.IsTransmitting ||
+        current.FrequenciesHz.Count != reported.FrequenciesHz.Count ||
+        current.FrequenciesHz.Any(pair =>
+            !reported.FrequenciesHz.TryGetValue(pair.Key, out long frequency) || frequency != pair.Value);
 
     private async ValueTask ForcePttOffAsync(CancellationToken cancellationToken)
     {
@@ -442,6 +470,9 @@ public sealed class ManagedRadio : IAsyncDisposable
     {
         public ValueTask SetFrequencyAsync(VfoId target, long frequencyHz, CancellationToken cancellationToken = default) =>
             driver.SetFrequencyAsync(target, frequencyHz, cancellationToken);
+
+        public ValueTask SetActiveVfoAsync(VfoId vfo, CancellationToken cancellationToken = default) =>
+            driver.SetActiveVfoAsync(vfo, cancellationToken);
 
         public ValueTask SetModeAsync(RadioMode mode, CancellationToken cancellationToken = default) =>
             driver.SetModeAsync(mode, cancellationToken);

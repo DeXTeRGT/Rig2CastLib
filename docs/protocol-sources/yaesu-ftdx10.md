@@ -29,6 +29,7 @@ The manual revision above documents the `PR` speech-processor state as `1` for o
 - Switch and choice control parsing: automated fixture tests
 - Receiver filtering and interference command parsing: automated fixture tests
 - Mode-aware filter-width and signed clarifier parsing: automated fixture tests
+- CW pitch, keyer speed, discrete VOX delay, APF parameters, and mode-aware tuning step: automated fixture tests
 - Simulator/runtime integration: automated tests
 - Physical FTDX10 validation: passed on 2026-08-30 using the Enhanced CAT port at `COM11`, 38400 baud
   - Identification response verified as `ID0761;`
@@ -42,3 +43,6 @@ The manual revision above documents the `PR` speech-processor state as `1` for o
   - In USB mode the radio reported 3000 Hz filter width, RIT and XIT off, and 0 Hz clarifier offset
   - Reported state was receive, VFO A selected, USB mode, and split off
   - No set, tuning, or transmit command was sent during validation
+- Subsequent interactive hardware validation:
+  - VFO frequency, active-VFO, mode, and split setters passed through the diagnostic console
+  - On 2026-08-31, rigctld mode/passband reads and atomic setters passed; native `SH0` width selection was confirmed on the physical radio

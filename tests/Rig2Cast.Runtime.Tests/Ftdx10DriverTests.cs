@@ -3,6 +3,7 @@ using Rig2Cast.Drivers.Yaesu.Ftdx10;
 using Rig2Cast.Drivers.Yaesu.Protocol;
 using Rig2Cast.Abstractions.Controls;
 using Rig2Cast.Abstractions.Meters;
+using Capabilities = Rig2Cast.Abstractions.Capabilities;
 
 namespace Rig2Cast.Runtime.Tests;
 
@@ -57,6 +58,20 @@ public sealed class Ftdx10DriverTests
     }
 
     [Fact]
+    public async Task ActiveVfoSelectionUsesDocumentedCommand()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("VS1;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+
+        await driver.SetActiveVfoAsync(VfoId.B);
+
+        Assert.True(driver.Capabilities.Vfos.Selection.Access.HasFlag(Capabilities.FeatureAccess.Write));
+        transport.AssertComplete();
+    }
+
+    [Fact]
     public async Task OpenRejectsDifferentRadioIdentification()
     {
         var transport = new ScriptedRadioTransport();
@@ -82,7 +97,7 @@ public sealed class Ftdx10DriverTests
         await driver.WriteControlAsync(RadioControlId.AfGain, 200);
         await driver.WriteControlAsync(RadioControlId.TransmitPower, 50);
 
-        Assert.Equal(15, driver.Capabilities.Controls.Count);
+        Assert.Equal(18, driver.Capabilities.Controls.Count);
         transport.AssertComplete();
     }
 
@@ -253,6 +268,102 @@ public sealed class Ftdx10DriverTests
 
         Assert.Equal(-150, (await driver.ReadControlAsync(RadioControlId.ClarifierOffsetHz)).Value);
         await driver.WriteControlAsync(RadioControlId.ClarifierOffsetHz, 200);
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task ReadsAndWritesCwPitchInEngineeringUnits()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("KP;", "KP04;");
+        transport.Add("KP05;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+
+        Assert.Equal(340, (await driver.ReadControlAsync(RadioControlId.CwPitchHz)).Value);
+        await driver.WriteControlAsync(RadioControlId.CwPitchHz, 350);
+
+        NumericControlDescriptor descriptor = driver.Capabilities.Controls[RadioControlId.CwPitchHz];
+        Assert.Equal(300, descriptor.Minimum);
+        Assert.Equal(1050, descriptor.Maximum);
+        Assert.Equal(10, descriptor.Step);
+        Assert.Equal("Hz", descriptor.Unit);
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task ReadsAndWritesKeyerSpeedInWordsPerMinute()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("KS;", "KS020;");
+        transport.Add("KS025;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+
+        Assert.Equal(20, (await driver.ReadControlAsync(RadioControlId.KeyerSpeedWpm)).Value);
+        await driver.WriteControlAsync(RadioControlId.KeyerSpeedWpm, 25);
+
+        NumericControlDescriptor descriptor = driver.Capabilities.Controls[RadioControlId.KeyerSpeedWpm];
+        Assert.Equal(4, descriptor.Minimum);
+        Assert.Equal(60, descriptor.Maximum);
+        Assert.Equal("WPM", descriptor.Unit);
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task ReadsAndWritesVoxDelayUsingDiscreteRadioCodes()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("VD;", "VD13;");
+        transport.Add("VD04;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+
+        Assert.Equal("1000ms", (await driver.ReadChoiceAsync(RadioChoiceId.VoxDelay)).Value);
+        await driver.WriteChoiceAsync(RadioChoiceId.VoxDelay, "200ms");
+
+        Assert.Equal(31, driver.Capabilities.Choices[RadioChoiceId.VoxDelay].Options.Count);
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task ReadsAndWritesAudioPeakFilterParameters()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("CO03;", "CO030030;");
+        transport.Add("EX030201;", "EX0302011;");
+        transport.Add("CO030020;");
+        transport.Add("EX0302012;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+
+        Assert.Equal(50, (await driver.ReadControlAsync(RadioControlId.AudioPeakFilterOffsetHz)).Value);
+        Assert.Equal("medium", (await driver.ReadChoiceAsync(RadioChoiceId.AudioPeakFilterWidth)).Value);
+        await driver.WriteControlAsync(RadioControlId.AudioPeakFilterOffsetHz, -50);
+        await driver.WriteChoiceAsync(RadioChoiceId.AudioPeakFilterWidth, "wide");
+
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task TuningStepUsesModeAwareFastStepCommand()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("VS;", "VS0;");
+        transport.Add("MD0;", "MD02;");
+        transport.Add("FS;", "FS1;");
+        transport.Add("VS;", "VS0;");
+        transport.Add("MD0;", "MD02;");
+        transport.Add("FS0;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+
+        Assert.Equal("100hz", (await driver.ReadChoiceAsync(RadioChoiceId.TuningStep)).Value);
+        await driver.WriteChoiceAsync(RadioChoiceId.TuningStep, "10hz");
+
+        RadioChoiceOption option = driver.Capabilities.Choices[RadioChoiceId.TuningStep].Options["1khz"];
+        Assert.Contains(RadioMode.Fm, option.ApplicableModes!);
+        Assert.DoesNotContain(RadioMode.Usb, option.ApplicableModes!);
         transport.AssertComplete();
     }
 }

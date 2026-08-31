@@ -9,7 +9,13 @@ public sealed class Ftdx10DriverFactory : IRadioDriverFactory
         "rig2cast.drivers.yaesu.ftdx10",
         new Version(0, 1, 0),
         new Version(1, 0),
-        [Ftdx10CatProfile.ModelId]);
+        [new RadioModelDescriptor(
+            Ftdx10CatProfile.ModelId,
+            "Yaesu",
+            "FTDX10",
+            new HashSet<RadioTransportKind> { RadioTransportKind.Serial, RadioTransportKind.Simulator },
+            Ftdx10CatProfile.SupportedBaudRates,
+            38_400)]);
 
     public async ValueTask<IRadioDriver> OpenAsync(
         RadioConnectionOptions options,

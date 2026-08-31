@@ -22,6 +22,12 @@ internal sealed class RadioClientSession(
         return ValueTask.FromResult(radio.GetSnapshot(authorization));
     }
 
+    public ValueTask<RadioState> RefreshStateAsync(CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        return radio.RefreshStateAsync(cancellationToken);
+    }
+
     public IAsyncEnumerable<RadioEvent> WatchEventsAsync(CancellationToken cancellationToken = default)
     {
         EnsureActive();
@@ -32,6 +38,12 @@ internal sealed class RadioClientSession(
     {
         EnsureActive();
         return radio.SetFrequencyAsync(authorization, target, frequencyHz, cancellationToken);
+    }
+
+    public ValueTask SetActiveVfoAsync(VfoId vfo, CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        return radio.SetActiveVfoAsync(authorization, vfo, cancellationToken);
     }
 
     public ValueTask SetModeAsync(RadioMode mode, CancellationToken cancellationToken = default)

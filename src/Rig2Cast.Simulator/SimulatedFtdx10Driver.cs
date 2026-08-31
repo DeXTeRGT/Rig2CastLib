@@ -26,6 +26,7 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
     private int _commandCount;
     private Exception? _nextCommandException;
     private RadioMode _mode = RadioMode.Usb;
+    private VfoId _activeVfo = VfoId.A;
     private bool _split;
     private bool _ptt;
     private bool _disposed;
@@ -72,7 +73,7 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
                 1,
                 ConnectionStatus.Connected,
                 new Dictionary<VfoId, long>(_frequencies),
-                VfoId.A,
+                _activeVfo,
                 _mode,
                 _split,
                 _ptt,
@@ -107,6 +108,19 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
         lock (_gate)
         {
             _mode = mode;
+        }
+    }
+
+    public async ValueTask SetActiveVfoAsync(VfoId vfo, CancellationToken cancellationToken = default)
+    {
+        using IDisposable operation = await BeginOperationAsync($"SetActiveVfo:{vfo}", cancellationToken).ConfigureAwait(false);
+        if (vfo is not (VfoId.A or VfoId.B))
+        {
+            throw new NotSupportedException($"VFO {vfo} cannot be selected on the simulated FTDX10.");
+        }
+        lock (_gate)
+        {
+            _activeVfo = vfo;
         }
     }
 
@@ -348,9 +362,12 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
             [RadioChoiceId.RoofingFilter] = CreateChoice(RadioChoiceId.RoofingFilter,
                 ("12khz", "12 kHz", true), ("3khz", "3 kHz", true),
                 ("500hz", "500 Hz", true), ("300hz", "300 Hz (optional)", true)),
-            [RadioChoiceId.FilterWidth] = CreateChoice(RadioChoiceId.FilterWidth,
-                ("default", "Default", true), ("2400hz", "2400 Hz", true),
-                ("3000hz", "3000 Hz", true), ("500hz", "500 Hz", true))
+            [RadioChoiceId.FilterWidth] = CreateFilterWidthChoice(),
+            [RadioChoiceId.VoxDelay] = CreateVoxDelayChoice(),
+            [RadioChoiceId.AudioPeakFilterWidth] = CreateChoice(RadioChoiceId.AudioPeakFilterWidth,
+                ("narrow", "Narrow", true), ("medium", "Medium", true), ("wide", "Wide", true)),
+            [RadioChoiceId.TuningStep] = CreateChoice(RadioChoiceId.TuningStep,
+                ("10hz", "10 Hz", true), ("100hz", "100 Hz", true), ("1khz", "1 kHz", true))
         };
 
         ChoiceControlDescriptor CreateChoice(
@@ -359,6 +376,50 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
             new(id, id.ToString(), feature, values.ToDictionary(
                 item => item.Value,
                 item => new RadioChoiceOption(item.Value, item.DisplayName, item.Writable)));
+
+        ChoiceControlDescriptor CreateFilterWidthChoice()
+        {
+            HashSet<RadioMode> ssb = [RadioMode.Lsb, RadioMode.Usb];
+            HashSet<RadioMode> narrow =
+                [RadioMode.Cw, RadioMode.CwReverse, RadioMode.Rtty, RadioMode.RttyReverse,
+                 RadioMode.Psk, RadioMode.DataLsb, RadioMode.DataUsb];
+            var options = new Dictionary<string, RadioChoiceOption>
+            {
+                ["default"] = new("default", "Default", true, ssb.Concat(narrow).ToHashSet())
+            };
+            AddWidths([300, 400, 600, 850, 1100, 1200, 1500, 1650, 1800, 1950, 2100, 2250,
+                2400, 2450, 2500, 2600, 2700, 2800, 2900, 3000, 3200, 3500, 4000], ssb);
+            AddWidths([50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 600, 800, 1200, 1400,
+                1700, 2000, 2400, 3000, 3200, 3500, 4000], narrow);
+            return new ChoiceControlDescriptor(RadioChoiceId.FilterWidth, "Filter width", feature, options);
+
+            void AddWidths(IEnumerable<int> widths, IReadOnlySet<RadioMode> modes)
+            {
+                foreach (int width in widths)
+                {
+                    string key = $"{width}hz";
+                    if (options.TryGetValue(key, out RadioChoiceOption? existing))
+                    {
+                        options[key] = existing with
+                        {
+                            ApplicableModes = existing.ApplicableModes!.Concat(modes).ToHashSet()
+                        };
+                    }
+                    else
+                    {
+                        options[key] = new RadioChoiceOption(key, $"{width} Hz", true, new HashSet<RadioMode>(modes));
+                    }
+                }
+            }
+        }
+
+        ChoiceControlDescriptor CreateVoxDelayChoice()
+        {
+            var options = new Dictionary<string, RadioChoiceOption> { ["off"] = new("off", "Off") };
+            for (int milliseconds = 100; milliseconds <= 3000; milliseconds += 100)
+                options[$"{milliseconds}ms"] = new($"{milliseconds}ms", $"{milliseconds} ms");
+            return new ChoiceControlDescriptor(RadioChoiceId.VoxDelay, "VOX delay", feature, options);
+        }
     }
 
     private static Dictionary<RadioControlId, NumericControlDescriptor> CreateControlCapabilities()
@@ -384,6 +445,12 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
                     new NumericControlDescriptor(id, id.ToString(), feature, 10, 3200, 1, "Hz"),
                 RadioControlId.ClarifierOffsetHz =>
                     new NumericControlDescriptor(id, id.ToString(), feature, -9999, 9999, 1, "Hz"),
+                RadioControlId.CwPitchHz =>
+                    new NumericControlDescriptor(id, "CW pitch", feature, 300, 1050, 10, "Hz"),
+                RadioControlId.KeyerSpeedWpm =>
+                    new NumericControlDescriptor(id, "Keyer speed", feature, 4, 60, 1, "WPM"),
+                RadioControlId.AudioPeakFilterOffsetHz =>
+                    new NumericControlDescriptor(id, "APF offset", feature, -250, 250, 10, "Hz"),
                 _ => new NumericControlDescriptor(id, id.ToString(), feature, 0, 100, 1, "%")
             });
     }

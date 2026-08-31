@@ -2,7 +2,7 @@ using Rig2Cast.Abstractions.Radios;
 
 namespace Rig2Cast.Drivers.Yaesu.Ftdx10;
 
-internal static class Ftdx10CatProfile
+public static class Ftdx10CatProfile
 {
     public const string ModelId = "yaesu.ftdx10";
     public const string Identification = "0761";

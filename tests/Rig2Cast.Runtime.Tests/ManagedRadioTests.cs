@@ -6,6 +6,7 @@ using Rig2Cast.Runtime.Sessions;
 using Rig2Cast.Simulator;
 using Rig2Cast.Abstractions.Controls;
 using Rig2Cast.Abstractions.Meters;
+using Rig2Cast.Abstractions.Capabilities;
 
 namespace Rig2Cast.Runtime.Tests;
 
@@ -35,6 +36,33 @@ public sealed class ManagedRadioTests
             .ToArray();
         await Task.WhenAll(operations);
         Assert.Equal(1, context.Driver.MaximumConcurrentOperations);
+    }
+
+    [Fact]
+    public async Task ActiveVfoSelectionIsAuthorizedAndReflectedInState()
+    {
+        await using TestContext context = await TestContext.CreateAsync();
+        await using IRadioSession observer = context.Radio.OpenSession(new ClientIdentity("observer"), ClientRole.Observer);
+        await using IRadioSession operatorSession = context.Radio.OpenSession(new ClientIdentity("operator"), ClientRole.Operator);
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => observer.SetActiveVfoAsync(VfoId.B).AsTask());
+        await operatorSession.SetActiveVfoAsync(VfoId.B);
+
+        Assert.Equal(VfoId.B, (await operatorSession.GetSnapshotAsync()).State.ActiveVfo);
+        Assert.Contains("SetActiveVfo:B", context.Driver.CommandLog);
+    }
+
+    [Fact]
+    public async Task SimulatorAdvertisesEveryTypedControlCategory()
+    {
+        await using TestContext context = await TestContext.CreateAsync();
+        await using IRadioSession session = context.Radio.OpenSession(new ClientIdentity("audit"), ClientRole.Observer);
+        RadioCapabilities capabilities = (await session.GetSnapshotAsync()).Capabilities;
+
+        Assert.Equal(Enum.GetValues<RadioControlId>().Order(), capabilities.Controls.Keys.Order());
+        Assert.Equal(Enum.GetValues<RadioSwitchId>().Order(), capabilities.Switches.Keys.Order());
+        Assert.Equal(Enum.GetValues<RadioChoiceId>().Order(), capabilities.Choices.Keys.Order());
+        Assert.Equal(Enum.GetValues<RadioMeterId>().Order(), capabilities.Meters.Keys.Order());
     }
 
     [Fact]
@@ -126,6 +154,35 @@ public sealed class ManagedRadioTests
         RadioState state = Assert.IsType<RadioState>(radioEvent.Payload);
         Assert.Equal(RadioMode.Cw, state.Mode);
         Assert.True(state.Revision > 1);
+    }
+
+    [Fact]
+    public async Task LiveRefreshObservesExternalRadioChangesAndUpdatesCache()
+    {
+        await using TestContext context = await TestContext.CreateAsync();
+        await using IRadioSession session = context.Radio.OpenSession(new ClientIdentity("console"), ClientRole.Observer);
+        RadioSnapshot before = await session.GetSnapshotAsync();
+
+        await context.Driver.SetFrequencyAsync(VfoId.A, 14_256_789);
+        Assert.Equal(before.State.FrequenciesHz[VfoId.A], (await session.GetSnapshotAsync()).State.FrequenciesHz[VfoId.A]);
+
+        RadioState refreshed = await session.RefreshStateAsync();
+
+        Assert.Equal(14_256_789, refreshed.FrequenciesHz[VfoId.A]);
+        Assert.True(refreshed.Revision > before.State.Revision);
+        Assert.Equal(14_256_789, (await session.GetSnapshotAsync()).State.FrequenciesHz[VfoId.A]);
+    }
+
+    [Fact]
+    public async Task UnchangedLiveRefreshDoesNotIncrementRevision()
+    {
+        await using TestContext context = await TestContext.CreateAsync();
+        await using IRadioSession session = context.Radio.OpenSession(new ClientIdentity("poller"), ClientRole.Observer);
+        long revision = (await session.GetSnapshotAsync()).State.Revision;
+
+        RadioState refreshed = await session.RefreshStateAsync();
+
+        Assert.Equal(revision, refreshed.Revision);
     }
 
     [Fact]

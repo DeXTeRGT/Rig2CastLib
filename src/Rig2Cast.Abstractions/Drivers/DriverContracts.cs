@@ -11,11 +11,30 @@ public sealed record RadioConnectionOptions(
     string ModelId,
     IReadOnlyDictionary<string, string> Settings);
 
+public enum RadioTransportKind
+{
+    Serial,
+    Tcp,
+    Usb,
+    Simulator
+}
+
+public sealed record RadioModelDescriptor(
+    string Id,
+    string Manufacturer,
+    string Model,
+    IReadOnlySet<RadioTransportKind> SupportedTransports,
+    IReadOnlyList<int> SupportedBaudRates,
+    int? DefaultBaudRate = null);
+
 public sealed record RadioDriverDescriptor(
     string Id,
     Version Version,
     Version ApiVersion,
-    IReadOnlyList<string> SupportedModelIds);
+    IReadOnlyList<RadioModelDescriptor> Models)
+{
+    public IReadOnlyList<string> SupportedModelIds => Models.Select(model => model.Id).ToArray();
+}
 
 public interface IRadioDriverFactory
 {
@@ -34,6 +53,8 @@ public interface IRadioDriver : IAsyncDisposable
     ValueTask<RadioState> ReadStateAsync(CancellationToken cancellationToken = default);
 
     ValueTask SetFrequencyAsync(VfoId target, long frequencyHz, CancellationToken cancellationToken = default);
+
+    ValueTask SetActiveVfoAsync(VfoId vfo, CancellationToken cancellationToken = default);
 
     ValueTask SetModeAsync(RadioMode mode, CancellationToken cancellationToken = default);
 

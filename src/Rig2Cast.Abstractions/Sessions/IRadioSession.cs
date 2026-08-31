@@ -12,9 +12,13 @@ public interface IRadioSession : IAsyncDisposable
 
     ValueTask<RadioSnapshot> GetSnapshotAsync(CancellationToken cancellationToken = default);
 
+    ValueTask<RadioState> RefreshStateAsync(CancellationToken cancellationToken = default);
+
     IAsyncEnumerable<RadioEvent> WatchEventsAsync(CancellationToken cancellationToken = default);
 
     ValueTask SetFrequencyAsync(VfoId target, long frequencyHz, CancellationToken cancellationToken = default);
+
+    ValueTask SetActiveVfoAsync(VfoId vfo, CancellationToken cancellationToken = default);
 
     ValueTask SetModeAsync(RadioMode mode, CancellationToken cancellationToken = default);
 
@@ -73,6 +77,8 @@ public interface IRadioSession : IAsyncDisposable
 public interface IRadioOperationScope
 {
     ValueTask SetFrequencyAsync(VfoId target, long frequencyHz, CancellationToken cancellationToken = default);
+
+    ValueTask SetActiveVfoAsync(VfoId vfo, CancellationToken cancellationToken = default);
 
     ValueTask SetModeAsync(RadioMode mode, CancellationToken cancellationToken = default);
 

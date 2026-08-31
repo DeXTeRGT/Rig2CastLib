@@ -38,7 +38,10 @@ public enum RadioChoiceId
     Preamp,
     Agc,
     RoofingFilter,
-    FilterWidth
+    FilterWidth,
+    VoxDelay,
+    AudioPeakFilterWidth,
+    TuningStep
 }
 
 public sealed record RadioChoiceOption(

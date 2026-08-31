@@ -56,6 +56,10 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             ["3khz"] = new('2', "3 kHz", true, '7'),
             ["500hz"] = new('4', "500 Hz", true, '9'),
             ["300hz"] = new('5', "300 Hz (optional)", true, 'A')
+        }),
+        [RadioChoiceId.AudioPeakFilterWidth] = new("Audio peak filter width", "EX030201", "EX030201", new Dictionary<string, ChoiceCode>
+        {
+            ["narrow"] = new('0', "Narrow"), ["medium"] = new('1', "Medium"), ["wide"] = new('2', "Wide")
         })
     };
 
@@ -76,7 +80,10 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             [RadioControlId.ManualNotchFrequencyHz] = new("Manual notch frequency", "BP01", "BP01", 3, 10, 3200, "Hz", 10),
             [RadioControlId.ContourFrequencyHz] = new("Contour frequency", "CO01", "CO01", 4, 10, 3200, "Hz"),
             [RadioControlId.IfShiftHz] = new("IF shift", "IS0", "IS00", 5, -1200, 1200, "Hz", 20),
-            [RadioControlId.ClarifierOffsetHz] = new("Clarifier offset", "CF001", "CF001", 5, -9999, 9999, "Hz")
+            [RadioControlId.ClarifierOffsetHz] = new("Clarifier offset", "CF001", "CF001", 5, -9999, 9999, "Hz"),
+            [RadioControlId.CwPitchHz] = new("CW pitch", "KP", "KP", 2, 300, 1050, "Hz", 10, 300),
+            [RadioControlId.KeyerSpeedWpm] = new("Keyer speed", "KS", "KS", 3, 4, 60, "WPM"),
+            [RadioControlId.AudioPeakFilterOffsetHz] = new("APF offset", "CO03", "CO03", 4, -250, 250, "Hz", 10, -250)
         };
 
     private static readonly Dictionary<RadioMeterId, MeterCommand> MeterCommands =
@@ -178,6 +185,17 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         await _protocol.SendAsync($"MD{target}{Ftdx10CatProfile.EncodeMode(mode)}", cancellationToken).ConfigureAwait(false);
     }
 
+    public ValueTask SetActiveVfoAsync(VfoId vfo, CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        return vfo switch
+        {
+            VfoId.A => _protocol.SendAsync("VS0", cancellationToken),
+            VfoId.B => _protocol.SendAsync("VS1", cancellationToken),
+            _ => throw new NotSupportedException($"FTDX10 active-VFO selection does not support '{vfo}'.")
+        };
+    }
+
     public ValueTask SetSplitAsync(bool enabled, CancellationToken cancellationToken = default)
     {
         EnsureActive();
@@ -230,12 +248,13 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         if (response.Length != valueOffset + command.Digits + 1 ||
             !response.StartsWith(command.ResponsePrefix, StringComparison.Ordinal) ||
             !int.TryParse(response.AsSpan(valueOffset, command.Digits), NumberStyles.None, CultureInfo.InvariantCulture, out int value) ||
-            value * command.Scale < command.Minimum || value * command.Scale > command.Maximum)
+            value * command.Scale + command.ValueOffset < command.Minimum ||
+            value * command.Scale + command.ValueOffset > command.Maximum)
         {
             throw new YaesuProtocolException($"Invalid {control} response '{response}'.");
         }
 
-        return new RadioControlValue(control, value * command.Scale, DateTimeOffset.UtcNow);
+        return new RadioControlValue(control, value * command.Scale + command.ValueOffset, DateTimeOffset.UtcNow);
     }
 
     public ValueTask WriteControlAsync(
@@ -269,7 +288,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
                 cancellationToken);
         }
 
-        int encoded = value / command.Scale;
+        int encoded = (value - command.ValueOffset) / command.Scale;
         return _protocol.SendAsync(
             $"{command.Query}{encoded.ToString($"D{command.Digits}", CultureInfo.InvariantCulture)}",
             cancellationToken);
@@ -337,6 +356,10 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         CancellationToken cancellationToken = default)
     {
         EnsureActive();
+        if (control == RadioChoiceId.VoxDelay)
+            return await ReadVoxDelayAsync(cancellationToken).ConfigureAwait(false);
+        if (control == RadioChoiceId.TuningStep)
+            return await ReadTuningStepAsync(cancellationToken).ConfigureAwait(false);
         if (control == RadioChoiceId.FilterWidth)
         {
             RadioMode mode = await ReadActiveModeAsync(cancellationToken).ConfigureAwait(false);
@@ -378,6 +401,10 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         CancellationToken cancellationToken = default)
     {
         EnsureActive();
+        if (control == RadioChoiceId.VoxDelay)
+            return WriteVoxDelayAsync(value, cancellationToken);
+        if (control == RadioChoiceId.TuningStep)
+            return WriteTuningStepAsync(value, cancellationToken);
         if (control == RadioChoiceId.FilterWidth)
         {
             return WriteFilterWidthAsync(value, cancellationToken);
@@ -517,7 +544,34 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
                     option => option.Key,
                     option => new RadioChoiceOption(option.Key, option.Value.DisplayName, option.Value.Writable))));
         choices[RadioChoiceId.FilterWidth] = CreateFilterWidthCapability(feature);
+        choices[RadioChoiceId.VoxDelay] = CreateVoxDelayCapability(feature);
+        choices[RadioChoiceId.TuningStep] = CreateTuningStepCapability(feature);
         return choices;
+    }
+
+    private static ChoiceControlDescriptor CreateVoxDelayCapability(FeatureDescriptor feature)
+    {
+        var options = new Dictionary<string, RadioChoiceOption> { ["off"] = new("off", "Off") };
+        for (int milliseconds = 100; milliseconds <= 3000; milliseconds += 100)
+            options[$"{milliseconds}ms"] = new($"{milliseconds}ms", $"{milliseconds} ms");
+        return new ChoiceControlDescriptor(RadioChoiceId.VoxDelay, "VOX delay", feature, options);
+    }
+
+    private static ChoiceControlDescriptor CreateTuningStepCapability(FeatureDescriptor feature)
+    {
+        HashSet<RadioMode> ssbCw =
+            [RadioMode.Lsb, RadioMode.Usb, RadioMode.Cw, RadioMode.CwReverse, RadioMode.Rtty,
+             RadioMode.RttyReverse, RadioMode.DataLsb, RadioMode.DataUsb, RadioMode.Psk];
+        HashSet<RadioMode> amFm =
+            [RadioMode.Am, RadioMode.AmNarrow, RadioMode.Fm, RadioMode.FmNarrow,
+             RadioMode.DataFm, RadioMode.DataFmNarrow];
+        return new ChoiceControlDescriptor(RadioChoiceId.TuningStep, "VFO tuning step", feature,
+            new Dictionary<string, RadioChoiceOption>
+            {
+                ["10hz"] = new("10hz", "10 Hz", true, ssbCw),
+                ["100hz"] = new("100hz", "100 Hz", true, ssbCw.Concat(amFm).ToHashSet()),
+                ["1khz"] = new("1khz", "1 kHz", true, amFm)
+            });
     }
 
     private static ChoiceControlDescriptor CreateFilterWidthCapability(FeatureDescriptor feature)
@@ -547,6 +601,68 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         }
         return new ChoiceControlDescriptor(RadioChoiceId.FilterWidth, "Filter width", feature, options);
     }
+
+    private async ValueTask<RadioChoiceValue> ReadVoxDelayAsync(CancellationToken cancellationToken)
+    {
+        string response = await _protocol.QueryAsync("VD", "VD", cancellationToken).ConfigureAwait(false);
+        if (response.Length != 5 || !int.TryParse(response.AsSpan(2, 2), NumberStyles.None,
+                CultureInfo.InvariantCulture, out int code))
+            throw new YaesuProtocolException($"Invalid VOX delay response '{response}'.");
+        int milliseconds = code switch
+        {
+            0 => 0, 2 => 100, 4 => 200,
+            >= 6 and <= 33 => (code - 6) * 100 + 300,
+            _ => throw new YaesuProtocolException($"Invalid VOX delay code '{code:D2}'.")
+        };
+        return new RadioChoiceValue(RadioChoiceId.VoxDelay,
+            milliseconds == 0 ? "off" : $"{milliseconds}ms", DateTimeOffset.UtcNow);
+    }
+
+    private ValueTask WriteVoxDelayAsync(string value, CancellationToken cancellationToken)
+    {
+        int milliseconds;
+        if (StringComparer.OrdinalIgnoreCase.Equals(value, "off")) milliseconds = 0;
+        else if (!value.EndsWith("ms", StringComparison.OrdinalIgnoreCase) ||
+                 !int.TryParse(value.AsSpan(0, value.Length - 2), NumberStyles.None,
+                     CultureInfo.InvariantCulture, out milliseconds) ||
+                 milliseconds is < 100 or > 3000 || milliseconds % 100 != 0)
+            throw new ArgumentOutOfRangeException(nameof(value));
+
+        int code = milliseconds switch { 0 => 0, 100 => 2, 200 => 4, _ => (milliseconds - 300) / 100 + 6 };
+        return _protocol.SendAsync($"VD{code:D2}", cancellationToken);
+    }
+
+    private async ValueTask<RadioChoiceValue> ReadTuningStepAsync(CancellationToken cancellationToken)
+    {
+        RadioMode mode = await ReadActiveModeAsync(cancellationToken).ConfigureAwait(false);
+        string response = await _protocol.QueryAsync("FS", "FS", cancellationToken).ConfigureAwait(false);
+        if (response.Length != 4 || response[2] is not ('0' or '1'))
+            throw new YaesuProtocolException($"Invalid fast-step response '{response}'.");
+        (string normal, string fast) = GetTuningSteps(mode);
+        return new RadioChoiceValue(RadioChoiceId.TuningStep,
+            response[2] == '1' ? fast : normal, DateTimeOffset.UtcNow);
+    }
+
+    private async ValueTask WriteTuningStepAsync(string value, CancellationToken cancellationToken)
+    {
+        RadioMode mode = await ReadActiveModeAsync(cancellationToken).ConfigureAwait(false);
+        (string normal, string fast) = GetTuningSteps(mode);
+        bool enabled = StringComparer.OrdinalIgnoreCase.Equals(value, fast)
+            ? true
+            : StringComparer.OrdinalIgnoreCase.Equals(value, normal)
+                ? false
+                : throw new ArgumentOutOfRangeException(nameof(value), $"Tuning step '{value}' is not valid in {mode} mode.");
+        await _protocol.SendAsync(enabled ? "FS1" : "FS0", cancellationToken).ConfigureAwait(false);
+    }
+
+    private static (string Normal, string Fast) GetTuningSteps(RadioMode mode) => mode switch
+    {
+        RadioMode.Lsb or RadioMode.Usb or RadioMode.Cw or RadioMode.CwReverse or RadioMode.Rtty or
+            RadioMode.RttyReverse or RadioMode.DataLsb or RadioMode.DataUsb or RadioMode.Psk => ("10hz", "100hz"),
+        RadioMode.Am or RadioMode.AmNarrow or RadioMode.Fm or RadioMode.FmNarrow or
+            RadioMode.DataFm or RadioMode.DataFmNarrow => ("100hz", "1khz"),
+        _ => throw new NotSupportedException($"Tuning step is not available in {mode} mode.")
+    };
 
     private async ValueTask<RadioMode> ReadActiveModeAsync(CancellationToken cancellationToken)
     {
@@ -621,7 +737,8 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         int Minimum,
         int Maximum,
         string Unit,
-        int Scale = 1);
+        int Scale = 1,
+        int ValueOffset = 0);
 
     private sealed record MeterCommand(
         string DisplayName,

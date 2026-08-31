@@ -18,7 +18,10 @@ public enum RadioControlId
     IfShiftHz,
     ManualNotchFrequencyHz,
     ContourFrequencyHz,
-    ClarifierOffsetHz
+    ClarifierOffsetHz,
+    CwPitchHz,
+    KeyerSpeedWpm,
+    AudioPeakFilterOffsetHz
 }
 
 public sealed record NumericControlDescriptor(

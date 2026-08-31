@@ -11,6 +11,13 @@ Support is not a Boolean. A feature can be unsupported by the radio, supported a
 
 Choice options may declare their applicable operating modes. For example, the FTDX10 `SH` command reuses the same code for different bandwidths in SSB and CW-family modes. Rig2Cast exposes stable bandwidth values such as `3000hz` and mode applicability, never the ambiguous CAT code.
 
+Adapters translate requested passbands using these native choice capabilities.
+An exact width is used when available; otherwise the closest writable width valid
+for the requested mode is selected (the lower width wins an exact tie). The
+`default` option represents the radio's native mode default.
+
 Capabilities normally remain stable for a connection, but firmware, options, probing, or configuration can change them. Capability, availability, state, authorization, and lease changes are versioned and emitted as events. A client that misses revisions requests a complete snapshot.
 
 Common capabilities are strongly typed. Manufacturer-specific features use versioned, namespaced extension descriptors that generic clients can safely ignore.
+
+State snapshots are cached so multiple clients can inspect them without generating CAT traffic. Clients that need current front-panel state call `RefreshStateAsync`; services may poll that operation through the shared scheduler and distribute resulting `StateChanged` events.
