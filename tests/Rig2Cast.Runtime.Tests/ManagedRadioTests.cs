@@ -7,6 +7,7 @@ using Rig2Cast.Simulator;
 using Rig2Cast.Abstractions.Controls;
 using Rig2Cast.Abstractions.Meters;
 using Rig2Cast.Abstractions.Capabilities;
+using Rig2Cast.Abstractions.Drivers;
 
 namespace Rig2Cast.Runtime.Tests;
 
@@ -185,6 +186,103 @@ public sealed class ManagedRadioTests
             TimeSpan.FromSeconds(2));
 
         Assert.Equal(14_275_000, (await session.GetSnapshotAsync()).State.FrequenciesHz[VfoId.A]);
+    }
+
+    [Fact]
+    public async Task DuplicateRecognizedObservationDoesNotPublishDiagnosticEvent()
+    {
+        await using TestContext context = await TestContext.CreateAsync();
+        await using IRadioSession session = context.Radio.OpenSession(new ClientIdentity("observer"));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
+        await using IAsyncEnumerator<RadioEvent> events = session
+            .WatchEventsAsync(timeout.Token)
+            .GetAsyncEnumerator();
+        Task<bool> nextEvent = events.MoveNextAsync().AsTask();
+
+        await context.Driver.SimulateFrequencyChangeAsync(VfoId.A, 14_200_000);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => nextEvent);
+    }
+
+    [Fact]
+    public async Task ConnectionSupervisorReplacesFaultedDriverAndRefreshesState()
+    {
+        var drivers = new List<SimulatedFtdx10Driver>();
+        async ValueTask<IRadioDriver> ConnectAsync(CancellationToken cancellationToken)
+        {
+            var driver = new SimulatedFtdx10Driver();
+            if (drivers.Count > 0)
+                await driver.SetFrequencyAsync(VfoId.A, 14_300_000, cancellationToken);
+            drivers.Add(driver);
+            return driver;
+        }
+
+        await using ManagedRadio radio = await ManagedRadio.CreateReconnectableAsync(
+            "reconnecting-radio",
+            ConnectAsync,
+            new RadioConnectionSupervisorOptions
+            {
+                InitialRetryDelay = TimeSpan.FromMilliseconds(10),
+                MaximumRetryDelay = TimeSpan.FromMilliseconds(20)
+            });
+        await using IRadioSession session = radio.OpenSession(new ClientIdentity("gui"));
+        long initialRevision = (await session.GetSnapshotAsync()).State.Revision;
+
+        drivers[0].SimulateConnectionFailure();
+
+        await WaitUntilAsync(async () =>
+        {
+            RadioState state = (await session.GetSnapshotAsync()).State;
+            return drivers.Count >= 2 &&
+                   state.Connection == ConnectionStatus.Connected &&
+                   state.FrequenciesHz[VfoId.A] == 14_300_000;
+        }, TimeSpan.FromSeconds(2));
+
+        RadioState recovered = (await session.GetSnapshotAsync()).State;
+        Assert.True(recovered.Revision > initialRevision);
+        Assert.Equal(2, drivers.Count);
+    }
+
+    [Fact]
+    public async Task ConnectionSupervisorRetriesFailedReconnectWithBackoff()
+    {
+        var first = new SimulatedFtdx10Driver();
+        var replacement = new SimulatedFtdx10Driver();
+        var allowReconnect = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        int attempts = 0;
+        async ValueTask<IRadioDriver> ConnectAsync(CancellationToken cancellationToken)
+        {
+            int attempt = Interlocked.Increment(ref attempts);
+            if (attempt == 1) return first;
+            if (attempt == 2) throw new IOException("Radio is still unavailable.");
+            await allowReconnect.Task.WaitAsync(cancellationToken);
+            return replacement;
+        }
+
+        await using ManagedRadio radio = await ManagedRadio.CreateReconnectableAsync(
+            "retrying-radio",
+            ConnectAsync,
+            new RadioConnectionSupervisorOptions
+            {
+                InitialRetryDelay = TimeSpan.FromMilliseconds(10),
+                MaximumRetryDelay = TimeSpan.FromMilliseconds(20)
+            });
+        await using IRadioSession session = radio.OpenSession(new ClientIdentity("observer"));
+
+        first.SimulateConnectionFailure();
+
+        await WaitUntilAsync(async () =>
+            attempts == 3 && (await session.GetSnapshotAsync()).State.Connection == ConnectionStatus.Reconnecting,
+            TimeSpan.FromSeconds(2));
+        RadioConnectionUnavailableException unavailable = await Assert.ThrowsAsync<RadioConnectionUnavailableException>(
+            () => session.RefreshStateAsync().AsTask());
+        Assert.Equal(ConnectionStatus.Reconnecting, unavailable.Status);
+
+        allowReconnect.SetResult();
+        await WaitUntilAsync(async () =>
+            attempts == 3 && (await session.GetSnapshotAsync()).State.Connection == ConnectionStatus.Connected,
+            TimeSpan.FromSeconds(2));
+        Assert.Equal(3, attempts);
     }
 
     [Fact]

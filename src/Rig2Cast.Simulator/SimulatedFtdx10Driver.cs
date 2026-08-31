@@ -292,6 +292,9 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
         Interlocked.Exchange(ref _nextCommandException, exception);
     }
 
+    public void SimulateConnectionFailure(Exception? exception = null) =>
+        _observations.Writer.TryComplete(exception ?? new IOException("The simulated radio disconnected."));
+
     private async ValueTask<IDisposable> BeginOperationAsync(string command, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);

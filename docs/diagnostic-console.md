@@ -26,6 +26,12 @@ The FTDX10 manual limits `AI` automatic information to its USB CAT connection. U
 `--auto-information` only with the enhanced USB CAT port. Rig2Cast confirms `AI1;`
 at startup and sends `AI0;` during clean shutdown.
 
+Physical console connections are supervised. If the radio is powered off or the CAT
+cable is removed after startup, watch output reports `Faulted` and `Reconnecting`.
+Rig2Cast retries with backoff and creates a fresh connection. After the radio returns,
+it verifies identification, restores automatic information when requested, performs a
+full state read, and publishes `Connected` without requiring the console to restart.
+
 ## Inspect the radio
 
 ```text

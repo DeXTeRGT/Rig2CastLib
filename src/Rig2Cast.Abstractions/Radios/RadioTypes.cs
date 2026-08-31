@@ -35,5 +35,6 @@ public enum ConnectionStatus
     Disconnected,
     Connecting,
     Connected,
+    Reconnecting,
     Faulted
 }

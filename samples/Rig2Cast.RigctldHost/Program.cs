@@ -39,13 +39,14 @@ IPAddress address = HasFlag("--listen-any") ? IPAddress.Any : IPAddress.Loopback
 using var stopping = new CancellationTokenSource();
 Console.CancelKeyPress += (_, eventArgs) => { eventArgs.Cancel = true; stopping.Cancel(); };
 
-IRadioDriver driver;
+ManagedRadio managedRadio;
 if (simulator)
 {
     EnsureTransportSupported(selectedModel.Model, RadioTransportKind.Simulator);
-    driver = selectedModel.Model.Id.Equals(Ftdx10CatProfile.ModelId, StringComparison.OrdinalIgnoreCase)
+    IRadioDriver driver = selectedModel.Model.Id.Equals(Ftdx10CatProfile.ModelId, StringComparison.OrdinalIgnoreCase)
         ? new SimulatedFtdx10Driver()
         : throw new NotSupportedException($"No simulator is registered for '{selectedModel.Model.Id}'.");
+    managedRadio = await ManagedRadio.CreateAsync("radio-1", driver, cancellationToken: stopping.Token);
 }
 else
 {
@@ -53,28 +54,34 @@ else
     if (selectedModel.Model.SupportedBaudRates.Count > 0 && !selectedModel.Model.SupportedBaudRates.Contains(baud))
         throw new ArgumentException($"Baud rate {baud} is not supported by {selectedModel.Model.Id}. Supported values: {string.Join(", ", selectedModel.Model.SupportedBaudRates)}.");
 
-    var transport = new SerialRadioTransport(new SerialRadioTransportOptions
-    {
-        PortName = serialPort,
-        BaudRate = baud,
-        StopBits = System.IO.Ports.StopBits.Two,
-        Handshake = System.IO.Ports.Handshake.RequestToSend
-    });
-    driver = await selectedModel.Factory.OpenAsync(
-        new RadioConnectionOptions(
-            "radio-1",
-            selectedModel.Model.Id,
-            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+    managedRadio = await ManagedRadio.CreateReconnectableAsync(
+        "radio-1",
+        async cancellationToken =>
+        {
+            var transport = new SerialRadioTransport(new SerialRadioTransportOptions
             {
-                ["serial-port"] = serialPort,
-                ["baud"] = baud.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                ["yaesu.autoInformation"] = automaticInformation.ToString()
-            }),
-        transport,
-        stopping.Token);
+                PortName = serialPort,
+                BaudRate = baud,
+                StopBits = System.IO.Ports.StopBits.Two,
+                Handshake = System.IO.Ports.Handshake.RequestToSend
+            });
+            return await selectedModel.Factory.OpenAsync(
+                new RadioConnectionOptions(
+                    "radio-1",
+                    selectedModel.Model.Id,
+                    new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["serial-port"] = serialPort,
+                        ["baud"] = baud.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        ["yaesu.autoInformation"] = automaticInformation.ToString()
+                    }),
+                transport,
+                cancellationToken);
+        },
+        cancellationToken: stopping.Token);
 }
 
-await using ManagedRadio radio = await ManagedRadio.CreateAsync("radio-1", driver, cancellationToken: stopping.Token);
+await using ManagedRadio radio = managedRadio;
 ClientRole role = allowWrite ? ClientRole.Controller : ClientRole.Observer;
 await using var server = new RigctldServer(
     new RigctldServerOptions

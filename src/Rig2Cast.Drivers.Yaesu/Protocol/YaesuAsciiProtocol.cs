@@ -204,6 +204,10 @@ public sealed class YaesuAsciiProtocol : IAsyncDisposable
         catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
         {
         }
+        catch (OperationCanceledException exception)
+        {
+            FailSession(new IOException("The CAT transport read was interrupted.", exception));
+        }
         catch (Exception exception)
         {
             FailSession(exception);

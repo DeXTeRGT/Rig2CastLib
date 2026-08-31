@@ -25,29 +25,36 @@ Console.CancelKeyPress += (_, eventArgs) =>
     stopping.Cancel();
 };
 
-IRadioDriver driver;
+ManagedRadio managedRadio;
 if (simulator)
 {
-    driver = new SimulatedFtdx10Driver();
+    var driver = new SimulatedFtdx10Driver();
     Console.WriteLine("Opening FTDX10 simulator...");
+    managedRadio = await ManagedRadio.CreateAsync("ftdx10", driver, cancellationToken: stopping.Token);
 }
 else
 {
     Console.WriteLine($"Opening FTDX10 on {port} at {baud} baud...");
-    var transport = new SerialRadioTransport(new SerialRadioTransportOptions
-    {
-        PortName = port,
-        BaudRate = baud,
-        StopBits = System.IO.Ports.StopBits.Two,
-        Handshake = System.IO.Ports.Handshake.RequestToSend
-    });
-    driver = await Ftdx10Driver.OpenAsync(
-        transport,
-        enableAutomaticInformation: automaticInformation,
+    managedRadio = await ManagedRadio.CreateReconnectableAsync(
+        "ftdx10",
+        async cancellationToken =>
+        {
+            var transport = new SerialRadioTransport(new SerialRadioTransportOptions
+            {
+                PortName = port,
+                BaudRate = baud,
+                StopBits = System.IO.Ports.StopBits.Two,
+                Handshake = System.IO.Ports.Handshake.RequestToSend
+            });
+            return await Ftdx10Driver.OpenAsync(
+                transport,
+                enableAutomaticInformation: automaticInformation,
+                cancellationToken: cancellationToken);
+        },
         cancellationToken: stopping.Token);
 }
 
-await using ManagedRadio radio = await ManagedRadio.CreateAsync("ftdx10", driver, cancellationToken: stopping.Token);
+await using ManagedRadio radio = managedRadio;
 ClientRole role = allowWrite ? ClientRole.Operator : ClientRole.Observer;
 await using IRadioSession session = radio.OpenSession(
     new ClientIdentity("console", "Rig2Cast diagnostic console"), role);
@@ -331,7 +338,7 @@ static string FormatEventPayload(object? payload)
     string frequencies = string.Join(", ", state.FrequenciesHz
         .OrderBy(pair => pair.Key)
         .Select(pair => $"{pair.Key}={pair.Value} Hz"));
-    return $"Revision={state.Revision}, {frequencies}, Active={state.ActiveVfo}, Mode={state.Mode}, " +
+    return $"Revision={state.Revision}, Connection={state.Connection}, {frequencies}, Active={state.ActiveVfo}, Mode={state.Mode}, " +
         $"Split={state.IsSplit}, TX={state.IsTransmitting}, Observed={state.ObservedAt:O}";
 }
 

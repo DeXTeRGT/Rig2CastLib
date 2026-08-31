@@ -14,13 +14,15 @@ namespace Rig2Cast.Runtime.Sessions;
 
 public sealed class ManagedRadio : IAsyncDisposable
 {
-    private readonly IRadioDriver _driver;
+    private IRadioDriver _driver;
     private readonly RadioCommandScheduler _scheduler;
     private readonly RadioLeaseManager _leases;
     private readonly RadioEventHub _events = new();
     private readonly CancellationTokenSource _stopping = new();
     private readonly Task _leaseMonitor;
-    private readonly Task _observationMonitor;
+    private readonly RadioDriverConnector? _connector;
+    private readonly RadioConnectionSupervisorOptions? _connectionOptions;
+    private readonly Task _connectionMonitor;
     private RadioState _state;
     private long _availabilityRevision = 1;
     private int _disposed;
@@ -30,17 +32,19 @@ public sealed class ManagedRadio : IAsyncDisposable
         IRadioDriver driver,
         RadioCommandScheduler scheduler,
         RadioLeaseManager leases,
-        RadioState initialState)
+        RadioState initialState,
+        RadioDriverConnector? connector = null,
+        RadioConnectionSupervisorOptions? connectionOptions = null)
     {
         RadioId = radioId;
         _driver = driver;
         _scheduler = scheduler;
         _leases = leases;
         _state = initialState;
+        _connector = connector;
+        _connectionOptions = connectionOptions;
         _leaseMonitor = MonitorLeasesAsync();
-        _observationMonitor = driver is IRadioObservationSource source
-            ? MonitorObservationsAsync(source)
-            : Task.CompletedTask;
+        _connectionMonitor = MonitorConnectionAsync();
     }
 
     public string RadioId { get; }
@@ -62,6 +66,40 @@ public sealed class ManagedRadio : IAsyncDisposable
         catch
         {
             await scheduler.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+    }
+
+    public static async ValueTask<ManagedRadio> CreateReconnectableAsync(
+        string radioId,
+        RadioDriverConnector connector,
+        RadioConnectionSupervisorOptions? connectionOptions = null,
+        TimeProvider? timeProvider = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(connector);
+        RadioConnectionSupervisorOptions options = connectionOptions ?? new RadioConnectionSupervisorOptions();
+        options.Validate();
+        IRadioDriver driver = await connector(cancellationToken).ConfigureAwait(false);
+        var scheduler = new RadioCommandScheduler();
+        try
+        {
+            RadioState state = await scheduler.ExecuteAsync(
+                driver.ReadStateAsync,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+            return new ManagedRadio(
+                radioId,
+                driver,
+                scheduler,
+                new RadioLeaseManager(timeProvider),
+                state,
+                connector,
+                options);
+        }
+        catch
+        {
+            await scheduler.DisposeAsync().ConfigureAwait(false);
+            await driver.DisposeAsync().ConfigureAwait(false);
             throw;
         }
     }
@@ -112,17 +150,10 @@ public sealed class ManagedRadio : IAsyncDisposable
 
     internal ValueTask<RadioControlValue> ReadControlAsync(
         RadioControlId control,
-        CancellationToken cancellationToken)
-    {
-        if (!_driver.Capabilities.Controls.ContainsKey(control) || _driver is not IRadioControlDriver controlDriver)
-        {
-            throw new NotSupportedException($"Radio control '{control}' is not supported by this driver.");
-        }
-
-        return _scheduler.ExecuteAsync(
-            token => controlDriver.ReadControlAsync(control, token),
+        CancellationToken cancellationToken) =>
+        _scheduler.ExecuteAsync(
+            token => GetControlDriver(control).ReadControlAsync(control, token),
             cancellationToken: cancellationToken);
-    }
 
     internal async ValueTask WriteControlAsync(
         ClientAuthorization authorization,
@@ -131,20 +162,14 @@ public sealed class ManagedRadio : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         EnsureCanControl(authorization);
-        if (!_driver.Capabilities.Controls.TryGetValue(control, out NumericControlDescriptor? descriptor) ||
-            _driver is not IRadioControlDriver controlDriver)
-        {
-            throw new NotSupportedException($"Radio control '{control}' is not supported by this driver.");
-        }
-
-        if (value < descriptor.Minimum || value > descriptor.Maximum ||
-            (value - descriptor.Minimum) % descriptor.Step != 0)
-        {
-            throw new ArgumentOutOfRangeException(nameof(value));
-        }
-
         await _scheduler.ExecuteAsync(async token =>
         {
+            IRadioControlDriver controlDriver = GetControlDriver(control);
+            NumericControlDescriptor descriptor = _driver.Capabilities.Controls[control];
+            if (value < descriptor.Minimum || value > descriptor.Maximum ||
+                (value - descriptor.Minimum) % descriptor.Step != 0)
+                throw new ArgumentOutOfRangeException(nameof(value));
+
             await controlDriver.WriteControlAsync(control, value, token).ConfigureAwait(false);
             RadioControlValue confirmed = await controlDriver.ReadControlAsync(control, token).ConfigureAwait(false);
             _events.Publish(RadioEventKind.ControlChanged, confirmed);
@@ -153,31 +178,17 @@ public sealed class ManagedRadio : IAsyncDisposable
 
     internal ValueTask<RadioMeterReading> ReadMeterAsync(
         RadioMeterId meter,
-        CancellationToken cancellationToken)
-    {
-        if (!_driver.Capabilities.Meters.ContainsKey(meter) || _driver is not IRadioMeterDriver meterDriver)
-        {
-            throw new NotSupportedException($"Radio meter '{meter}' is not supported by this driver.");
-        }
-
-        return _scheduler.ExecuteAsync(
-            token => meterDriver.ReadMeterAsync(meter, token),
+        CancellationToken cancellationToken) =>
+        _scheduler.ExecuteAsync(
+            token => GetMeterDriver(meter).ReadMeterAsync(meter, token),
             cancellationToken: cancellationToken);
-    }
 
     internal ValueTask<RadioSwitchValue> ReadSwitchAsync(
         RadioSwitchId control,
-        CancellationToken cancellationToken)
-    {
-        if (!_driver.Capabilities.Switches.ContainsKey(control) || _driver is not IRadioSwitchDriver switchDriver)
-        {
-            throw new NotSupportedException($"Radio switch '{control}' is not supported by this driver.");
-        }
-
-        return _scheduler.ExecuteAsync(
-            token => switchDriver.ReadSwitchAsync(control, token),
+        CancellationToken cancellationToken) =>
+        _scheduler.ExecuteAsync(
+            token => GetSwitchDriver(control).ReadSwitchAsync(control, token),
             cancellationToken: cancellationToken);
-    }
 
     internal async ValueTask WriteSwitchAsync(
         ClientAuthorization authorization,
@@ -186,13 +197,9 @@ public sealed class ManagedRadio : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         EnsureCanControl(authorization);
-        if (!_driver.Capabilities.Switches.ContainsKey(control) || _driver is not IRadioSwitchDriver switchDriver)
-        {
-            throw new NotSupportedException($"Radio switch '{control}' is not supported by this driver.");
-        }
-
         await _scheduler.ExecuteAsync(async token =>
         {
+            IRadioSwitchDriver switchDriver = GetSwitchDriver(control);
             await switchDriver.WriteSwitchAsync(control, enabled, token).ConfigureAwait(false);
             RadioSwitchValue confirmed = await switchDriver.ReadSwitchAsync(control, token).ConfigureAwait(false);
             _events.Publish(RadioEventKind.ControlChanged, confirmed);
@@ -201,17 +208,10 @@ public sealed class ManagedRadio : IAsyncDisposable
 
     internal ValueTask<RadioChoiceValue> ReadChoiceAsync(
         RadioChoiceId control,
-        CancellationToken cancellationToken)
-    {
-        if (!_driver.Capabilities.Choices.ContainsKey(control) || _driver is not IRadioChoiceDriver choiceDriver)
-        {
-            throw new NotSupportedException($"Radio choice '{control}' is not supported by this driver.");
-        }
-
-        return _scheduler.ExecuteAsync(
-            token => choiceDriver.ReadChoiceAsync(control, token),
+        CancellationToken cancellationToken) =>
+        _scheduler.ExecuteAsync(
+            token => GetChoiceDriver(control).ReadChoiceAsync(control, token),
             cancellationToken: cancellationToken);
-    }
 
     internal async ValueTask WriteChoiceAsync(
         ClientAuthorization authorization,
@@ -220,28 +220,45 @@ public sealed class ManagedRadio : IAsyncDisposable
         CancellationToken cancellationToken)
     {
         EnsureCanControl(authorization);
-        if (!_driver.Capabilities.Choices.TryGetValue(control, out ChoiceControlDescriptor? descriptor) ||
-            _driver is not IRadioChoiceDriver choiceDriver)
-        {
-            throw new NotSupportedException($"Radio choice '{control}' is not supported by this driver.");
-        }
-
-        if (!descriptor.Options.TryGetValue(value, out RadioChoiceOption? option) || !option.Writable)
-        {
-            throw new ArgumentOutOfRangeException(nameof(value));
-        }
-
-        if (option.ApplicableModes is not null && !option.ApplicableModes.Contains(_state.Mode))
-        {
-            throw new InvalidOperationException($"Choice '{value}' is not applicable in {_state.Mode} mode.");
-        }
-
         await _scheduler.ExecuteAsync(async token =>
         {
+            IRadioChoiceDriver choiceDriver = GetChoiceDriver(control);
+            ChoiceControlDescriptor descriptor = _driver.Capabilities.Choices[control];
+            if (!descriptor.Options.TryGetValue(value, out RadioChoiceOption? option) || !option.Writable)
+                throw new ArgumentOutOfRangeException(nameof(value));
+            if (option.ApplicableModes is not null && !option.ApplicableModes.Contains(_state.Mode))
+                throw new InvalidOperationException($"Choice '{value}' is not applicable in {_state.Mode} mode.");
+
             await choiceDriver.WriteChoiceAsync(control, value, token).ConfigureAwait(false);
             RadioChoiceValue confirmed = await choiceDriver.ReadChoiceAsync(control, token).ConfigureAwait(false);
             _events.Publish(RadioEventKind.ControlChanged, confirmed);
         }, cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
+    private IRadioControlDriver GetControlDriver(RadioControlId control) =>
+        EnsureConnectedAndGet(_driver.Capabilities.Controls.ContainsKey(control) && _driver is IRadioControlDriver driver
+            ? driver
+            : throw new NotSupportedException($"Radio control '{control}' is not supported by this driver."));
+
+    private IRadioMeterDriver GetMeterDriver(RadioMeterId meter) =>
+        EnsureConnectedAndGet(_driver.Capabilities.Meters.ContainsKey(meter) && _driver is IRadioMeterDriver driver
+            ? driver
+            : throw new NotSupportedException($"Radio meter '{meter}' is not supported by this driver."));
+
+    private IRadioSwitchDriver GetSwitchDriver(RadioSwitchId control) =>
+        EnsureConnectedAndGet(_driver.Capabilities.Switches.ContainsKey(control) && _driver is IRadioSwitchDriver driver
+            ? driver
+            : throw new NotSupportedException($"Radio switch '{control}' is not supported by this driver."));
+
+    private IRadioChoiceDriver GetChoiceDriver(RadioChoiceId control) =>
+        EnsureConnectedAndGet(_driver.Capabilities.Choices.ContainsKey(control) && _driver is IRadioChoiceDriver driver
+            ? driver
+            : throw new NotSupportedException($"Radio choice '{control}' is not supported by this driver."));
+
+    private T EnsureConnectedAndGet<T>(T value)
+    {
+        EnsureConnected();
+        return value;
     }
 
     internal ValueTask<LeaseToken> AcquireLeaseAsync(
@@ -294,6 +311,7 @@ public sealed class ManagedRadio : IAsyncDisposable
         _leases.Validate(transmitLease, authorization.Client, LeaseKinds.Transmit);
         await _scheduler.ExecuteAsync(async token =>
         {
+            EnsureConnected();
             _leases.Validate(transmitLease, authorization.Client, LeaseKinds.Transmit);
             await _driver.SetPttAsync(enabled, token).ConfigureAwait(false);
             await RefreshStateCoreAsync(token).ConfigureAwait(false);
@@ -312,6 +330,7 @@ public sealed class ManagedRadio : IAsyncDisposable
         {
             await _scheduler.ExecuteAsync(async token =>
             {
+                EnsureConnected();
                 var scope = new RadioOperationScope(_driver);
                 await operation(scope, token).ConfigureAwait(false);
                 await RefreshStateCoreAsync(token).ConfigureAwait(false);
@@ -347,6 +366,7 @@ public sealed class ManagedRadio : IAsyncDisposable
         EnsureCanControl(authorization);
         await _scheduler.ExecuteAsync(async token =>
         {
+            EnsureConnected();
             await mutation(token).ConfigureAwait(false);
             await RefreshStateCoreAsync(token).ConfigureAwait(false);
         }, cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -354,6 +374,7 @@ public sealed class ManagedRadio : IAsyncDisposable
 
     private async ValueTask<RadioState> RefreshStateCoreAsync(CancellationToken cancellationToken)
     {
+        EnsureConnected();
         RadioState reported = await _driver.ReadStateAsync(cancellationToken).ConfigureAwait(false);
         if (HasStateChanged(_state, reported))
         {
@@ -377,6 +398,12 @@ public sealed class ManagedRadio : IAsyncDisposable
         current.FrequenciesHz.Count != reported.FrequenciesHz.Count ||
         current.FrequenciesHz.Any(pair =>
             !reported.FrequenciesHz.TryGetValue(pair.Key, out long frequency) || frequency != pair.Value);
+
+    private void EnsureConnected()
+    {
+        if (_state.Connection != ConnectionStatus.Connected)
+            throw new RadioConnectionUnavailableException(_state.Connection);
+    }
 
     private async ValueTask ForcePttOffAsync(CancellationToken cancellationToken)
     {
@@ -412,36 +439,165 @@ public sealed class ManagedRadio : IAsyncDisposable
         }
     }
 
-    private async Task MonitorObservationsAsync(IRadioObservationSource source)
+    private async Task MonitorConnectionAsync()
     {
-        try
+        while (!_stopping.IsCancellationRequested)
         {
-            await foreach (RadioDriverObservation observation in
-                source.WatchObservationsAsync(_stopping.Token).ConfigureAwait(false))
+            IRadioDriver observedDriver = _driver;
+            if (observedDriver is not IRadioObservationSource source)
             {
+                try
+                {
+                    await Task.Delay(Timeout.InfiniteTimeSpan, _stopping.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
+                {
+                }
+                return;
+            }
+
+            Exception? failure = null;
+            try
+            {
+                await foreach (RadioDriverObservation observation in
+                    source.WatchObservationsAsync(_stopping.Token).ConfigureAwait(false))
+                {
+                    await _scheduler.ExecuteAsync(
+                        _ =>
+                        {
+                            ApplyObservation(observation);
+                            return ValueTask.CompletedTask;
+                        },
+                        cancellationToken: _stopping.Token).ConfigureAwait(false);
+                }
+
+                if (!_stopping.IsCancellationRequested)
+                    failure = new IOException("The radio observation stream ended unexpectedly.");
+            }
+            catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception exception)
+            {
+                failure = exception;
+            }
+
+            if (failure is null || _stopping.IsCancellationRequested)
+                return;
+
+            await MarkConnectionStateAsync(observedDriver, ConnectionStatus.Faulted, failure.Message)
+                .ConfigureAwait(false);
+            if (_connector is null || _connectionOptions is null)
+                return;
+
+            await ReconnectAsync(observedDriver).ConfigureAwait(false);
+        }
+    }
+
+    private async Task ReconnectAsync(IRadioDriver failedDriver)
+    {
+        await MarkConnectionStateAsync(failedDriver, ConnectionStatus.Reconnecting).ConfigureAwait(false);
+        TimeSpan delay = _connectionOptions!.InitialRetryDelay;
+        int attempt = 0;
+
+        while (!_stopping.IsCancellationRequested && ReferenceEquals(_driver, failedDriver))
+        {
+            attempt++;
+            IRadioDriver? replacement = null;
+            try
+            {
+                replacement = await _connector!(_stopping.Token).ConfigureAwait(false);
+                RadioState reported = await replacement.ReadStateAsync(_stopping.Token).ConfigureAwait(false);
+                IRadioDriver? replaced = null;
                 await _scheduler.ExecuteAsync(
                     _ =>
                     {
-                        ApplyObservation(observation);
+                        if (!ReferenceEquals(_driver, failedDriver))
+                            return ValueTask.CompletedTask;
+
+                        replaced = _driver;
+                        RadioCapabilities previousCapabilities = _driver.Capabilities;
+                        _driver = replacement;
+                        _state = reported with
+                        {
+                            Revision = _state.Revision + 1,
+                            Connection = ConnectionStatus.Connected,
+                            ObservedAt = DateTimeOffset.UtcNow
+                        };
+                        _events.Publish(RadioEventKind.ConnectionChanged, _state);
+                        _events.Publish(RadioEventKind.StateChanged, _state);
+                        if (HasCapabilityIdentityChanged(previousCapabilities, replacement.Capabilities))
+                            _events.Publish(RadioEventKind.CapabilitiesChanged, replacement.Capabilities);
                         return ValueTask.CompletedTask;
                     },
-                    cancellationToken: _stopping.Token).ConfigureAwait(false);
+                    RadioCommandPriority.Safety,
+                    _stopping.Token).ConfigureAwait(false);
+
+                if (replaced is null)
+                {
+                    await replacement.DisposeAsync().ConfigureAwait(false);
+                }
+                else
+                {
+                    await replaced.DisposeAsync().ConfigureAwait(false);
+                }
+                return;
             }
-        }
-        catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
-        {
-        }
-        catch (Exception exception)
-        {
-            _state = _state with
+            catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
             {
-                Revision = _state.Revision + 1,
-                Connection = ConnectionStatus.Faulted,
-                ObservedAt = DateTimeOffset.UtcNow
-            };
-            _events.Publish(RadioEventKind.ConnectionChanged, exception.Message);
+                if (replacement is not null)
+                    await replacement.DisposeAsync().ConfigureAwait(false);
+                return;
+            }
+            catch (Exception exception)
+            {
+                if (replacement is not null)
+                    await replacement.DisposeAsync().ConfigureAwait(false);
+                _events.Publish(
+                    RadioEventKind.Diagnostic,
+                    new RadioReconnectAttempt(attempt, delay, exception.Message));
+            }
+
+            try
+            {
+                await Task.Delay(delay, _stopping.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
+            {
+                return;
+            }
+
+            double nextMilliseconds = Math.Min(
+                _connectionOptions.MaximumRetryDelay.TotalMilliseconds,
+                delay.TotalMilliseconds * _connectionOptions.BackoffMultiplier);
+            delay = TimeSpan.FromMilliseconds(nextMilliseconds);
         }
     }
+
+    private ValueTask MarkConnectionStateAsync(
+        IRadioDriver expectedDriver,
+        ConnectionStatus status,
+        string? diagnostic = null) =>
+        _scheduler.ExecuteAsync(
+            _ =>
+            {
+                if (ReferenceEquals(_driver, expectedDriver) && _state.Connection != status)
+                {
+                    _state = _state with
+                    {
+                        Revision = _state.Revision + 1,
+                        Connection = status,
+                        ObservedAt = DateTimeOffset.UtcNow
+                    };
+                    _events.Publish(RadioEventKind.ConnectionChanged, _state);
+                    if (diagnostic is not null)
+                        _events.Publish(RadioEventKind.Diagnostic, diagnostic);
+                }
+                return ValueTask.CompletedTask;
+            },
+            RadioCommandPriority.Safety,
+            _stopping.Token);
 
     private void ApplyObservation(RadioDriverObservation observation)
     {
@@ -487,11 +643,20 @@ public sealed class ManagedRadio : IAsyncDisposable
             };
             _events.Publish(RadioEventKind.StateChanged, _state);
         }
-        else
+        else if (observation.Kind == RadioDriverObservationKind.Unknown)
         {
             _events.Publish(RadioEventKind.Diagnostic, observation);
         }
     }
+
+    private static bool HasCapabilityIdentityChanged(
+        RadioCapabilities previous,
+        RadioCapabilities current) =>
+        previous.Revision != current.Revision ||
+        !StringComparer.Ordinal.Equals(previous.Manufacturer, current.Manufacturer) ||
+        !StringComparer.Ordinal.Equals(previous.Model, current.Model) ||
+        !StringComparer.Ordinal.Equals(previous.DriverId, current.DriverId) ||
+        !StringComparer.Ordinal.Equals(previous.DriverVersion, current.DriverVersion);
 
     private RadioAvailability CreateAvailability(ClientAuthorization authorization) =>
         new(
@@ -540,7 +705,7 @@ public sealed class ManagedRadio : IAsyncDisposable
 
         await _stopping.CancelAsync().ConfigureAwait(false);
         await _leaseMonitor.ConfigureAwait(false);
-        await _observationMonitor.ConfigureAwait(false);
+        await _connectionMonitor.ConfigureAwait(false);
         if (_state.IsTransmitting)
         {
             await ForcePttOffAsync(CancellationToken.None).ConfigureAwait(false);

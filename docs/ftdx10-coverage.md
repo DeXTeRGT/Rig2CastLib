@@ -14,7 +14,7 @@ Status meanings:
 | Native feature | CAT | Software | Physical FTDX10 | Next action |
 |---|---|---|---|---|
 | Identification | `ID` | Complete | Read validated | None |
-| USB automatic information | `AI`, `IF`, `FA`, `FB`, `MD`, `VS`, `ST`, `TX` | Complete, opt-in with confirmation and shutdown cleanup | Enabled and front-panel announcements validated | Continue expanding typed handling for useful announced controls |
+| USB automatic information | `AI`, `IF`, `FA`, `FB`, `MD`, `VS`, `ST`, `TX` | Complete, opt-in with confirmation and shutdown cleanup | Front-panel reporting and disconnect/reconnect recovery validated | Continue expanding typed handling for useful announced controls |
 | VFO A/B frequency | `FA`, `FB` | Complete | Read validated; interactive setter testing passed | None |
 | Active VFO | `VS` | Complete | Read validated; interactive setter testing passed | None |
 | Operating mode | `MD` | Complete | Read validated; interactive setter testing passed | None |
