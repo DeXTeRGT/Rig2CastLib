@@ -7,6 +7,7 @@ public sealed record RadioModelRegistration(
     RadioDriverDescriptor Driver,
     IRadioDriverFactory Factory);
 
+
 public sealed class RadioDriverCatalog
 {
     private readonly Dictionary<string, RadioModelRegistration> _models =
