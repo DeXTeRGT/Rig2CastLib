@@ -94,6 +94,25 @@ public sealed class Ftdx10DriverTests
     }
 
     [Fact]
+    public async Task SpectrumDisplayFrequencyAnnouncementIsRecognizedButIgnored()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await using IAsyncEnumerator<RadioDriverObservation> observations = driver
+            .WatchObservationsAsync(timeout.Token)
+            .GetAsyncEnumerator();
+
+        await transport.EmitAsync("FD001014217209;", timeout.Token);
+
+        Assert.True(await observations.MoveNextAsync());
+        Assert.Equal(RadioDriverObservationKind.Ignored, observations.Current.Kind);
+        Assert.Equal("FD001014217209;", observations.Current.RawFrame);
+        Assert.Null(observations.Current.FrequencyHz);
+    }
+
+    [Fact]
     public async Task AutomaticMeterSelectionAnnouncementIsRecognizedAndIgnored()
     {
         var transport = new ScriptedRadioTransport();

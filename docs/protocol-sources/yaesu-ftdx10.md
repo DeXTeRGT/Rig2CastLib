@@ -46,3 +46,10 @@ The manual revision above documents the `PR` speech-processor state as `1` for o
 - Subsequent interactive hardware validation:
   - VFO frequency, active-VFO, mode, and split setters passed through the diagnostic console
   - On 2026-08-31, rigctld mode/passband reads and atomic setters passed; native `SH0` width selection was confirmed on the physical radio
+  - On 2026-08-31, automatic-information traffic was observed to emit undocumented
+    `FDxxx#########;` frames only when VFO tuning reached a visible spectrum edge and
+    caused the scope to scroll. The embedded frequency remained exactly 5 kHz below
+    VFO A in the captured 10 kHz-span example, proving it was not a VFO frequency.
+    Valid frames of this shape are recognized and ignored to avoid diagnostic floods;
+    malformed `FD` frames remain diagnostics. This behavior is hardware-observed and
+    is not claimed as an officially documented CAT command.

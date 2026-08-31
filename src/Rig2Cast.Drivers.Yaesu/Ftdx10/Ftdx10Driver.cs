@@ -562,6 +562,8 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             }
             if (frame.StartsWith("RM0", StringComparison.OrdinalIgnoreCase))
                 return new(RadioDriverObservationKind.Ignored, observedAt, frame);
+            if (IsSpectrumDisplayFrequencyFrame(frame))
+                return new(RadioDriverObservationKind.Ignored, observedAt, frame);
         }
         catch (YaesuProtocolException)
         {
@@ -570,6 +572,12 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
 
         return new(RadioDriverObservationKind.Unknown, observedAt, frame);
     }
+
+    private static bool IsSpectrumDisplayFrequencyFrame(string frame) =>
+        frame.Length == 15 &&
+        frame.StartsWith("FD", StringComparison.OrdinalIgnoreCase) &&
+        frame[^1] == ';' &&
+        frame.AsSpan(2, 12).IndexOfAnyExceptInRange('0', '9') < 0;
 
     private static RadioCapabilities CreateCapabilities()
     {
