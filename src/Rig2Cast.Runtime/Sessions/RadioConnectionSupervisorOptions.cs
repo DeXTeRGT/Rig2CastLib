@@ -35,3 +35,13 @@ public sealed class RadioConnectionUnavailableException(ConnectionStatus status)
 {
     public ConnectionStatus Status { get; } = status;
 }
+
+public sealed class RadioOperationInvalidatedException(long submittedGeneration, long currentGeneration)
+    : IOException(
+        $"The radio connection changed while the operation was queued " +
+        $"(submitted generation {submittedGeneration}, current generation {currentGeneration}).")
+{
+    public long SubmittedGeneration { get; } = submittedGeneration;
+
+    public long CurrentGeneration { get; } = currentGeneration;
+}

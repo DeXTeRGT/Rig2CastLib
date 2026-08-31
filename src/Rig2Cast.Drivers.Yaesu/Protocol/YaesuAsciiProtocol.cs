@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading.Channels;
+using Rig2Cast.Abstractions.Drivers;
 using Rig2Cast.Abstractions.Transports;
 
 namespace Rig2Cast.Drivers.Yaesu.Protocol;
@@ -91,7 +92,9 @@ public sealed class YaesuAsciiProtocol : IAsyncDisposable
             {
                 var timeoutException = new TimeoutException(
                     $"No matching CAT response was received within {_responseTimeout}.", exception);
-                FailSession(timeoutException);
+                var connectionException = new RadioConnectionException(
+                    "The CAT protocol session is unusable after a response timeout.", timeoutException);
+                FailSession(connectionException);
                 throw timeoutException;
             }
         }
@@ -172,7 +175,7 @@ public sealed class YaesuAsciiProtocol : IAsyncDisposable
                 int count = await _transport.ReadAsync(buffer, _stopping.Token).ConfigureAwait(false);
                 if (count == 0)
                 {
-                    throw new YaesuProtocolException("The radio closed the connection.");
+                    throw new RadioConnectionException("The radio closed the connection.");
                 }
 
                 for (int index = 0; index < count; index++)
@@ -206,18 +209,33 @@ public sealed class YaesuAsciiProtocol : IAsyncDisposable
         }
         catch (OperationCanceledException exception)
         {
-            FailSession(new IOException("The CAT transport read was interrupted.", exception));
+            FailSession(new RadioConnectionException("The CAT transport read was interrupted.", exception));
         }
         catch (Exception exception)
         {
-            FailSession(exception);
+            FailSession(exception is RadioConnectionException
+                ? exception
+                : new RadioConnectionException("The CAT transport read failed.", exception));
         }
     }
 
     private async ValueTask WriteFrameAsync(string command, CancellationToken cancellationToken)
     {
         string framed = Frame(command);
-        await _transport.WriteAsync(Ascii.GetBytes(framed), cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await _transport.WriteAsync(Ascii.GetBytes(framed), cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            var connectionException = new RadioConnectionException("The CAT transport write failed.", exception);
+            FailSession(connectionException);
+            throw connectionException;
+        }
     }
 
     private void RouteFrame(string frame)
@@ -271,7 +289,7 @@ public sealed class YaesuAsciiProtocol : IAsyncDisposable
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
         if (Volatile.Read(ref _terminalFailure) is Exception failure)
         {
-            throw new InvalidOperationException(
+            throw new RadioConnectionException(
                 "The Yaesu protocol session is faulted and must be reconnected before issuing more commands.",
                 failure);
         }

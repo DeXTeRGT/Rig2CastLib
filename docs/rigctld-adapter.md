@@ -10,6 +10,11 @@
 - Every TCP connection has a distinct Rig2Cast identity and session.
 - Each client's commands run in order; the existing radio scheduler serializes
   commands from all clients onto the one CAT connection.
+- State getters accept a snapshot up to 250 ms old. When it expires, simultaneous
+  clients share one full-state CAT refresh instead of multiplying radio traffic.
+- Commands invalidated by a disconnect are returned as a rigctld I/O error and are
+  never replayed automatically after reconnection. Clients may retry a read after the
+  radio reports connected; setters require a new explicit client command.
 - The default limit is 32 clients and commands are limited to 4096 characters.
 - Disconnecting disposes the session and releases its resources.
 - PTT setters remain unavailable even when ordinary writes are enabled.

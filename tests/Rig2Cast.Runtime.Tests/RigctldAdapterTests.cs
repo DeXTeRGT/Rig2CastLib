@@ -58,6 +58,30 @@ public sealed class RigctldAdapterTests
     }
 
     [Fact]
+    public async Task ConcurrentTcpReadsShareOneExpiredStateRefresh()
+    {
+        var driver = new SimulatedFtdx10Driver(new SimulatedRadioOptions
+        {
+            CommandDelay = TimeSpan.FromMilliseconds(75)
+        });
+        await using ManagedRadio radio = await ManagedRadio.CreateAsync("ftdx10", driver);
+        int initialReads = driver.CommandLog.Count(command => command == "ReadState");
+        await using var server = new RigctldServer(
+            new RigctldServerOptions { Address = IPAddress.Loopback, Port = 0, MaximumClients = 2 },
+            id => radio.OpenSession(new ClientIdentity(id), ClientRole.Observer));
+        server.Start();
+        int port = Assert.IsType<IPEndPoint>(server.LocalEndpoint).Port;
+
+        await Task.Delay(300);
+        await Task.WhenAll(
+            SendCommandAsync(port, "f\n"),
+            SendCommandAsync(port, "v\n"));
+
+        Assert.Equal(initialReads + 1, driver.CommandLog.Count(command => command == "ReadState"));
+        Assert.Equal(1, driver.MaximumConcurrentOperations);
+    }
+
+    [Fact]
     public async Task ReadOnlyServerRejectsSettersAndPttSetterIsAlwaysUnavailable()
     {
         await using ManagedRadio radio = await ManagedRadio.CreateAsync("ftdx10", new SimulatedFtdx10Driver());

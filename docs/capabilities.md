@@ -20,4 +20,4 @@ Capabilities normally remain stable for a connection, but firmware, options, pro
 
 Common capabilities are strongly typed. Manufacturer-specific features use versioned, namespaced extension descriptors that generic clients can safely ignore.
 
-State snapshots are cached so multiple clients can inspect them without generating CAT traffic. Clients that need current front-panel state call `RefreshStateAsync`; services may poll that operation through the shared scheduler and distribute resulting `StateChanged` events.
+State snapshots are cached so multiple clients can inspect them without generating CAT traffic. Clients can request cached, bounded-age, or forced-refresh consistency. Concurrent bounded-age reads share one scheduled hardware refresh when the cache is stale; `RefreshStateAsync` remains the explicit force-refresh operation. Recognized unsolicited messages update both state and the freshness of the specific components they describe.

@@ -7,6 +7,9 @@ namespace Rig2Cast.Adapters.Rigctld;
 
 public sealed class RigctldSessionHandler(IRadioSession session, bool writesEnabled = false)
 {
+    private static readonly RadioReadRequest NetworkRead =
+        RadioReadRequest.FreshWithin(TimeSpan.FromMilliseconds(250));
+
     public async ValueTask<RigctldResult> ExecuteAsync(RigctldRequest request, CancellationToken cancellationToken = default)
     {
         try
@@ -40,7 +43,7 @@ public sealed class RigctldSessionHandler(IRadioSession session, bool writesEnab
 
     private async ValueTask<RigctldResult> GetFrequencyAsync(CancellationToken token)
     {
-        RadioState state = await session.RefreshStateAsync(token);
+        RadioState state = await session.ReadStateAsync(NetworkRead, token);
         long frequency = state.FrequenciesHz[state.ActiveVfo];
         return Success("get_freq", new RigctldValue("Frequency", frequency.ToString(CultureInfo.InvariantCulture)));
     }
@@ -49,14 +52,14 @@ public sealed class RigctldSessionHandler(IRadioSession session, bool writesEnab
     {
         EnsureWrite(args, 1);
         long frequency = long.Parse(args[0], CultureInfo.InvariantCulture);
-        RadioState state = await session.RefreshStateAsync(token);
+        RadioState state = await session.ReadStateAsync(NetworkRead, token);
         await session.SetFrequencyAsync(state.ActiveVfo, frequency, token);
         return Success("set_freq");
     }
 
     private async ValueTask<RigctldResult> GetVfoAsync(CancellationToken token)
     {
-        RadioState state = await session.RefreshStateAsync(token);
+        RadioState state = await session.ReadStateAsync(NetworkRead, token);
         return Success("get_vfo", new RigctldValue("VFO", FormatVfo(state.ActiveVfo)));
     }
 
@@ -69,7 +72,7 @@ public sealed class RigctldSessionHandler(IRadioSession session, bool writesEnab
 
     private async ValueTask<RigctldResult> GetModeAsync(CancellationToken token)
     {
-        RadioState state = await session.RefreshStateAsync(token);
+        RadioState state = await session.ReadStateAsync(NetworkRead, token);
         int passband = 0;
         try
         {
@@ -139,7 +142,7 @@ public sealed class RigctldSessionHandler(IRadioSession session, bool writesEnab
 
     private async ValueTask<RigctldResult> GetSplitAsync(CancellationToken token)
     {
-        RadioState state = await session.RefreshStateAsync(token);
+        RadioState state = await session.ReadStateAsync(NetworkRead, token);
         VfoId tx = state.ActiveVfo == VfoId.B ? VfoId.A : VfoId.B;
         return new("get_split_vfo", [new("Split", state.IsSplit ? "1" : "0"), new("TX VFO", FormatVfo(tx))]);
     }
@@ -155,7 +158,7 @@ public sealed class RigctldSessionHandler(IRadioSession session, bool writesEnab
 
     private async ValueTask<RigctldResult> GetPttAsync(CancellationToken token)
     {
-        RadioState state = await session.RefreshStateAsync(token);
+        RadioState state = await session.ReadStateAsync(NetworkRead, token);
         return Success("get_ptt", new RigctldValue("PTT", state.IsTransmitting ? "1" : "0"));
     }
 

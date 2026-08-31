@@ -17,3 +17,9 @@ public sealed record RadioEvent(
     RadioEventKind Kind,
     DateTimeOffset OccurredAt,
     object? Payload = null);
+
+public sealed record RadioEventDeliveryGap(
+    long DroppedCount,
+    long FirstDroppedSequence,
+    long LastDroppedSequence,
+    int SubscriberCapacity);

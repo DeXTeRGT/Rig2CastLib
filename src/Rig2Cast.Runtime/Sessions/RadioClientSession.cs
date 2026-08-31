@@ -28,6 +28,14 @@ internal sealed class RadioClientSession(
         return radio.RefreshStateAsync(cancellationToken);
     }
 
+    public ValueTask<RadioState> ReadStateAsync(
+        RadioReadRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        return radio.ReadStateAsync(request, cancellationToken);
+    }
+
     public IAsyncEnumerable<RadioEvent> WatchEventsAsync(CancellationToken cancellationToken = default)
     {
         EnsureActive();

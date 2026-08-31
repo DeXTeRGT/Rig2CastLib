@@ -14,6 +14,75 @@ namespace Rig2Cast.Runtime.Tests;
 public sealed class ManagedRadioTests
 {
     [Fact]
+    public async Task CachedAndFreshStateReadsAvoidUnnecessaryDriverReads()
+    {
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        await using TestContext context = await TestContext.CreateAsync(timeProvider: clock);
+        await using IRadioSession session = context.Radio.OpenSession(new ClientIdentity("reader"));
+        int initialReads = context.Driver.CommandLog.Count(command => command == "ReadState");
+
+        _ = await session.ReadStateAsync(RadioReadRequest.Cached);
+        _ = await session.ReadStateAsync(RadioReadRequest.FreshWithin(TimeSpan.FromSeconds(1)));
+
+        Assert.Equal(initialReads, context.Driver.CommandLog.Count(command => command == "ReadState"));
+    }
+
+    [Fact]
+    public async Task ExpiredFreshStateReadQueriesDriver()
+    {
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        await using TestContext context = await TestContext.CreateAsync(timeProvider: clock);
+        await using IRadioSession session = context.Radio.OpenSession(new ClientIdentity("reader"));
+        int initialReads = context.Driver.CommandLog.Count(command => command == "ReadState");
+        clock.Advance(TimeSpan.FromSeconds(2));
+
+        _ = await session.ReadStateAsync(RadioReadRequest.FreshWithin(TimeSpan.FromSeconds(1)));
+
+        Assert.Equal(initialReads + 1, context.Driver.CommandLog.Count(command => command == "ReadState"));
+    }
+
+    [Fact]
+    public async Task ConcurrentFreshStateReadsAreCoalesced()
+    {
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        await using TestContext context = await TestContext.CreateAsync(
+            TimeSpan.FromMilliseconds(50), clock);
+        await using IRadioSession first = context.Radio.OpenSession(new ClientIdentity("first"));
+        await using IRadioSession second = context.Radio.OpenSession(new ClientIdentity("second"));
+        int initialReads = context.Driver.CommandLog.Count(command => command == "ReadState");
+        clock.Advance(TimeSpan.FromSeconds(2));
+        RadioReadRequest request = RadioReadRequest.FreshWithin(TimeSpan.FromSeconds(1));
+
+        Task<RadioState>[] reads = Enumerable.Range(0, 10)
+            .Select(index => (index % 2 == 0 ? first : second).ReadStateAsync(request).AsTask())
+            .ToArray();
+        RadioState[] states = await Task.WhenAll(reads);
+
+        Assert.Equal(initialReads + 1, context.Driver.CommandLog.Count(command => command == "ReadState"));
+        Assert.All(states, state => Assert.Same(states[0], state));
+    }
+
+    [Fact]
+    public async Task CancellingOneFreshWaiterDoesNotCancelSharedRefresh()
+    {
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        await using TestContext context = await TestContext.CreateAsync(
+            TimeSpan.FromMilliseconds(100), clock);
+        await using IRadioSession first = context.Radio.OpenSession(new ClientIdentity("first"));
+        await using IRadioSession second = context.Radio.OpenSession(new ClientIdentity("second"));
+        clock.Advance(TimeSpan.FromSeconds(2));
+        RadioReadRequest request = RadioReadRequest.FreshWithin(TimeSpan.FromSeconds(1));
+        using var firstStopping = new CancellationTokenSource();
+
+        Task<RadioState> cancelled = first.ReadStateAsync(request, firstStopping.Token).AsTask();
+        Task<RadioState> surviving = second.ReadStateAsync(request).AsTask();
+        firstStopping.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cancelled);
+        Assert.Equal(ConnectionStatus.Connected, (await surviving).Connection);
+    }
+
+    [Fact]
     public async Task SnapshotReportsVfoBCapability()
     {
         await using TestContext context = await TestContext.CreateAsync();
@@ -158,6 +227,37 @@ public sealed class ManagedRadioTests
     }
 
     [Fact]
+    public async Task SlowEventSubscriberIsBoundedAndReceivesDeliveryGapDiagnostic()
+    {
+        await using TestContext context = await TestContext.CreateAsync();
+        await using IRadioSession session = context.Radio.OpenSession(
+            new ClientIdentity("slow-subscriber"), ClientRole.Operator);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await using IAsyncEnumerator<RadioEvent> events = session
+            .WatchEventsAsync(timeout.Token)
+            .GetAsyncEnumerator(timeout.Token);
+
+        Task<bool> subscription = events.MoveNextAsync().AsTask();
+        await session.SetFrequencyAsync(VfoId.A, 14_200_001);
+        Assert.True(await subscription);
+
+        for (int index = 0; index < 300; index++)
+            await session.SetFrequencyAsync(VfoId.A, 14_201_000 + index);
+
+        Assert.True(await events.MoveNextAsync());
+        RadioEvent diagnostic = events.Current;
+        RadioEventDeliveryGap gap = Assert.IsType<RadioEventDeliveryGap>(diagnostic.Payload);
+        Assert.Equal(RadioEventKind.Diagnostic, diagnostic.Kind);
+        Assert.Equal(44, gap.DroppedCount);
+        Assert.Equal(256, gap.SubscriberCapacity);
+        Assert.True(gap.FirstDroppedSequence <= gap.LastDroppedSequence);
+
+        Assert.True(await events.MoveNextAsync());
+        Assert.Equal(RadioEventKind.StateChanged, events.Current.Kind);
+        Assert.True(events.Current.Sequence > gap.LastDroppedSequence);
+    }
+
+    [Fact]
     public async Task LiveRefreshObservesExternalRadioChangesAndUpdatesCache()
     {
         await using TestContext context = await TestContext.CreateAsync();
@@ -241,6 +341,116 @@ public sealed class ManagedRadioTests
         RadioState recovered = (await session.GetSnapshotAsync()).State;
         Assert.True(recovered.Revision > initialRevision);
         Assert.Equal(2, drivers.Count);
+    }
+
+    [Fact]
+    public async Task QueuedSetterIsInvalidatedInsteadOfReplayedAfterReconnect()
+    {
+        var first = new SimulatedFtdx10Driver(new SimulatedRadioOptions
+        {
+            CommandDelay = TimeSpan.FromMilliseconds(250)
+        });
+        var replacement = new SimulatedFtdx10Driver();
+        int connections = 0;
+        ValueTask<IRadioDriver> ConnectAsync(CancellationToken cancellationToken) =>
+            ValueTask.FromResult<IRadioDriver>(
+                Interlocked.Increment(ref connections) == 1 ? first : replacement);
+
+        await using ManagedRadio radio = await ManagedRadio.CreateReconnectableAsync(
+            "generation-radio",
+            ConnectAsync,
+            new RadioConnectionSupervisorOptions
+            {
+                InitialRetryDelay = TimeSpan.FromMilliseconds(10),
+                MaximumRetryDelay = TimeSpan.FromMilliseconds(20)
+            });
+        await using IRadioSession session = radio.OpenSession(
+            new ClientIdentity("controller"), ClientRole.Controller);
+
+        Task<RadioMeterReading> blockingRead = session
+            .ReadMeterAsync(RadioMeterId.SignalStrength)
+            .AsTask();
+        await WaitUntilAsync(
+            () => Task.FromResult(first.CommandLog.Contains("ReadMeter:SignalStrength")),
+            TimeSpan.FromSeconds(1));
+        Task setter = session.SetFrequencyAsync(VfoId.A, 14_350_000).AsTask();
+        first.SimulateConnectionFailure();
+
+        _ = await blockingRead;
+        RadioOperationInvalidatedException invalidated =
+            await Assert.ThrowsAsync<RadioOperationInvalidatedException>(() => setter);
+        await WaitUntilAsync(async () =>
+            (await session.GetSnapshotAsync()).State.Connection == ConnectionStatus.Connected &&
+            connections == 2,
+            TimeSpan.FromSeconds(2));
+
+        Assert.True(invalidated.CurrentGeneration > invalidated.SubmittedGeneration);
+        Assert.DoesNotContain("SetFrequency:A:14350000", first.CommandLog);
+        Assert.DoesNotContain("SetFrequency:A:14350000", replacement.CommandLog);
+        Assert.Equal(14_200_000, (await session.GetSnapshotAsync()).State.FrequenciesHz[VfoId.A]);
+    }
+
+    [Fact]
+    public async Task CommandPathConnectionFailureTriggersSupervisedReconnect()
+    {
+        var first = new SimulatedFtdx10Driver();
+        var replacement = new SimulatedFtdx10Driver();
+        int connections = 0;
+        ValueTask<IRadioDriver> ConnectAsync(CancellationToken cancellationToken) =>
+            ValueTask.FromResult<IRadioDriver>(
+                Interlocked.Increment(ref connections) == 1 ? first : replacement);
+
+        await using ManagedRadio radio = await ManagedRadio.CreateReconnectableAsync(
+            "command-failure-radio",
+            ConnectAsync,
+            new RadioConnectionSupervisorOptions
+            {
+                InitialRetryDelay = TimeSpan.FromMilliseconds(10),
+                MaximumRetryDelay = TimeSpan.FromMilliseconds(20)
+            });
+        await using IRadioSession session = radio.OpenSession(new ClientIdentity("reader"));
+        first.FailNextCommand(new RadioConnectionException("Simulated transport failure."));
+
+        await Assert.ThrowsAsync<RadioConnectionException>(
+            () => session.ReadMeterAsync(RadioMeterId.SignalStrength).AsTask());
+        await WaitUntilAsync(async () =>
+            connections == 2 &&
+            (await session.GetSnapshotAsync()).State.Connection == ConnectionStatus.Connected,
+            TimeSpan.FromSeconds(2));
+
+        Assert.Equal(
+            RadioMeterId.SignalStrength,
+            (await session.ReadMeterAsync(RadioMeterId.SignalStrength)).Id);
+    }
+
+    [Fact]
+    public async Task OrdinaryCommandErrorDoesNotTriggerReconnect()
+    {
+        var driver = new SimulatedFtdx10Driver();
+        int connections = 0;
+        ValueTask<IRadioDriver> ConnectAsync(CancellationToken cancellationToken)
+        {
+            Interlocked.Increment(ref connections);
+            return ValueTask.FromResult<IRadioDriver>(driver);
+        }
+
+        await using ManagedRadio radio = await ManagedRadio.CreateReconnectableAsync(
+            "command-error-radio",
+            ConnectAsync,
+            new RadioConnectionSupervisorOptions
+            {
+                InitialRetryDelay = TimeSpan.FromMilliseconds(10),
+                MaximumRetryDelay = TimeSpan.FromMilliseconds(20)
+            });
+        await using IRadioSession session = radio.OpenSession(new ClientIdentity("reader"));
+        driver.FailNextCommand(new InvalidOperationException("Radio rejected the command."));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => session.ReadMeterAsync(RadioMeterId.SignalStrength).AsTask());
+        await Task.Delay(100);
+
+        Assert.Equal(1, connections);
+        Assert.Equal(ConnectionStatus.Connected, (await session.GetSnapshotAsync()).State.Connection);
     }
 
     [Fact]
@@ -374,16 +584,27 @@ public sealed class ManagedRadioTests
         public ManagedRadio Radio { get; } = radio;
         public SimulatedFtdx10Driver Driver { get; } = driver;
 
-        public static async ValueTask<TestContext> CreateAsync(TimeSpan? commandDelay = null)
+        public static async ValueTask<TestContext> CreateAsync(
+            TimeSpan? commandDelay = null,
+            TimeProvider? timeProvider = null)
         {
             var driver = new SimulatedFtdx10Driver(new SimulatedRadioOptions
             {
                 CommandDelay = commandDelay ?? TimeSpan.Zero
             });
-            ManagedRadio radio = await ManagedRadio.CreateAsync("sim-ftdx10", driver);
+            ManagedRadio radio = await ManagedRadio.CreateAsync("sim-ftdx10", driver, timeProvider);
             return new TestContext(radio, driver);
         }
 
         public ValueTask DisposeAsync() => Radio.DisposeAsync();
+    }
+
+    private sealed class ManualTimeProvider(DateTimeOffset initial) : TimeProvider
+    {
+        private DateTimeOffset _utcNow = initial;
+
+        public override DateTimeOffset GetUtcNow() => _utcNow;
+
+        public void Advance(TimeSpan duration) => _utcNow += duration;
     }
 }

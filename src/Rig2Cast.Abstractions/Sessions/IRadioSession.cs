@@ -14,6 +14,10 @@ public interface IRadioSession : IAsyncDisposable
 
     ValueTask<RadioState> RefreshStateAsync(CancellationToken cancellationToken = default);
 
+    ValueTask<RadioState> ReadStateAsync(
+        RadioReadRequest request,
+        CancellationToken cancellationToken = default);
+
     IAsyncEnumerable<RadioEvent> WatchEventsAsync(CancellationToken cancellationToken = default);
 
     ValueTask SetFrequencyAsync(VfoId target, long frequencyHz, CancellationToken cancellationToken = default);

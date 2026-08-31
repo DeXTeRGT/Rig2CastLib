@@ -1,5 +1,6 @@
 using System.Text;
 using System.Threading.Channels;
+using Rig2Cast.Abstractions.Drivers;
 using Rig2Cast.Abstractions.Transports;
 using Rig2Cast.Drivers.Yaesu.Protocol;
 
@@ -87,7 +88,7 @@ public sealed class YaesuAsciiProtocolTests
         await using var protocol = new YaesuAsciiProtocol(transport, TimeSpan.FromMilliseconds(50));
 
         await Assert.ThrowsAsync<TimeoutException>(() => protocol.QueryAsync("FA", "FA").AsTask());
-        await Assert.ThrowsAsync<InvalidOperationException>(() => protocol.SendAsync("VS0").AsTask());
+        await Assert.ThrowsAsync<RadioConnectionException>(() => protocol.SendAsync("VS0").AsTask());
     }
 }
 
