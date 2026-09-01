@@ -263,6 +263,10 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         EnsureActive();
         await foreach (string frame in _protocol.WatchUnsolicitedFramesAsync(cancellationToken).ConfigureAwait(false))
         {
+            int dropped = _protocol.ConsumeDroppedUnsolicitedFrameCount();
+            if (dropped > 0)
+                yield return new(RadioDriverObservationKind.DeliveryGap, DateTimeOffset.UtcNow, string.Empty,
+                    DroppedFrames: dropped);
             yield return ParseObservation(frame);
         }
     }

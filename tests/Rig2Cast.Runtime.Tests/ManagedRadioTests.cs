@@ -508,6 +508,48 @@ public sealed class ManagedRadioTests
     }
 
     [Fact]
+    public async Task ObservationGapPublishesDiagnosticAndForcesFullRefresh()
+    {
+        await using TestContext context = await TestContext.CreateAsync();
+        await using IRadioSession session = context.Radio.OpenSession(
+            new ClientIdentity("gap-observer"), ClientRole.Observer);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        Task<RadioEvent> nextEvent = ReadFirstEventAsync(session, timeout.Token);
+        int initialReads = context.Driver.ReadStateCount;
+
+        await context.Driver.SimulateObservationGapAsync(12, timeout.Token);
+
+        RadioEvent diagnostic = await nextEvent;
+        RadioDriverObservation gap = Assert.IsType<RadioDriverObservation>(diagnostic.Payload);
+        Assert.Equal(RadioEventKind.Diagnostic, diagnostic.Kind);
+        Assert.Equal(RadioDriverObservationKind.DeliveryGap, gap.Kind);
+        Assert.Equal(12, gap.DroppedFrames);
+        await WaitUntilAsync(
+            () => Task.FromResult(context.Driver.ReadStateCount > initialReads),
+            TimeSpan.FromSeconds(1));
+    }
+
+    [Fact]
+    public async Task ObservationOlderThanFullRefreshCannotOverwriteFrequency()
+    {
+        await using TestContext context = await TestContext.CreateAsync();
+        await using IRadioSession session = context.Radio.OpenSession(
+            new ClientIdentity("ordering-observer"), ClientRole.Observer);
+        await context.Driver.SetFrequencyAsync(VfoId.A, 14_300_000);
+        RadioState refreshed = await session.RefreshStateAsync();
+
+        await context.Driver.EmitFrequencyObservationAsync(
+            VfoId.A,
+            7_100_000,
+            refreshed.ObservedAt - TimeSpan.FromSeconds(1));
+        await Task.Delay(100);
+
+        RadioState current = (await session.GetSnapshotAsync()).State;
+        Assert.Equal(14_300_000, current.FrequenciesHz[VfoId.A]);
+        Assert.True(current.ObservedAt >= refreshed.ObservedAt);
+    }
+
+    [Fact]
     public async Task TypedControlsAreAuthorizedSerializedAndConfirmed()
     {
         await using TestContext context = await TestContext.CreateAsync(TimeSpan.FromMilliseconds(10));

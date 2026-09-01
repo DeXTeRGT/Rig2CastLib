@@ -216,7 +216,7 @@ dotnet build Rig2Cast.sln
 dotnet test tests\Rig2Cast.Runtime.Tests\Rig2Cast.Runtime.Tests.csproj
 ```
 
-The current suite contains **107 automated tests** covering CAT framing and
+The current suite contains **110 automated tests** covering CAT framing and
 parsing, runtime serialization, concurrent clients, roles and leases, capability
 and model discovery, TCP behavior, disconnect/reconnect behavior, unsolicited
 reporting, shutdown cleanup, FTDX10 controls, and the initial Elecraft K3-family

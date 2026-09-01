@@ -16,16 +16,11 @@ public sealed class YaesuAsciiProtocol : IAsyncDisposable
     private readonly CancellationTokenSource _stopping = new();
     private readonly SemaphoreSlim _transactionGate = new(1, 1);
     private readonly object _pendingGate = new();
-    private readonly Channel<string> _unsolicited = Channel.CreateBounded<string>(
-        new BoundedChannelOptions(256)
-        {
-            SingleReader = false,
-            SingleWriter = true,
-            FullMode = BoundedChannelFullMode.DropOldest
-        });
+    private readonly Channel<string> _unsolicited;
     private readonly Task _reader;
     private PendingQuery? _pending;
     private Exception? _terminalFailure;
+    private int _droppedUnsolicited;
     private int _disposed;
 
     public YaesuAsciiProtocol(IRadioTransport transport, TimeSpan? responseTimeout = null)
@@ -37,6 +32,14 @@ public sealed class YaesuAsciiProtocol : IAsyncDisposable
         }
 
         _transport = transport;
+        _unsolicited = Channel.CreateBounded<string>(
+            new BoundedChannelOptions(256)
+            {
+                SingleReader = false,
+                SingleWriter = true,
+                FullMode = BoundedChannelFullMode.DropOldest
+            },
+            _ => Interlocked.Increment(ref _droppedUnsolicited));
         _responseTimeout = responseTimeout ?? TimeSpan.FromSeconds(2);
         if (_responseTimeout <= TimeSpan.Zero)
         {
@@ -135,6 +138,11 @@ public sealed class YaesuAsciiProtocol : IAsyncDisposable
             yield return frame;
         }
     }
+
+    public int ConsumeDroppedUnsolicitedFrameCount() =>
+        Interlocked.Exchange(ref _droppedUnsolicited, 0);
+
+    public int DroppedUnsolicitedFrameCount => Volatile.Read(ref _droppedUnsolicited);
 
     public static string Frame(string command)
     {

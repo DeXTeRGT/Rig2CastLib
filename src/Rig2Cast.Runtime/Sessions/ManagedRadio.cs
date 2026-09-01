@@ -22,6 +22,7 @@ public sealed class ManagedRadio : IAsyncDisposable
     private readonly TimeProvider _timeProvider;
     private readonly object _refreshGate = new();
     private readonly Dictionary<VfoId, DateTimeOffset> _frequencyFreshAt = [];
+    private readonly Dictionary<VfoId, DateTimeOffset> _frequencyAppliedAt = [];
     private readonly CancellationTokenSource _stopping = new();
     private readonly Task _leaseMonitor;
     private readonly RadioDriverConnector? _connector;
@@ -37,6 +38,11 @@ public sealed class ManagedRadio : IAsyncDisposable
     private DateTimeOffset _modeFreshAt;
     private DateTimeOffset _splitFreshAt;
     private DateTimeOffset _transmitFreshAt;
+    private DateTimeOffset _activeVfoAppliedAt;
+    private DateTimeOffset _transmitVfoAppliedAt;
+    private DateTimeOffset _modeAppliedAt;
+    private DateTimeOffset _splitAppliedAt;
+    private DateTimeOffset _transmitAppliedAt;
     private bool _stateCacheValid;
     private RadioState _state;
     private long _connectionGeneration = 1;
@@ -753,6 +759,8 @@ public sealed class ManagedRadio : IAsyncDisposable
                             return ValueTask.CompletedTask;
                         },
                         cancellationToken: _stopping.Token).ConfigureAwait(false);
+                    if (observation.Kind == RadioDriverObservationKind.DeliveryGap)
+                        await RefreshStateAsync(_stopping.Token).ConfigureAwait(false);
                 }
 
                 if (!_stopping.IsCancellationRequested)
@@ -928,6 +936,13 @@ public sealed class ManagedRadio : IAsyncDisposable
 
     private void ApplyObservation(RadioDriverObservation observation)
     {
+        if (observation.Kind == RadioDriverObservationKind.DeliveryGap)
+        {
+            InvalidateStateFreshness();
+            _events.Publish(RadioEventKind.Diagnostic, observation);
+            return;
+        }
+
         if (observation.Kind == RadioDriverObservationKind.Ignored)
         {
             return;
@@ -942,6 +957,8 @@ public sealed class ManagedRadio : IAsyncDisposable
             return;
         }
 
+        if (!TryMarkObservationApplied(observation))
+            return;
         MarkObservationFresh(observation, _timeProvider.GetUtcNow());
 
         RadioState updated = observation.Kind switch
@@ -1030,13 +1047,83 @@ public sealed class ManagedRadio : IAsyncDisposable
         lock (_refreshGate)
         {
             foreach (VfoId vfo in _state.FrequenciesHz.Keys)
+            {
                 _frequencyFreshAt[vfo] = observedAt;
+                _frequencyAppliedAt[vfo] = observedAt;
+            }
             _activeVfoFreshAt = observedAt;
             _transmitVfoFreshAt = observedAt;
             _modeFreshAt = observedAt;
             _splitFreshAt = observedAt;
             _transmitFreshAt = observedAt;
+            _activeVfoAppliedAt = observedAt;
+            _transmitVfoAppliedAt = observedAt;
+            _modeAppliedAt = observedAt;
+            _splitAppliedAt = observedAt;
+            _transmitAppliedAt = observedAt;
             _stateCacheValid = true;
+        }
+    }
+
+    private bool TryMarkObservationApplied(RadioDriverObservation observation)
+    {
+        DateTimeOffset at = observation.ObservedAt;
+        lock (_refreshGate)
+        {
+            bool stale = observation.Kind switch
+            {
+                RadioDriverObservationKind.FrequencyChanged when observation.Vfo is VfoId vfo =>
+                    _frequencyAppliedAt.GetValueOrDefault(vfo) > at,
+                RadioDriverObservationKind.ActiveVfoChanged =>
+                    _activeVfoAppliedAt > at || observation.TransmitVfo is not null && _transmitVfoAppliedAt > at,
+                RadioDriverObservationKind.ModeChanged => _modeAppliedAt > at,
+                RadioDriverObservationKind.SplitChanged =>
+                    _splitAppliedAt > at || observation.TransmitVfo is not null && _transmitVfoAppliedAt > at,
+                RadioDriverObservationKind.TransmitVfoChanged => _transmitVfoAppliedAt > at,
+                RadioDriverObservationKind.TransmitChanged => _transmitAppliedAt > at,
+                RadioDriverObservationKind.StateInformation when observation.Vfo is VfoId vfo =>
+                    _frequencyAppliedAt.GetValueOrDefault(vfo) > at || _modeAppliedAt > at ||
+                    observation.ActiveVfo is not null && _activeVfoAppliedAt > at ||
+                    observation.TransmitVfo is not null && _transmitVfoAppliedAt > at ||
+                    observation.IsSplit is not null && _splitAppliedAt > at ||
+                    observation.IsTransmitting is not null && _transmitAppliedAt > at,
+                _ => false
+            };
+            if (stale)
+                return false;
+
+            switch (observation.Kind)
+            {
+                case RadioDriverObservationKind.FrequencyChanged when observation.Vfo is VfoId vfo:
+                    _frequencyAppliedAt[vfo] = at;
+                    break;
+                case RadioDriverObservationKind.ActiveVfoChanged:
+                    _activeVfoAppliedAt = at;
+                    if (observation.TransmitVfo is not null) _transmitVfoAppliedAt = at;
+                    break;
+                case RadioDriverObservationKind.ModeChanged:
+                    _modeAppliedAt = at;
+                    break;
+                case RadioDriverObservationKind.SplitChanged:
+                    _splitAppliedAt = at;
+                    if (observation.TransmitVfo is not null) _transmitVfoAppliedAt = at;
+                    break;
+                case RadioDriverObservationKind.TransmitVfoChanged:
+                    _transmitVfoAppliedAt = at;
+                    break;
+                case RadioDriverObservationKind.TransmitChanged:
+                    _transmitAppliedAt = at;
+                    break;
+                case RadioDriverObservationKind.StateInformation when observation.Vfo is VfoId vfo:
+                    _frequencyAppliedAt[vfo] = at;
+                    _modeAppliedAt = at;
+                    if (observation.ActiveVfo is not null) _activeVfoAppliedAt = at;
+                    if (observation.TransmitVfo is not null) _transmitVfoAppliedAt = at;
+                    if (observation.IsSplit is not null) _splitAppliedAt = at;
+                    if (observation.IsTransmitting is not null) _transmitAppliedAt = at;
+                    break;
+            }
+            return true;
         }
     }
 

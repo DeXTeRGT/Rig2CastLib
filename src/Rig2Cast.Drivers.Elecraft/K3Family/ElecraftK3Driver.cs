@@ -160,7 +160,13 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         await foreach (string frame in _protocol.WatchUnsolicitedFramesAsync(cancellationToken).ConfigureAwait(false))
+        {
+            int dropped = _protocol.ConsumeDroppedUnsolicitedFrameCount();
+            if (dropped > 0)
+                yield return new(RadioDriverObservationKind.DeliveryGap, DateTimeOffset.UtcNow, string.Empty,
+                    DroppedFrames: dropped);
             yield return ParseObservation(frame);
+        }
     }
 
     public async ValueTask<RadioControlValue> ReadControlAsync(

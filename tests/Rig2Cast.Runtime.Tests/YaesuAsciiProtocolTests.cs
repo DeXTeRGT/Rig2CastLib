@@ -149,6 +149,25 @@ public sealed class YaesuAsciiProtocolTests
         await transport.EmitAsync("FA014250000;");
         Assert.Equal("FA014250000;", await query.WaitAsync(TimeSpan.FromSeconds(1)));
     }
+
+    [Fact]
+    public async Task UnsolicitedOverflowIsCountedRatherThanRemainingSilent()
+    {
+        var transport = new ScriptedRadioTransport();
+        await transport.ConnectAsync();
+        await using var protocol = new YaesuAsciiProtocol(transport);
+
+        for (int index = 0; index < 300; index++)
+            await transport.EmitAsync($"FA{index:D9};");
+
+        DateTimeOffset deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(1);
+        while (protocol.DroppedUnsolicitedFrameCount == 0 && DateTimeOffset.UtcNow < deadline)
+            await Task.Delay(10);
+
+        Assert.True(protocol.DroppedUnsolicitedFrameCount > 0);
+        Assert.True(protocol.ConsumeDroppedUnsolicitedFrameCount() > 0);
+        Assert.Equal(0, protocol.DroppedUnsolicitedFrameCount);
+    }
 }
 
 internal sealed class ScriptedRadioTransport(bool ignoreReadCancellation = false) : IRadioTransport

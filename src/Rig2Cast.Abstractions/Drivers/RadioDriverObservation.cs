@@ -14,6 +14,7 @@ public enum RadioDriverObservationKind
     TransmitChanged,
     StateInformation,
     ControlChanged,
+    DeliveryGap,
     Ignored,
     Unknown
 }
@@ -33,7 +34,8 @@ public sealed record RadioDriverObservation(
     RadioControlValue? NumericControl = null,
     RadioSwitchValue? SwitchControl = null,
     RadioChoiceValue? ChoiceControl = null,
-    RadioPassbandValue? Passband = null);
+    RadioPassbandValue? Passband = null,
+    int DroppedFrames = 0);
 
 public interface IRadioObservationSource
 {

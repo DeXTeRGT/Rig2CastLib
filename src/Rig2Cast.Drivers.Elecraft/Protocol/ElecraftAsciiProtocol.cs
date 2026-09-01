@@ -15,16 +15,11 @@ public sealed class ElecraftAsciiProtocol : IAsyncDisposable
     private readonly CancellationTokenSource _stopping = new();
     private readonly SemaphoreSlim _transactionGate = new(1, 1);
     private readonly object _pendingGate = new();
-    private readonly Channel<string> _unsolicited = Channel.CreateBounded<string>(
-        new BoundedChannelOptions(256)
-        {
-            SingleReader = false,
-            SingleWriter = true,
-            FullMode = BoundedChannelFullMode.DropOldest
-        });
+    private readonly Channel<string> _unsolicited;
     private readonly Task _reader;
     private PendingQuery? _pending;
     private Exception? _terminalFailure;
+    private int _droppedUnsolicited;
     private int _disposed;
 
     public ElecraftAsciiProtocol(IRadioTransport transport, TimeSpan? responseTimeout = null)
@@ -33,6 +28,14 @@ public sealed class ElecraftAsciiProtocol : IAsyncDisposable
         if (!transport.IsConnected)
             throw new InvalidOperationException("The transport must be connected before starting the Elecraft protocol session.");
         _transport = transport;
+        _unsolicited = Channel.CreateBounded<string>(
+            new BoundedChannelOptions(256)
+            {
+                SingleReader = false,
+                SingleWriter = true,
+                FullMode = BoundedChannelFullMode.DropOldest
+            },
+            _ => Interlocked.Increment(ref _droppedUnsolicited));
         _responseTimeout = responseTimeout ?? TimeSpan.FromSeconds(2);
         if (_responseTimeout <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(responseTimeout));
@@ -119,6 +122,11 @@ public sealed class ElecraftAsciiProtocol : IAsyncDisposable
         await foreach (string frame in _unsolicited.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
             yield return frame;
     }
+
+    public int ConsumeDroppedUnsolicitedFrameCount() =>
+        Interlocked.Exchange(ref _droppedUnsolicited, 0);
+
+    public int DroppedUnsolicitedFrameCount => Volatile.Read(ref _droppedUnsolicited);
 
     public static string Frame(string command)
     {

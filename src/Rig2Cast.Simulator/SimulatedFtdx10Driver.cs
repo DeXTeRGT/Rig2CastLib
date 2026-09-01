@@ -33,6 +33,7 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
     private int _activeOperations;
     private int _maxConcurrentOperations;
     private int _commandCount;
+    private int _readStateCount;
     private Exception? _nextCommandException;
     private RadioMode _mode = RadioMode.Usb;
     private VfoId _activeVfo = VfoId.A;
@@ -72,6 +73,7 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
     public IReadOnlyList<string> CommandLog => _commandLog.ToArray();
 
     public int MaximumConcurrentOperations => Volatile.Read(ref _maxConcurrentOperations);
+    public int ReadStateCount => Volatile.Read(ref _readStateCount);
 
     public async IAsyncEnumerable<RadioDriverObservation> WatchObservationsAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -108,9 +110,38 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
             cancellationToken);
     }
 
+    public ValueTask SimulateObservationGapAsync(
+        int droppedFrames,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(droppedFrames, 1);
+        return _observations.Writer.WriteAsync(
+            new RadioDriverObservation(
+                RadioDriverObservationKind.DeliveryGap,
+                DateTimeOffset.UtcNow,
+                string.Empty,
+                DroppedFrames: droppedFrames),
+            cancellationToken);
+    }
+
+    public ValueTask EmitFrequencyObservationAsync(
+        VfoId vfo,
+        long frequencyHz,
+        DateTimeOffset observedAt,
+        CancellationToken cancellationToken = default) =>
+        _observations.Writer.WriteAsync(
+            new RadioDriverObservation(
+                RadioDriverObservationKind.FrequencyChanged,
+                observedAt,
+                $"SIM:FREQUENCY:{vfo}:{frequencyHz}",
+                vfo,
+                frequencyHz),
+            cancellationToken);
+
     public async ValueTask<RadioState> ReadStateAsync(CancellationToken cancellationToken = default)
     {
         using IDisposable operation = await BeginOperationAsync("ReadState", cancellationToken).ConfigureAwait(false);
+        Interlocked.Increment(ref _readStateCount);
         lock (_gate)
         {
             return new RadioState(
