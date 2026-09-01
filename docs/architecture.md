@@ -17,6 +17,12 @@ Applications / REST / WebSocket / gRPC / rigctld
 
 One managed session exclusively owns each physical connection. Logical clients share that session and never write directly to a transport. PTT always requires a transmit lease.
 
+`RadioState` represents receive/active VFO and transmit VFO separately. Drivers that
+can select the split transmit VFO implement the explicit
+`SetSplitAsync(enabled, transmitVfo)` operation. The original two-argument convenience
+operation remains available, but adapters must report the driver's `TransmitVfo`
+rather than inferring that transmission always uses the opposite receive VFO.
+
 Physical hosts use a reconnectable managed-radio lifecycle. When the active protocol
 stream fails, the runtime publishes `Faulted` and `Reconnecting` state, retries with
 bounded exponential backoff, and asks the configured connector for an entirely new

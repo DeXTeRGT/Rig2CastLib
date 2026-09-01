@@ -11,7 +11,10 @@ public sealed record RadioState(
     RadioMode Mode,
     bool IsSplit,
     bool IsTransmitting,
-    DateTimeOffset ObservedAt);
+    DateTimeOffset ObservedAt)
+{
+    public VfoId TransmitVfo { get; init; } = ActiveVfo;
+}
 
 public sealed record RadioAvailability(
     long Revision,

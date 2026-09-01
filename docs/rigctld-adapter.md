@@ -31,7 +31,7 @@ using `+` or another separator are supported.
 | `f`, `F` | Get/set frequency of the active VFO |
 | `v`, `V` | Get/set active VFO (`VFOA`, `VFOB`) |
 | `m`, `M` | Get mode and native filter width; set mode and the closest supported mode-valid width atomically |
-| `s`, `S` | Get/set split; the FTDX10 uses the opposite VFO as TX VFO |
+| `s`, `S` | Get/set split with the explicitly reported/requested TX VFO; the FTDX10 validates its opposite-VFO restriction |
 | `t` | Get PTT state |
 | `T` | Intentionally unavailable (`RPRT -11`) |
 | `q` | Close the connection |

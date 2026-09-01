@@ -9,9 +9,9 @@ drivers, capability discovery, and optional protocol adapters.
 
 > **Project status:** Active early development. The architecture and working
 > FTDX10 vertical slice are in place, but public APIs are not yet stable. The
-> Yaesu FTDX10 is the first supported and physically tested transceiver. The
-> Elecraft K3/K3S is planned next because those are the radios available for
-> development and hardware validation.
+> Yaesu FTDX10 is the first supported and physically tested transceiver. An
+> initial Elecraft K3S/K3/KX3/KX2 core driver is implemented from the official
+> programmer's reference and awaits physical K3S validation.
 
 ## Why another radio-control framework?
 
@@ -189,13 +189,25 @@ An FTDX10 simulator is included so applications and runtime behavior can be
 developed without physical hardware. Detailed implementation status is available
 in the [FTDX10 coverage matrix](docs/ftdx10-coverage.md).
 
+## Initial Elecraft K3-family support
+
+The selectable `elecraft.k3s`, `elecraft.k3`, `elecraft.kx3`, and `elecraft.kx2`
+profiles currently support model verification, VFO A/B frequencies, operating
+mode, explicit split/transmit VFO, PTT state/control, AI1 unsolicited state, AF/RF
+gain, requested transmit power, RIT/XIT, AGC speed, attenuator and preamplifier
+selection, and capability discovery. KX2-specific mode limitations and connected
+K3/K3S option-dependent capabilities are announced separately. The core slice has
+been validated against a physical K3S; the newer control batch is awaiting its
+interactive hardware pass. See the
+[Elecraft protocol record](docs/protocol-sources/elecraft-k3-family.md).
+
 ## Quick start
 
 ### Requirements
 
 - [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
 - Windows or Linux for simulator development
-- For physical FTDX10 use: an available CAT serial port and matching baud rate
+- For physical radio use: an available CAT serial port and matching baud rate
 
 ```powershell
 git clone https://github.com/DeXTeRGT/Rig2CastLib.git
@@ -204,10 +216,11 @@ dotnet build Rig2Cast.sln
 dotnet test tests\Rig2Cast.Runtime.Tests\Rig2Cast.Runtime.Tests.csproj
 ```
 
-The current suite contains **75 automated tests** covering CAT framing and
+The current suite contains **101 automated tests** covering CAT framing and
 parsing, runtime serialization, concurrent clients, roles and leases, capability
 and model discovery, TCP behavior, disconnect/reconnect behavior, unsolicited
-reporting, shutdown cleanup, and FTDX10 controls.
+reporting, shutdown cleanup, FTDX10 controls, and the initial Elecraft K3-family
+protocol slice.
 
 ### Run the simulator demo
 
@@ -232,11 +245,14 @@ capabilities switches
 capabilities choices
 capabilities meters
 get numeric AfGain
+get numeric AfGain B
 get choice FilterWidth
 get choice VoxDelay
 get choice AudioPeakFilterWidth
 get choice TuningStep
 meters
+meters B
+passband B
 ```
 
 Use the simulator with non-transmitting setters:
@@ -254,6 +270,9 @@ set mode Cw
 set split on
 set numeric CwPitchHz 700
 set numeric KeyerSpeedWpm 20
+set numeric AfGain B 36
+set choice Attenuator B 10db
+set passband B 2400
 set numeric AudioPeakFilterOffsetHz 50
 set choice FilterWidth 500hz
 set choice VoxDelay 500ms
@@ -287,6 +306,20 @@ A read-only hardware smoke test is also available:
 dotnet run --project samples\Rig2Cast.Ftdx10Smoke\Rig2Cast.Ftdx10Smoke.csproj -- --port COM11 --baud 38400
 ```
 
+### Connect a physical Elecraft K3-family radio
+
+First list the stable model identifiers, then select the exact radio. Replace the
+port as appropriate; serial framing is taken from the model descriptor.
+
+```powershell
+dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --list-models
+dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --model elecraft.k3s --port COM12 --baud 38400
+dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --model elecraft.k3s --port COM12 --baud 38400 --auto-information
+```
+
+Add `--allow-write` only when the radio is safely configured for setter testing.
+The console deliberately does not expose transmit commands.
+
 ### Run the rigctld-compatible server
 
 List registered models without opening hardware:
@@ -305,6 +338,12 @@ Run against a physical FTDX10, read-only by default:
 
 ```powershell
 dotnet run --project samples\Rig2Cast.RigctldHost -- --model yaesu.ftdx10 --serial-port COM11 --baud 38400
+```
+
+The same adapter can select the initial Elecraft driver:
+
+```powershell
+dotnet run --project samples\Rig2Cast.RigctldHost -- --model elecraft.k3s --serial-port COM12 --baud 38400
 ```
 
 The default endpoint is `127.0.0.1:4532`. Add `--allow-write` to enable supported

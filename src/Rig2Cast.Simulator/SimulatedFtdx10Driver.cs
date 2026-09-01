@@ -10,7 +10,7 @@ using Rig2Cast.Abstractions.Meters;
 
 namespace Rig2Cast.Simulator;
 
-public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMeterDriver, IRadioSwitchDriver, IRadioChoiceDriver, IRadioObservationSource
+public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMeterDriver, IRadioSwitchDriver, IRadioChoiceDriver, IRadioPassbandDriver, IRadioObservationSource
 {
     private readonly object _gate = new();
     private readonly Dictionary<VfoId, long> _frequencies = new()
@@ -121,7 +121,10 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
                 _mode,
                 _split,
                 _ptt,
-                DateTimeOffset.UtcNow);
+                DateTimeOffset.UtcNow)
+            {
+                TransmitVfo = _activeVfo == VfoId.A ? VfoId.B : VfoId.A
+            };
         }
     }
 
@@ -173,6 +176,22 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
         using IDisposable operation = await BeginOperationAsync($"SetSplit:{enabled}", cancellationToken).ConfigureAwait(false);
         lock (_gate)
         {
+            _split = enabled;
+        }
+    }
+
+    public async ValueTask SetSplitAsync(
+        bool enabled,
+        VfoId transmitVfo,
+        CancellationToken cancellationToken = default)
+    {
+        using IDisposable operation = await BeginOperationAsync(
+            $"SetSplit:{enabled}:{transmitVfo}", cancellationToken).ConfigureAwait(false);
+        lock (_gate)
+        {
+            VfoId expected = _activeVfo == VfoId.A ? VfoId.B : VfoId.A;
+            if (enabled && transmitVfo != expected)
+                throw new NotSupportedException($"Simulated FTDX10 split transmit VFO must be {expected}.");
             _split = enabled;
         }
     }
@@ -279,6 +298,32 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
         }
     }
 
+    public async ValueTask<RadioPassbandValue> ReadPassbandAsync(CancellationToken cancellationToken = default)
+    {
+        using IDisposable operation = await BeginOperationAsync("ReadPassband", cancellationToken).ConfigureAwait(false);
+        lock (_gate)
+        {
+            string value = _choices[RadioChoiceId.FilterWidth];
+            int width = value.EndsWith("hz", StringComparison.Ordinal) &&
+                int.TryParse(value.AsSpan(0, value.Length - 2), out int parsed) ? parsed : 0;
+            return new RadioPassbandValue(width, DateTimeOffset.UtcNow);
+        }
+    }
+
+    public async ValueTask SetPassbandAsync(int widthHz, CancellationToken cancellationToken = default)
+    {
+        using IDisposable operation = await BeginOperationAsync($"SetPassband:{widthHz}", cancellationToken).ConfigureAwait(false);
+        string value = $"{widthHz}hz";
+        lock (_gate)
+        {
+            ChoiceControlDescriptor descriptor = Capabilities.Choices[RadioChoiceId.FilterWidth];
+            if (!descriptor.Options.TryGetValue(value, out RadioChoiceOption? option) ||
+                option.ApplicableModes is not null && !option.ApplicableModes.Contains(_mode))
+                throw new ArgumentOutOfRangeException(nameof(widthHz));
+            _choices[RadioChoiceId.FilterWidth] = value;
+        }
+    }
+
     public ValueTask DisposeAsync()
     {
         _disposed = true;
@@ -382,7 +427,29 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
             CreateSwitchCapabilities(),
             CreateChoiceCapabilities(),
             CreateMeterCapabilities(),
-            new Dictionary<string, object?>());
+            new Dictionary<string, object?>())
+        {
+            Passband = CreatePassbandCapability(readWrite)
+        };
+    }
+
+    private static PassbandCapability CreatePassbandCapability(FeatureDescriptor feature)
+    {
+        int[] ssb = [300, 400, 600, 850, 1100, 1200, 1500, 1650, 1800, 1950, 2100, 2250,
+            2400, 2450, 2500, 2600, 2700, 2800, 2900, 3000, 3200, 3500, 4000];
+        int[] narrow = [50, 100, 150, 200, 250, 300, 350, 400, 450, 500, 600, 800, 1200,
+            1400, 1700, 2000, 2400, 3000, 3200, 3500, 4000];
+        var constraints = new Dictionary<RadioMode, PassbandConstraint>();
+        Add([RadioMode.Lsb, RadioMode.Usb], ssb);
+        Add([RadioMode.Cw, RadioMode.CwReverse, RadioMode.Rtty, RadioMode.RttyReverse,
+            RadioMode.Psk, RadioMode.DataLsb, RadioMode.DataUsb], narrow);
+        return new PassbandCapability(feature, constraints);
+
+        void Add(IReadOnlyList<RadioMode> modes, int[] values)
+        {
+            var constraint = new PassbandConstraint(values.Min(), values.Max(), 1, values);
+            foreach (RadioMode mode in modes) constraints[mode] = constraint;
+        }
     }
 
     private static Dictionary<RadioSwitchId, SwitchControlDescriptor> CreateSwitchCapabilities()

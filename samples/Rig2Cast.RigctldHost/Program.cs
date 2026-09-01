@@ -3,6 +3,7 @@ using Rig2Cast.Abstractions.Drivers;
 using Rig2Cast.Abstractions.Security;
 using Rig2Cast.Adapters.Rigctld;
 using Rig2Cast.Core.Drivers;
+using Rig2Cast.Drivers.Elecraft.K3Family;
 using Rig2Cast.Drivers.Yaesu.Ftdx10;
 using Rig2Cast.Runtime.Sessions;
 using Rig2Cast.Simulator;
@@ -10,9 +11,13 @@ using Rig2Cast.Transports.Serial;
 
 bool simulator = HasFlag("--simulator");
 bool allowWrite = HasFlag("--allow-write");
-bool automaticInformation = HasFlag("--auto-information");
+string? configuredAutoInformationMode = GetOption("--auto-information-mode");
+bool automaticInformation = HasFlag("--auto-information") || configuredAutoInformationMode is not null;
+int automaticInformationMode = int.TryParse(configuredAutoInformationMode, out int parsedAutoInformationMode)
+    ? parsedAutoInformationMode : 1;
 var catalog = new RadioDriverCatalog();
 catalog.Register(new Ftdx10DriverFactory());
+catalog.Register(new ElecraftK3DriverFactory());
 
 if (HasFlag("--list-models"))
 {
@@ -58,13 +63,7 @@ else
         "radio-1",
         async cancellationToken =>
         {
-            var transport = new SerialRadioTransport(new SerialRadioTransportOptions
-            {
-                PortName = serialPort,
-                BaudRate = baud,
-                StopBits = System.IO.Ports.StopBits.Two,
-                Handshake = System.IO.Ports.Handshake.RequestToSend
-            });
+            var transport = new SerialRadioTransport(CreateSerialOptions(selectedModel.Model, serialPort, baud));
             return await selectedModel.Factory.OpenAsync(
                 new RadioConnectionOptions(
                     "radio-1",
@@ -73,7 +72,9 @@ else
                     {
                         ["serial-port"] = serialPort,
                         ["baud"] = baud.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                        ["yaesu.autoInformation"] = automaticInformation.ToString()
+                        ["yaesu.autoInformation"] = automaticInformation.ToString(),
+                        ["elecraft.autoInformation"] = automaticInformation.ToString(),
+                        ["elecraft.autoInformationMode"] = automaticInformationMode.ToString(System.Globalization.CultureInfo.InvariantCulture)
                     }),
                 transport,
                 cancellationToken);
@@ -114,3 +115,29 @@ static void EnsureTransportSupported(RadioModelDescriptor model, RadioTransportK
     if (!model.SupportedTransports.Contains(transport))
         throw new NotSupportedException($"Model '{model.Id}' does not support the {transport} transport.");
 }
+
+static SerialRadioTransportOptions CreateSerialOptions(RadioModelDescriptor model, string port, int baud)
+{
+    IReadOnlyDictionary<string, string> settings = model.DefaultConnectionSettings ??
+        new Dictionary<string, string>();
+    return new SerialRadioTransportOptions
+    {
+        PortName = port,
+        BaudRate = baud,
+        DataBits = GetInt(settings, "serial.dataBits", 8),
+        StopBits = GetEnum(settings, "serial.stopBits", System.IO.Ports.StopBits.One),
+        Parity = GetEnum(settings, "serial.parity", System.IO.Ports.Parity.None),
+        Handshake = GetEnum(settings, "serial.handshake", System.IO.Ports.Handshake.None),
+        DtrEnable = GetBool(settings, "serial.dtrEnable"),
+        RtsEnable = GetBool(settings, "serial.rtsEnable")
+    };
+}
+
+static int GetInt(IReadOnlyDictionary<string, string> settings, string key, int fallback) =>
+    settings.TryGetValue(key, out string? value) && int.TryParse(value, out int parsed) ? parsed : fallback;
+
+static bool GetBool(IReadOnlyDictionary<string, string> settings, string key) =>
+    settings.TryGetValue(key, out string? value) && bool.TryParse(value, out bool parsed) && parsed;
+
+static T GetEnum<T>(IReadOnlyDictionary<string, string> settings, string key, T fallback) where T : struct, Enum =>
+    settings.TryGetValue(key, out string? value) && Enum.TryParse(value, true, out T parsed) ? parsed : fallback;

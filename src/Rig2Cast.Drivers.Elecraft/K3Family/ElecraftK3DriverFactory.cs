@@ -1,0 +1,48 @@
+using Rig2Cast.Abstractions.Drivers;
+using Rig2Cast.Abstractions.Transports;
+
+namespace Rig2Cast.Drivers.Elecraft.K3Family;
+
+public sealed class ElecraftK3DriverFactory : IRadioDriverFactory
+{
+    public RadioDriverDescriptor Descriptor { get; } = new(
+        "rig2cast.drivers.elecraft.k3family",
+        new Version(0, 1, 0),
+        new Version(1, 0),
+        ElecraftK3Profile.Models.Values.Select(CreateDescriptor).ToArray());
+
+    public async ValueTask<IRadioDriver> OpenAsync(
+        RadioConnectionOptions options,
+        IRadioTransport transport,
+        CancellationToken cancellationToken = default)
+    {
+        if (!ElecraftK3Profile.Models.TryGetValue(options.ModelId, out ElecraftK3Profile? profile))
+            throw new NotSupportedException($"Model '{options.ModelId}' is not supported by the Elecraft K3-family driver.");
+        bool autoInformation = options.Settings.TryGetValue("elecraft.autoInformation", out string? configured) &&
+            bool.TryParse(configured, out bool enabled) && enabled;
+        int autoInformationMode = options.Settings.TryGetValue("elecraft.autoInformationMode", out string? configuredMode) &&
+            int.TryParse(configuredMode, out int parsedMode) ? parsedMode : 1;
+        return await ElecraftK3Driver.OpenAsync(
+            transport, profile, autoInformation, autoInformationMode,
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
+    private static RadioModelDescriptor CreateDescriptor(ElecraftK3Profile profile) => new(
+        profile.ModelId,
+        "Elecraft",
+        profile.Model,
+        new HashSet<RadioTransportKind> { RadioTransportKind.Serial, RadioTransportKind.Simulator },
+        ElecraftK3Profile.SupportedBaudRates,
+        38_400,
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["serial.dataBits"] = "8",
+            ["serial.stopBits"] = "1",
+            ["serial.parity"] = "None",
+            ["serial.handshake"] = "None",
+            ["serial.dtrEnable"] = "false",
+            ["serial.rtsEnable"] = "false",
+            ["elecraft.autoInformation"] = "false",
+            ["elecraft.autoInformationMode"] = "1"
+        });
+}

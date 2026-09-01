@@ -31,9 +31,14 @@ public sealed record NumericControlDescriptor(
     int Minimum,
     int Maximum,
     int Step,
-    string Unit);
+    string Unit)
+{
+    public IReadOnlySet<Rig2Cast.Abstractions.Radios.VfoId> Targets { get; init; } =
+        new HashSet<Rig2Cast.Abstractions.Radios.VfoId>();
+}
 
 public sealed record RadioControlValue(
     RadioControlId Id,
     int Value,
-    DateTimeOffset ObservedAt);
+    DateTimeOffset ObservedAt,
+    Rig2Cast.Abstractions.Radios.VfoId? Target = null);

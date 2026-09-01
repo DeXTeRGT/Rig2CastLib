@@ -3,6 +3,7 @@ using Rig2Cast.Abstractions.Radios;
 using Rig2Cast.Abstractions.Security;
 using Rig2Cast.Abstractions.Controls;
 using Rig2Cast.Abstractions.Meters;
+using Rig2Cast.Abstractions.Capabilities;
 
 namespace Rig2Cast.Abstractions.Sessions;
 
@@ -28,6 +29,11 @@ public interface IRadioSession : IAsyncDisposable
 
     ValueTask SetSplitAsync(bool enabled, CancellationToken cancellationToken = default);
 
+    ValueTask SetSplitAsync(
+        bool enabled,
+        VfoId transmitVfo,
+        CancellationToken cancellationToken = default);
+
     ValueTask<RadioControlValue> ReadControlAsync(
         RadioControlId control,
         CancellationToken cancellationToken = default);
@@ -36,6 +42,12 @@ public interface IRadioSession : IAsyncDisposable
         RadioControlId control,
         int value,
         CancellationToken cancellationToken = default);
+
+    ValueTask<RadioControlValue> ReadControlAsync(
+        RadioControlId control, VfoId target, CancellationToken cancellationToken = default);
+
+    ValueTask WriteControlAsync(
+        RadioControlId control, VfoId target, int value, CancellationToken cancellationToken = default);
 
     ValueTask<RadioSwitchValue> ReadSwitchAsync(
         RadioSwitchId control,
@@ -55,9 +67,28 @@ public interface IRadioSession : IAsyncDisposable
         string value,
         CancellationToken cancellationToken = default);
 
+    ValueTask<RadioChoiceValue> ReadChoiceAsync(
+        RadioChoiceId control, VfoId target, CancellationToken cancellationToken = default);
+
+    ValueTask WriteChoiceAsync(
+        RadioChoiceId control, VfoId target, string value, CancellationToken cancellationToken = default);
+
+    ValueTask<RadioPassbandValue> ReadPassbandAsync(CancellationToken cancellationToken = default);
+
+    ValueTask SetPassbandAsync(int widthHz, CancellationToken cancellationToken = default);
+
+    ValueTask<RadioPassbandValue> ReadPassbandAsync(
+        VfoId target, CancellationToken cancellationToken = default);
+
+    ValueTask SetPassbandAsync(
+        VfoId target, int widthHz, CancellationToken cancellationToken = default);
+
     ValueTask<RadioMeterReading> ReadMeterAsync(
         RadioMeterId meter,
         CancellationToken cancellationToken = default);
+
+    ValueTask<RadioMeterReading> ReadMeterAsync(
+        RadioMeterId meter, VfoId target, CancellationToken cancellationToken = default);
 
     ValueTask<LeaseToken> AcquireLeaseAsync(
         string kind,
@@ -88,10 +119,18 @@ public interface IRadioOperationScope
 
     ValueTask SetSplitAsync(bool enabled, CancellationToken cancellationToken = default);
 
+    ValueTask SetSplitAsync(
+        bool enabled,
+        VfoId transmitVfo,
+        CancellationToken cancellationToken = default);
+
     ValueTask WriteControlAsync(
         RadioControlId control,
         int value,
         CancellationToken cancellationToken = default);
+
+    ValueTask WriteControlAsync(
+        RadioControlId control, VfoId target, int value, CancellationToken cancellationToken = default);
 
     ValueTask WriteSwitchAsync(
         RadioSwitchId control,
@@ -102,4 +141,12 @@ public interface IRadioOperationScope
         RadioChoiceId control,
         string value,
         CancellationToken cancellationToken = default);
+
+    ValueTask WriteChoiceAsync(
+        RadioChoiceId control, VfoId target, string value, CancellationToken cancellationToken = default);
+
+    ValueTask SetPassbandAsync(int widthHz, CancellationToken cancellationToken = default);
+
+    ValueTask SetPassbandAsync(
+        VfoId target, int widthHz, CancellationToken cancellationToken = default);
 }

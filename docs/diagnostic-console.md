@@ -1,6 +1,6 @@
 # Rig2Cast diagnostic console
 
-The diagnostic console is the supported manual test surface during early development. It can use the deterministic simulator or a physical FTDX10. Physical connections are read-only unless write access is explicitly enabled at startup. PTT and tuner-start are not exposed by this console.
+The diagnostic console is the supported manual test surface during early development. It can use the deterministic FTDX10 simulator or a registered physical radio such as the FTDX10 or Elecraft K3 family. Physical connections are read-only unless write access is explicitly enabled at startup. PTT and tuner-start are not exposed by this console.
 
 ## Start the console
 
@@ -19,12 +19,23 @@ dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --port 
 
 # Physical FTDX10 with non-transmitting setters
 dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --port COM11 --baud 38400 --allow-write
+
+# List and select a physical Elecraft model
+dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --list-models
+dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --model elecraft.k3s --port COM12 --baud 38400 --allow-write
+
+# Elecraft AI2: typed front-panel control announcements
+dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --model elecraft.k3s --port COM12 --baud 38400 --allow-write --auto-information-mode 2
 ```
 
 Only one application may own the serial port. Close other CAT software before opening the physical radio.
 The FTDX10 manual limits `AI` automatic information to its USB CAT connection. Use
 `--auto-information` only with the enhanced USB CAT port. Rig2Cast confirms `AI1;`
 at startup and sends `AI0;` during clean shutdown.
+
+For Elecraft radios, `--auto-information` selects AI1 consolidated `IF` state.
+Use `--auto-information-mode 2` to request the documented per-control responses
+needed for typed front-panel gain, AGC, attenuator, power, and related events.
 
 Physical console connections are supervised. If the radio is powered off or the CAT
 cable is removed after startup, watch output reports `Faulted` and `Reconnecting`.
@@ -46,7 +57,11 @@ capabilities switches
 capabilities choices
 capabilities meters
 meters
+meters B
+passband
+passband B
 get numeric AfGain
+get numeric AfGain B
 get switch NoiseReduction
 get choice RoofingFilter
 get choice FilterWidth
@@ -72,8 +87,12 @@ set frequency A 14250000
 set frequency B 7100000
 set vfo B
 set mode Cw
+set passband 500
 set split on
 set numeric AfGain 128
+set numeric AfGain B 36
+set choice Attenuator B 10db
+set passband B 2400
 set numeric IfShiftHz 200
 set numeric ClarifierOffsetHz -150
 set switch NoiseReduction on

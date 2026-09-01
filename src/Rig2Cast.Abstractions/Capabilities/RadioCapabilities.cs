@@ -39,4 +39,7 @@ public sealed record RadioCapabilities(
     IReadOnlyDictionary<RadioSwitchId, SwitchControlDescriptor> Switches,
     IReadOnlyDictionary<RadioChoiceId, ChoiceControlDescriptor> Choices,
     IReadOnlyDictionary<RadioMeterId, RadioMeterDescriptor> Meters,
-    IReadOnlyDictionary<string, object?> Extensions);
+    IReadOnlyDictionary<string, object?> Extensions)
+{
+    public PassbandCapability Passband { get; init; } = PassbandCapability.Unsupported;
+}

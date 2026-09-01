@@ -178,7 +178,25 @@ public sealed class Ftdx10DriverTests
         Assert.Equal(VfoId.A, state.ActiveVfo);
         Assert.Equal(RadioMode.Usb, state.Mode);
         Assert.True(state.IsSplit);
+        Assert.Equal(VfoId.B, state.TransmitVfo);
         Assert.False(state.IsTransmitting);
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task ExplicitSplitAcceptsOnlyOppositeTransmitVfo()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("VS;", "VS0;");
+        transport.Add("ST1;");
+        transport.Add("VS;", "VS0;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+
+        await driver.SetSplitAsync(true, VfoId.B);
+        await Assert.ThrowsAsync<NotSupportedException>(
+            () => driver.SetSplitAsync(true, VfoId.A).AsTask());
+
         transport.AssertComplete();
     }
 

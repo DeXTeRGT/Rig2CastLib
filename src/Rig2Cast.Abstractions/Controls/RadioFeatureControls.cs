@@ -54,9 +54,15 @@ public sealed record ChoiceControlDescriptor(
     RadioChoiceId Id,
     string DisplayName,
     FeatureDescriptor Feature,
-    IReadOnlyDictionary<string, RadioChoiceOption> Options);
+    IReadOnlyDictionary<string, RadioChoiceOption> Options)
+{
+    public IReadOnlySet<VfoId> Targets { get; init; } = new HashSet<VfoId>();
+
+    public IReadOnlyDictionary<VfoId, IReadOnlyDictionary<string, RadioChoiceOption>>? OptionsByTarget { get; init; }
+}
 
 public sealed record RadioChoiceValue(
     RadioChoiceId Id,
     string Value,
-    DateTimeOffset ObservedAt);
+    DateTimeOffset ObservedAt,
+    VfoId? Target = null);

@@ -10,7 +10,7 @@ using Rig2Cast.Drivers.Yaesu.Protocol;
 
 namespace Rig2Cast.Drivers.Yaesu.Ftdx10;
 
-public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMeterDriver, IRadioSwitchDriver, IRadioChoiceDriver, IRadioObservationSource
+public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMeterDriver, IRadioSwitchDriver, IRadioChoiceDriver, IRadioPassbandDriver, IRadioObservationSource
 {
     private static readonly Dictionary<RadioSwitchId, SwitchCommand> SwitchCommands = new()
     {
@@ -182,7 +182,11 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             mode,
             split,
             transmitting,
-            DateTimeOffset.UtcNow);
+            DateTimeOffset.UtcNow)
+        {
+            // The FTDX10 split model uses the VFO opposite the selected receive VFO.
+            TransmitVfo = OppositeVfo(activeVfo)
+        };
     }
 
     public async ValueTask SetFrequencyAsync(VfoId target, long frequencyHz, CancellationToken cancellationToken = default)
@@ -224,6 +228,27 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
     {
         EnsureActive();
         return _protocol.SendAsync(enabled ? "ST1" : "ST0", cancellationToken);
+    }
+
+    public async ValueTask SetSplitAsync(
+        bool enabled,
+        VfoId transmitVfo,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        if (!enabled)
+        {
+            await _protocol.SendAsync("ST0", cancellationToken).ConfigureAwait(false);
+            return;
+        }
+        VfoId activeVfo = ParseVfo(
+            await _protocol.QueryAsync("VS", "VS", cancellationToken).ConfigureAwait(false));
+        if (transmitVfo != OppositeVfo(activeVfo))
+        {
+            throw new NotSupportedException(
+                $"FTDX10 split transmit must use the VFO opposite active VFO {activeVfo}.");
+        }
+        await _protocol.SendAsync("ST1", cancellationToken).ConfigureAwait(false);
     }
 
     public ValueTask SetPttAsync(bool enabled, CancellationToken cancellationToken = default)
@@ -453,6 +478,30 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         return _protocol.SendAsync($"{command.Query}{option.Code}", cancellationToken);
     }
 
+    public async ValueTask<RadioPassbandValue> ReadPassbandAsync(CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        RadioMode mode = await ReadActiveModeAsync(cancellationToken).ConfigureAwait(false);
+        string response = await _protocol.QueryAsync("SH0", "SH", cancellationToken).ConfigureAwait(false);
+        if (response.Length != 7 || !response.StartsWith("SH00", StringComparison.Ordinal) ||
+            !int.TryParse(response.AsSpan(4, 2), NumberStyles.None, CultureInfo.InvariantCulture, out int code))
+            throw new YaesuProtocolException($"Invalid filter-width response '{response}'.");
+        int[] widths = GetFilterWidths(mode);
+        if (code < 0 || code >= widths.Length)
+            throw new YaesuProtocolException($"Filter width code '{code:D2}' is invalid in {mode} mode.");
+        return new RadioPassbandValue(widths[code], DateTimeOffset.UtcNow);
+    }
+
+    public async ValueTask SetPassbandAsync(int widthHz, CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        RadioMode mode = await ReadActiveModeAsync(cancellationToken).ConfigureAwait(false);
+        int code = Array.IndexOf(GetFilterWidths(mode), widthHz);
+        if (code <= 0)
+            throw new ArgumentOutOfRangeException(nameof(widthHz), $"Width {widthHz} Hz is not valid in {mode} mode.");
+        await _protocol.SendAsync($"SH00{code:D2}", cancellationToken).ConfigureAwait(false);
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (!_disposed)
@@ -536,7 +585,15 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             if (frame.StartsWith("FB", StringComparison.OrdinalIgnoreCase))
                 return new(RadioDriverObservationKind.FrequencyChanged, observedAt, frame, VfoId.B, ParseFrequency(frame));
             if (frame.StartsWith("VS", StringComparison.OrdinalIgnoreCase))
-                return new(RadioDriverObservationKind.ActiveVfoChanged, observedAt, frame, ParseVfo(frame));
+            {
+                VfoId activeVfo = ParseVfo(frame);
+                return new(
+                    RadioDriverObservationKind.ActiveVfoChanged,
+                    observedAt,
+                    frame,
+                    activeVfo,
+                    TransmitVfo: OppositeVfo(activeVfo));
+            }
             if (frame.StartsWith("MD", StringComparison.OrdinalIgnoreCase))
                 return new(RadioDriverObservationKind.ModeChanged, observedAt, frame, Mode: ParseMode(frame));
             if (frame.StartsWith("ST", StringComparison.OrdinalIgnoreCase))
@@ -579,6 +636,13 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         frame[^1] == ';' &&
         frame.AsSpan(2, 12).IndexOfAnyExceptInRange('0', '9') < 0;
 
+    private static VfoId OppositeVfo(VfoId vfo) => vfo switch
+    {
+        VfoId.A => VfoId.B,
+        VfoId.B => VfoId.A,
+        _ => throw new NotSupportedException($"VFO '{vfo}' has no FTDX10 split counterpart.")
+    };
+
     private static RadioCapabilities CreateCapabilities()
     {
         var readWrite = new FeatureDescriptor(CapabilitySupport.Supported, FeatureAccess.Read | FeatureAccess.Write);
@@ -610,7 +674,10 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
                 ["serial.handshake"] = "RequestToSend",
                 ["yaesu.autoInformation.supportedOnUsb"] = true,
                 ["rig2cast.coverage"] = "core-vfo-mode-split-ptt-controls-meters-features"
-            });
+            })
+        {
+            Passband = CreatePassbandCapability(readWrite)
+        };
     }
 
     private static Dictionary<RadioControlId, NumericControlDescriptor> CreateControlCapabilities()
@@ -710,6 +777,28 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             }
         }
         return new ChoiceControlDescriptor(RadioChoiceId.FilterWidth, "Filter width", feature, options);
+    }
+
+    private static PassbandCapability CreatePassbandCapability(FeatureDescriptor feature)
+    {
+        var constraints = new Dictionary<RadioMode, PassbandConstraint>();
+        AddPassbandModes(constraints, [RadioMode.Lsb, RadioMode.Usb], SsbFilterWidths);
+        AddPassbandModes(constraints,
+            [RadioMode.Cw, RadioMode.CwReverse, RadioMode.Rtty, RadioMode.RttyReverse,
+             RadioMode.Psk, RadioMode.DataLsb, RadioMode.DataUsb], NarrowFilterWidths);
+        return new PassbandCapability(feature, constraints);
+    }
+
+    private static void AddPassbandModes(
+        Dictionary<RadioMode, PassbandConstraint> constraints,
+        IReadOnlyList<RadioMode> modes,
+        int[] widths)
+    {
+        int[] explicitWidths = widths.Where(width => width > 0).ToArray();
+        var constraint = new PassbandConstraint(
+            explicitWidths.Min(), explicitWidths.Max(), 1, explicitWidths);
+        foreach (RadioMode mode in modes)
+            constraints[mode] = constraint;
     }
 
     private async ValueTask<RadioChoiceValue> ReadVoxDelayAsync(CancellationToken cancellationToken)

@@ -141,6 +141,22 @@ public sealed class RigctldAdapterTests
         Assert.Equal("default", (await session.ReadChoiceAsync(RadioChoiceId.FilterWidth)).Value);
     }
 
+    [Fact]
+    public async Task SplitCommandsUseReportedAndRequestedTransmitVfo()
+    {
+        var driver = new SimulatedFtdx10Driver();
+        await using ManagedRadio radio = await ManagedRadio.CreateAsync("ftdx10", driver);
+        await using var session = radio.OpenSession(new ClientIdentity("test"), ClientRole.Controller);
+        var handler = new RigctldSessionHandler(session, writesEnabled: true);
+
+        RigctldResult read = await handler.ExecuteAsync(RigctldProtocol.Parse("s"));
+        RigctldResult written = await handler.ExecuteAsync(RigctldProtocol.Parse("S 1 VFOB"));
+
+        Assert.Equal("VFOB", read.Values[1].Value);
+        Assert.Equal(RigctldError.Ok, written.ErrorCode);
+        Assert.Contains("SetSplit:True:B", driver.CommandLog);
+    }
+
     private static async Task<string> SendCommandAsync(int port, string command)
     {
         using var client = new TcpClient();

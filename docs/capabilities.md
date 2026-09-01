@@ -9,12 +9,16 @@ Clients must be able to build generic user interfaces without model-specific kno
 
 Support is not a Boolean. A feature can be unsupported by the radio, supported and implemented, known but not implemented by the driver, experimental, or unknown. Descriptors also report readable/writable access, valid targets, ranges, steps, and lease requirements.
 
-Choice options may declare their applicable operating modes. For example, the FTDX10 `SH` command reuses the same code for different bandwidths in SSB and CW-family modes. Rig2Cast exposes stable bandwidth values such as `3000hz` and mode applicability, never the ambiguous CAT code.
+Passband capability is strongly typed and mode-dependent. A constraint can publish
+a discrete list, as required by the FTDX10 `SH` command, or a numeric minimum,
+maximum, and step with a flag indicating that the radio may quantize the request,
+as required by Elecraft `BW`. Applications therefore do not need to interpret
+manufacturer CAT codes or invent a finite list for a continuous control.
 
-Adapters translate requested passbands using these native choice capabilities.
-An exact width is used when available; otherwise the closest writable width valid
-for the requested mode is selected (the lower width wins an exact tie). The
-`default` option represents the radio's native mode default.
+Adapters translate requested passbands through this shared capability. The closest
+valid discrete width is selected for a discrete radio; numeric widths are validated
+and aligned to the advertised step. Mode and passband changes can execute in one
+exclusive runtime operation.
 
 Capabilities normally remain stable for a connection, but firmware, options, probing, or configuration can change them. Capability, availability, state, authorization, and lease changes are versioned and emitted as events. A client that misses revisions requests a complete snapshot.
 

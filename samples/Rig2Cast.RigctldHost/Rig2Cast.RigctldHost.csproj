@@ -7,6 +7,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Rig2Cast.Adapters.Rigctld\Rig2Cast.Adapters.Rigctld.csproj" />
+    <ProjectReference Include="..\..\src\Rig2Cast.Drivers.Elecraft\Rig2Cast.Drivers.Elecraft.csproj" />
     <ProjectReference Include="..\..\src\Rig2Cast.Drivers.Yaesu\Rig2Cast.Drivers.Yaesu.csproj" />
     <ProjectReference Include="..\..\src\Rig2Cast.Core\Rig2Cast.Core.csproj" />
     <ProjectReference Include="..\..\src\Rig2Cast.Runtime\Rig2Cast.Runtime.csproj" />

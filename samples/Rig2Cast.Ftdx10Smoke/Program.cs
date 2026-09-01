@@ -29,6 +29,7 @@ Console.WriteLine("FTDX10 identification verified: ID0761");
 Console.WriteLine($"VFO A: {state.FrequenciesHz[VfoId.A]} Hz");
 Console.WriteLine($"VFO B: {state.FrequenciesHz[VfoId.B]} Hz");
 Console.WriteLine($"Active VFO: {state.ActiveVfo}");
+Console.WriteLine($"Transmit VFO: {state.TransmitVfo}");
 Console.WriteLine($"Mode: {state.Mode}");
 Console.WriteLine($"Split: {state.IsSplit}");
 Console.WriteLine($"Transmitting: {state.IsTransmitting}");

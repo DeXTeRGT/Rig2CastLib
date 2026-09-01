@@ -1,4 +1,5 @@
 using System.Globalization;
+using Rig2Cast.Abstractions.Capabilities;
 using Rig2Cast.Abstractions.Controls;
 using Rig2Cast.Abstractions.Radios;
 using Rig2Cast.Abstractions.Sessions;
@@ -76,12 +77,19 @@ public sealed class RigctldSessionHandler(IRadioSession session, bool writesEnab
         int passband = 0;
         try
         {
-            RadioChoiceValue width = await session.ReadChoiceAsync(RadioChoiceId.FilterWidth, token);
-            passband = ParseWidth(width.Value);
+            passband = (await session.ReadPassbandAsync(token)).WidthHz;
         }
         catch (NotSupportedException)
         {
-            // Hamlib uses zero when the current mode/driver has no adjustable passband.
+            try
+            {
+                RadioChoiceValue width = await session.ReadChoiceAsync(RadioChoiceId.FilterWidth, token);
+                passband = ParseWidth(width.Value);
+            }
+            catch (NotSupportedException)
+            {
+                // Hamlib uses zero when the current mode/driver has no adjustable passband.
+            }
         }
         return new("get_mode", [new("Mode", FormatMode(state.Mode)), new("Passband", passband.ToString(CultureInfo.InvariantCulture))]);
     }
@@ -93,21 +101,39 @@ public sealed class RigctldSessionHandler(IRadioSession session, bool writesEnab
         int requestedPassband = int.Parse(args[1], CultureInfo.InvariantCulture);
         if (requestedPassband < 0) throw new ArgumentOutOfRangeException(nameof(args), "Passband cannot be negative.");
 
+        RadioCapabilities capabilities = (await session.GetSnapshotAsync(token)).Capabilities;
+        int? selectedPassband = requestedPassband > 0
+            ? SelectPassband(capabilities.Passband, mode, requestedPassband)
+            : null;
         RadioChoiceId filterWidth = RadioChoiceId.FilterWidth;
-        string? selectedWidth = SelectPassband(
-            (await session.GetSnapshotAsync(token)).Capabilities.Choices.GetValueOrDefault(filterWidth),
-            mode,
-            requestedPassband);
-        if (requestedPassband > 0 && selectedWidth is null)
-            throw new NotSupportedException($"Passband control is not supported in {mode} mode.");
+        string? selectedLegacyWidth = requestedPassband == 0
+            ? SelectPassband(capabilities.Choices.GetValueOrDefault(filterWidth), mode, requestedPassband)
+            : null;
 
         await session.ExecuteExclusiveAsync(async (scope, operationToken) =>
         {
             await scope.SetModeAsync(mode, operationToken);
-            if (selectedWidth is not null)
-                await scope.WriteChoiceAsync(filterWidth, selectedWidth, operationToken);
+            if (selectedPassband is int widthHz)
+                await scope.SetPassbandAsync(widthHz, operationToken);
+            else if (selectedLegacyWidth is not null)
+                await scope.WriteChoiceAsync(filterWidth, selectedLegacyWidth, operationToken);
         }, token);
         return Success("set_mode");
+    }
+
+    private static int SelectPassband(PassbandCapability capability, RadioMode mode, int requestedHz)
+    {
+        if (capability.Feature.Support != CapabilitySupport.Supported ||
+            !capability.ByMode.TryGetValue(mode, out PassbandConstraint? constraint))
+            throw new NotSupportedException($"Passband control is not supported in {mode} mode.");
+        if (requestedHz < constraint.MinimumHz || requestedHz > constraint.MaximumHz)
+            throw new ArgumentOutOfRangeException(nameof(requestedHz));
+        if (constraint.DiscreteValuesHz is { Count: > 0 } values)
+            return values.OrderBy(value => Math.Abs((long)value - requestedHz)).ThenBy(value => value).First();
+        int steps = (int)Math.Round(
+            (requestedHz - constraint.MinimumHz) / (double)constraint.StepHz,
+            MidpointRounding.AwayFromZero);
+        return constraint.MinimumHz + steps * constraint.StepHz;
     }
 
     private static string? SelectPassband(ChoiceControlDescriptor? descriptor, RadioMode mode, int requestedHz)
@@ -143,16 +169,17 @@ public sealed class RigctldSessionHandler(IRadioSession session, bool writesEnab
     private async ValueTask<RigctldResult> GetSplitAsync(CancellationToken token)
     {
         RadioState state = await session.ReadStateAsync(NetworkRead, token);
-        VfoId tx = state.ActiveVfo == VfoId.B ? VfoId.A : VfoId.B;
-        return new("get_split_vfo", [new("Split", state.IsSplit ? "1" : "0"), new("TX VFO", FormatVfo(tx))]);
+        return new(
+            "get_split_vfo",
+            [new("Split", state.IsSplit ? "1" : "0"), new("TX VFO", FormatVfo(state.TransmitVfo))]);
     }
 
     private async ValueTask<RigctldResult> SetSplitAsync(IReadOnlyList<string> args, CancellationToken token)
     {
         EnsureWrite(args, 2);
         bool enabled = args[0] switch { "0" => false, "1" => true, _ => throw new FormatException("Split must be 0 or 1.") };
-        _ = ParseVfo(args[1]);
-        await session.SetSplitAsync(enabled, token);
+        VfoId transmitVfo = ParseVfo(args[1]);
+        await session.SetSplitAsync(enabled, transmitVfo, token);
         return Success("set_split_vfo");
     }
 

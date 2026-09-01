@@ -1,4 +1,6 @@
 using Rig2Cast.Abstractions.Radios;
+using Rig2Cast.Abstractions.Controls;
+using Rig2Cast.Abstractions.Capabilities;
 
 namespace Rig2Cast.Abstractions.Drivers;
 
@@ -8,8 +10,10 @@ public enum RadioDriverObservationKind
     ActiveVfoChanged,
     ModeChanged,
     SplitChanged,
+    TransmitVfoChanged,
     TransmitChanged,
     StateInformation,
+    ControlChanged,
     Ignored,
     Unknown
 }
@@ -21,7 +25,15 @@ public sealed record RadioDriverObservation(
     VfoId? Vfo = null,
     long? FrequencyHz = null,
     RadioMode? Mode = null,
-    bool? Flag = null);
+    bool? Flag = null,
+    VfoId? TransmitVfo = null,
+    VfoId? ActiveVfo = null,
+    bool? IsSplit = null,
+    bool? IsTransmitting = null,
+    RadioControlValue? NumericControl = null,
+    RadioSwitchValue? SwitchControl = null,
+    RadioChoiceValue? ChoiceControl = null,
+    RadioPassbandValue? Passband = null);
 
 public interface IRadioObservationSource
 {

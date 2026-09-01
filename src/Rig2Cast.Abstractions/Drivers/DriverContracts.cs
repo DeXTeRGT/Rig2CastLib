@@ -65,6 +65,13 @@ public interface IRadioDriver : IAsyncDisposable
 
     ValueTask SetSplitAsync(bool enabled, CancellationToken cancellationToken = default);
 
+    ValueTask SetSplitAsync(
+        bool enabled,
+        VfoId transmitVfo,
+        CancellationToken cancellationToken = default) =>
+        ValueTask.FromException(new NotSupportedException(
+            "This driver does not support explicit split transmit-VFO selection."));
+
     ValueTask SetPttAsync(bool enabled, CancellationToken cancellationToken = default);
 }
 
@@ -109,4 +116,39 @@ public interface IRadioChoiceDriver
         RadioChoiceId control,
         string value,
         CancellationToken cancellationToken = default);
+}
+
+public interface IRadioPassbandDriver
+{
+    ValueTask<RadioPassbandValue> ReadPassbandAsync(CancellationToken cancellationToken = default);
+
+    ValueTask SetPassbandAsync(int widthHz, CancellationToken cancellationToken = default);
+}
+
+public interface IRadioTargetedControlDriver
+{
+    ValueTask<RadioControlValue> ReadControlAsync(
+        RadioControlId control, VfoId target, CancellationToken cancellationToken = default);
+    ValueTask WriteControlAsync(
+        RadioControlId control, VfoId target, int value, CancellationToken cancellationToken = default);
+}
+
+public interface IRadioTargetedChoiceDriver
+{
+    ValueTask<RadioChoiceValue> ReadChoiceAsync(
+        RadioChoiceId control, VfoId target, CancellationToken cancellationToken = default);
+    ValueTask WriteChoiceAsync(
+        RadioChoiceId control, VfoId target, string value, CancellationToken cancellationToken = default);
+}
+
+public interface IRadioTargetedPassbandDriver
+{
+    ValueTask<RadioPassbandValue> ReadPassbandAsync(VfoId target, CancellationToken cancellationToken = default);
+    ValueTask SetPassbandAsync(VfoId target, int widthHz, CancellationToken cancellationToken = default);
+}
+
+public interface IRadioTargetedMeterDriver
+{
+    ValueTask<RadioMeterReading> ReadMeterAsync(
+        RadioMeterId meter, VfoId target, CancellationToken cancellationToken = default);
 }
