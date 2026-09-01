@@ -101,8 +101,7 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
         }
 
         return _observations.Writer.WriteAsync(
-            new RadioDriverObservation(
-                RadioDriverObservationKind.FrequencyChanged,
+            new FrequencyChangedObservation(
                 DateTimeOffset.UtcNow,
                 $"SIM:FREQUENCY:{vfo}:{frequencyHz}",
                 vfo,
@@ -116,11 +115,9 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(droppedFrames, 1);
         return _observations.Writer.WriteAsync(
-            new RadioDriverObservation(
-                RadioDriverObservationKind.DeliveryGap,
+            new DeliveryGapObservation(
                 DateTimeOffset.UtcNow,
-                string.Empty,
-                DroppedFrames: droppedFrames),
+                droppedFrames),
             cancellationToken);
     }
 
@@ -130,8 +127,7 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
         DateTimeOffset observedAt,
         CancellationToken cancellationToken = default) =>
         _observations.Writer.WriteAsync(
-            new RadioDriverObservation(
-                RadioDriverObservationKind.FrequencyChanged,
+            new FrequencyChangedObservation(
                 observedAt,
                 $"SIM:FREQUENCY:{vfo}:{frequencyHz}",
                 vfo,

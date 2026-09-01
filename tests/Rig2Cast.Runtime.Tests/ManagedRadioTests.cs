@@ -551,7 +551,7 @@ public sealed class ManagedRadioTests
         await context.Driver.SimulateObservationGapAsync(12, timeout.Token);
 
         RadioEvent diagnostic = await nextEvent;
-        RadioDriverObservation gap = Assert.IsType<RadioDriverObservation>(diagnostic.Payload);
+        DeliveryGapObservation gap = Assert.IsType<DeliveryGapObservation>(diagnostic.Payload);
         Assert.Equal(RadioEventKind.Diagnostic, diagnostic.Kind);
         Assert.Equal(RadioDriverObservationKind.DeliveryGap, gap.Kind);
         Assert.Equal(12, gap.DroppedFrames);

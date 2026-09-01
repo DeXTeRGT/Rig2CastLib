@@ -17,6 +17,36 @@ Applications / REST / WebSocket / gRPC / rigctld
 
 One managed session exclusively owns each physical connection. Logical clients share that session and never write directly to a transport. PTT always requires a transmit lease.
 
+## Protocol engines and family policies
+
+`Rig2Cast.Protocols` contains reusable wire-session infrastructure. Its ASCII CAT
+engine owns serialized commands and queries, the continuous read loop, frame
+accumulation, response correlation, unsolicited-frame delivery, bounded overflow
+reporting, timeouts, terminal faults, cancellation, and disposal.
+
+The engine is configured by a protocol-family policy. Yaesu and Elecraft retain thin
+family-specific facades that define command framing, valid response prefixes,
+protocol exceptions, and command-rejection behavior. Radio-model parsing remains in
+the driver and is not moved into the shared engine.
+
+This is intentionally not a universal radio protocol base. Future ASCII command
+families can reuse the ASCII engine when their wire behavior fits its contract.
+Binary protocols such as Icom CI-V, and network-native radio APIs, should use separate
+engines while continuing to implement the same radio-driver abstractions.
+
+## Typed driver observations
+
+Drivers publish a closed family of immutable `RadioDriverObservation` records rather
+than a discriminator accompanied by unrelated nullable payload fields. Frequency,
+mode, VFO, split, transmit, complete-state, control, delivery-gap, ignored-frame, and
+unknown-frame observations each carry only the data valid for that event.
+
+`ManagedRadio` processes these variants through type patterns and updates freshness
+only for the state components described by the concrete observation. Driver authors
+must preserve an unsupported or malformed native frame as an
+`UnknownFrameObservation`; they must not manufacture a partially populated state
+event. The `Kind` property remains available as a stable diagnostic discriminator.
+
 `RadioState` represents receive/active VFO and transmit VFO separately. Drivers that
 can select the split transmit VFO implement the explicit
 `SetSplitAsync(enabled, transmitVfo)` operation. The original two-argument convenience

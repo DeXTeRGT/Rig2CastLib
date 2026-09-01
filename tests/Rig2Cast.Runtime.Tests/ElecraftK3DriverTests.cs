@@ -105,8 +105,7 @@ public sealed class ElecraftK3DriverTests
         await transport.EmitAsync("IF00014250000     +000000 1012001001 ;", timeout.Token);
 
         Assert.True(await observations.MoveNextAsync());
-        RadioDriverObservation observation = observations.Current;
-        Assert.Equal(RadioDriverObservationKind.StateInformation, observation.Kind);
+        StateInformationObservation observation = Assert.IsType<StateInformationObservation>(observations.Current);
         Assert.Equal(14_250_000, observation.FrequencyHz);
         Assert.Equal(RadioMode.Usb, observation.Mode);
         Assert.Equal(VfoId.B, observation.TransmitVfo);
@@ -451,13 +450,13 @@ public sealed class ElecraftK3DriverTests
         await transport.EmitAsync("AG123;RT1;RA05;FW0240;", timeout.Token);
 
         Assert.True(await observations.MoveNextAsync());
-        Assert.Equal(123, observations.Current.NumericControl?.Value);
+        Assert.Equal(123, Assert.IsType<NumericControlChangedObservation>(observations.Current).Control.Value);
         Assert.True(await observations.MoveNextAsync());
-        Assert.True(observations.Current.SwitchControl?.Enabled);
+        Assert.True(Assert.IsType<SwitchControlChangedObservation>(observations.Current).Control.Enabled);
         Assert.True(await observations.MoveNextAsync());
-        Assert.Equal("5db", observations.Current.ChoiceControl?.Value);
+        Assert.Equal("5db", Assert.IsType<ChoiceControlChangedObservation>(observations.Current).Control.Value);
         Assert.True(await observations.MoveNextAsync());
-        Assert.Equal(2_400, observations.Current.Passband?.WidthHz);
+        Assert.Equal(2_400, Assert.IsType<PassbandChangedObservation>(observations.Current).Passband.WidthHz);
     }
 
     [Fact]
@@ -481,14 +480,17 @@ public sealed class ElecraftK3DriverTests
         await transport.EmitAsync("RG$162;AG$036;KS027;", timeout.Token);
 
         Assert.True(await observations.MoveNextAsync());
-        Assert.Equal(RadioControlId.RfGain, observations.Current.NumericControl?.Id);
-        Assert.Equal(VfoId.B, observations.Current.NumericControl?.Target);
+        RadioControlValue control = Assert.IsType<NumericControlChangedObservation>(observations.Current).Control;
+        Assert.Equal(RadioControlId.RfGain, control.Id);
+        Assert.Equal(VfoId.B, control.Target);
         Assert.True(await observations.MoveNextAsync());
-        Assert.Equal(RadioControlId.AfGain, observations.Current.NumericControl?.Id);
-        Assert.Equal(VfoId.B, observations.Current.NumericControl?.Target);
+        control = Assert.IsType<NumericControlChangedObservation>(observations.Current).Control;
+        Assert.Equal(RadioControlId.AfGain, control.Id);
+        Assert.Equal(VfoId.B, control.Target);
         Assert.True(await observations.MoveNextAsync());
-        Assert.Equal(RadioControlId.KeyerSpeedWpm, observations.Current.NumericControl?.Id);
-        Assert.Null(observations.Current.NumericControl?.Target);
+        control = Assert.IsType<NumericControlChangedObservation>(observations.Current).Control;
+        Assert.Equal(RadioControlId.KeyerSpeedWpm, control.Id);
+        Assert.Null(control.Target);
     }
 
     [Fact]
@@ -512,8 +514,7 @@ public sealed class ElecraftK3DriverTests
         await transport.EmitAsync("FW00000;", timeout.Token);
 
         Assert.True(await observations.MoveNextAsync());
-        Assert.Equal(RadioDriverObservationKind.Unknown, observations.Current.Kind);
-        Assert.Null(observations.Current.Passband);
+        Assert.IsType<UnknownFrameObservation>(observations.Current);
     }
 
     [Fact]

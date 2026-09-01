@@ -164,8 +164,7 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
         {
             int dropped = _protocol.ConsumeDroppedUnsolicitedFrameCount();
             if (dropped > 0)
-                yield return new(RadioDriverObservationKind.DeliveryGap, DateTimeOffset.UtcNow, string.Empty,
-                    DroppedFrames: dropped);
+                yield return new DeliveryGapObservation(DateTimeOffset.UtcNow, dropped);
             yield return ParseObservation(frame);
         }
     }
@@ -545,37 +544,35 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
         try
         {
             if (frame.StartsWith("FA", StringComparison.OrdinalIgnoreCase))
-                return new(RadioDriverObservationKind.FrequencyChanged, observedAt, frame, VfoId.A, ParseFrequency(frame));
+                return new FrequencyChangedObservation(observedAt, frame, VfoId.A, ParseFrequency(frame));
             if (frame.StartsWith("FB", StringComparison.OrdinalIgnoreCase))
-                return new(RadioDriverObservationKind.FrequencyChanged, observedAt, frame, VfoId.B, ParseFrequency(frame));
+                return new FrequencyChangedObservation(observedAt, frame, VfoId.B, ParseFrequency(frame));
             if (frame.StartsWith("MD", StringComparison.OrdinalIgnoreCase))
-                return new(RadioDriverObservationKind.ModeChanged, observedAt, frame, Mode: ParseMode(frame));
+                return new ModeChangedObservation(observedAt, frame, ParseMode(frame));
             if (frame.StartsWith("FT", StringComparison.OrdinalIgnoreCase))
             {
                 VfoId transmitVfo = ParseVfo(frame);
-                return new(
-                    RadioDriverObservationKind.SplitChanged,
+                return new SplitChangedObservation(
                     observedAt,
                     frame,
-                    Flag: transmitVfo == VfoId.B,
-                    TransmitVfo: transmitVfo);
+                    transmitVfo == VfoId.B,
+                    transmitVfo);
             }
             if (frame.StartsWith("TQ", StringComparison.OrdinalIgnoreCase))
-                return new(RadioDriverObservationKind.TransmitChanged, observedAt, frame, Flag: ParseTransmit(frame));
+                return new TransmitChangedObservation(observedAt, frame, ParseTransmit(frame));
             if (frame.StartsWith("IF", StringComparison.OrdinalIgnoreCase))
             {
                 ElecraftInformation information = ParseInformation(frame);
-                return new(
-                    RadioDriverObservationKind.StateInformation,
+                return new StateInformationObservation(
                     observedAt,
                     frame,
                     VfoId.A,
                     information.FrequencyHz,
                     information.Mode,
-                    TransmitVfo: information.IsSplit ? VfoId.B : VfoId.A,
-                    ActiveVfo: information.ActiveVfo,
-                    IsSplit: information.IsSplit,
-                    IsTransmitting: information.IsTransmitting);
+                    information.ActiveVfo,
+                    information.IsSplit ? VfoId.B : VfoId.A,
+                    information.IsSplit,
+                    information.IsTransmitting);
             }
             if (frame.StartsWith("AG$", StringComparison.OrdinalIgnoreCase))
                 return NumericObservation(frame, RadioControlId.AfGain,
@@ -632,38 +629,35 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
                 return ChoiceObservation(frame, RadioChoiceId.Preamp, value, observedAt);
             }
             if (frame.StartsWith("BW$", StringComparison.OrdinalIgnoreCase))
-                return new(RadioDriverObservationKind.ControlChanged, observedAt, frame,
-                    Passband: new(ParseUnsignedControl(frame, "BW$", 4, 9_999) * 10, observedAt, VfoId.B));
+                return new PassbandChangedObservation(observedAt, frame,
+                    new(ParseUnsignedControl(frame, "BW$", 4, 9_999) * 10, observedAt, VfoId.B));
             if (frame.StartsWith("BW", StringComparison.OrdinalIgnoreCase))
-                return new(RadioDriverObservationKind.ControlChanged, observedAt, frame,
-                    Passband: new(ParseUnsignedControl(frame, "BW", 4, 9_999) * 10, observedAt));
+                return new PassbandChangedObservation(observedAt, frame,
+                    new(ParseUnsignedControl(frame, "BW", 4, 9_999) * 10, observedAt));
             if (frame.StartsWith("FW", StringComparison.OrdinalIgnoreCase))
-                return new(RadioDriverObservationKind.ControlChanged, observedAt, frame,
-                    Passband: new(ParseFilterWidthAnnouncement(frame) * 10, observedAt));
+                return new PassbandChangedObservation(observedAt, frame,
+                    new(ParseFilterWidthAnnouncement(frame) * 10, observedAt));
             if (KnownControlPrefixes.Any(prefix => frame.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
-                return new(RadioDriverObservationKind.Ignored, observedAt, frame);
+                return new IgnoredFrameObservation(observedAt, frame);
         }
         catch (ElecraftProtocolException)
         {
             // Malformed announcements remain visible as diagnostics.
         }
-        return new(RadioDriverObservationKind.Unknown, observedAt, frame);
+        return new UnknownFrameObservation(observedAt, frame);
     }
 
-    private static RadioDriverObservation NumericObservation(
+    private static NumericControlChangedObservation NumericObservation(
         string frame, RadioControlId id, int value, DateTimeOffset observedAt, VfoId? target = null) =>
-        new(RadioDriverObservationKind.ControlChanged, observedAt, frame,
-            NumericControl: new(id, value, observedAt, target));
+        new NumericControlChangedObservation(observedAt, frame, new(id, value, observedAt, target));
 
-    private static RadioDriverObservation SwitchObservation(
+    private static SwitchControlChangedObservation SwitchObservation(
         string frame, RadioSwitchId id, bool value, DateTimeOffset observedAt) =>
-        new(RadioDriverObservationKind.ControlChanged, observedAt, frame,
-            SwitchControl: new(id, value, observedAt));
+        new SwitchControlChangedObservation(observedAt, frame, new(id, value, observedAt));
 
-    private static RadioDriverObservation ChoiceObservation(
+    private static ChoiceControlChangedObservation ChoiceObservation(
         string frame, RadioChoiceId id, string value, DateTimeOffset observedAt, VfoId? target = null) =>
-        new(RadioDriverObservationKind.ControlChanged, observedAt, frame,
-            ChoiceControl: new(id, value, observedAt, target));
+        new ChoiceControlChangedObservation(observedAt, frame, new(id, value, observedAt, target));
 
     private static bool ParseBinary(string response, string prefix) => response switch
     {

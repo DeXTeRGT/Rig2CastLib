@@ -54,9 +54,9 @@ public sealed class Ftdx10DriverTests
         await transport.EmitAsync("FA014300000;", timeout.Token);
 
         Assert.True(await observations.MoveNextAsync());
-        Assert.Equal(RadioDriverObservationKind.FrequencyChanged, observations.Current.Kind);
-        Assert.Equal(VfoId.A, observations.Current.Vfo);
-        Assert.Equal(14_300_000, observations.Current.FrequencyHz);
+        FrequencyChangedObservation observation = Assert.IsType<FrequencyChangedObservation>(observations.Current);
+        Assert.Equal(VfoId.A, observation.Vfo);
+        Assert.Equal(14_300_000, observation.FrequencyHz);
     }
 
     [Fact]
@@ -102,15 +102,16 @@ public sealed class Ftdx10DriverTests
         await transport.EmitAsync(frame, timeout.Token);
 
         Assert.True(await observations.MoveNextAsync());
-        Assert.Equal(expectedKind, observations.Current.Kind);
-        Assert.Equal(expectedFrequency, observations.Current.FrequencyHz);
-        Assert.Equal(expectedMode, observations.Current.Mode);
+        StateInformationObservation observation = Assert.IsType<StateInformationObservation>(observations.Current);
+        Assert.Equal(expectedKind, observation.Kind);
+        Assert.Equal(expectedFrequency, observation.FrequencyHz);
+        Assert.Equal(expectedMode, observation.Mode);
         // Yaesu CAT 2308-F: IF reports the VFO-A frequency and operating mode,
         // but does not report selected A/B VFO or split state.
-        Assert.Equal(VfoId.A, observations.Current.Vfo);
-        Assert.Null(observations.Current.ActiveVfo);
-        Assert.Null(observations.Current.IsSplit);
-        Assert.Null(observations.Current.TransmitVfo);
+        Assert.Equal(VfoId.A, observation.Vfo);
+        Assert.Null(observation.ActiveVfo);
+        Assert.Null(observation.IsSplit);
+        Assert.Null(observation.TransmitVfo);
     }
 
     [Fact]
@@ -127,9 +128,8 @@ public sealed class Ftdx10DriverTests
         await transport.EmitAsync("FD001014217209;", timeout.Token);
 
         Assert.True(await observations.MoveNextAsync());
-        Assert.Equal(RadioDriverObservationKind.Ignored, observations.Current.Kind);
-        Assert.Equal("FD001014217209;", observations.Current.RawFrame);
-        Assert.Null(observations.Current.FrequencyHz);
+        IgnoredFrameObservation observation = Assert.IsType<IgnoredFrameObservation>(observations.Current);
+        Assert.Equal("FD001014217209;", observation.RawFrame);
     }
 
     [Fact]

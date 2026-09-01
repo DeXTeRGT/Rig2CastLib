@@ -272,8 +272,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         {
             int dropped = _protocol.ConsumeDroppedUnsolicitedFrameCount();
             if (dropped > 0)
-                yield return new(RadioDriverObservationKind.DeliveryGap, DateTimeOffset.UtcNow, string.Empty,
-                    DroppedFrames: dropped);
+                yield return new DeliveryGapObservation(DateTimeOffset.UtcNow, dropped);
             yield return ParseObservation(frame);
         }
     }
@@ -699,25 +698,24 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         try
         {
             if (frame.StartsWith("FA", StringComparison.OrdinalIgnoreCase))
-                return new(RadioDriverObservationKind.FrequencyChanged, observedAt, frame, VfoId.A, ParseFrequency(frame));
+                return new FrequencyChangedObservation(observedAt, frame, VfoId.A, ParseFrequency(frame));
             if (frame.StartsWith("FB", StringComparison.OrdinalIgnoreCase))
-                return new(RadioDriverObservationKind.FrequencyChanged, observedAt, frame, VfoId.B, ParseFrequency(frame));
+                return new FrequencyChangedObservation(observedAt, frame, VfoId.B, ParseFrequency(frame));
             if (frame.StartsWith("VS", StringComparison.OrdinalIgnoreCase))
             {
                 VfoId activeVfo = ParseVfo(frame);
-                return new(
-                    RadioDriverObservationKind.ActiveVfoChanged,
+                return new ActiveVfoChangedObservation(
                     observedAt,
                     frame,
                     activeVfo,
-                    TransmitVfo: OppositeVfo(activeVfo));
+                    OppositeVfo(activeVfo));
             }
             if (frame.StartsWith("MD", StringComparison.OrdinalIgnoreCase))
-                return new(RadioDriverObservationKind.ModeChanged, observedAt, frame, Mode: ParseMode(frame));
+                return new ModeChangedObservation(observedAt, frame, ParseMode(frame));
             if (frame.StartsWith("ST", StringComparison.OrdinalIgnoreCase))
-                return new(RadioDriverObservationKind.SplitChanged, observedAt, frame, Flag: ParseBoolean(frame));
+                return new SplitChangedObservation(observedAt, frame, ParseBoolean(frame));
             if (frame.StartsWith("TX", StringComparison.OrdinalIgnoreCase))
-                return new(RadioDriverObservationKind.TransmitChanged, observedAt, frame, Flag: ParseTransmit(frame));
+                return new TransmitChangedObservation(observedAt, frame, ParseTransmit(frame));
             if (frame.StartsWith("IF", StringComparison.OrdinalIgnoreCase))
             {
                 if (frame.Length != 28 || frame[^1] != ';' ||
@@ -727,8 +725,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
                     throw new YaesuProtocolException($"Invalid information response '{frame}'.");
                 }
 
-                return new(
-                    RadioDriverObservationKind.StateInformation,
+                return new StateInformationObservation(
                     observedAt,
                     frame,
                     VfoId.A,
@@ -736,16 +733,16 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
                     mode);
             }
             if (frame.StartsWith("RM0", StringComparison.OrdinalIgnoreCase))
-                return new(RadioDriverObservationKind.Ignored, observedAt, frame);
+                return new IgnoredFrameObservation(observedAt, frame);
             if (IsSpectrumDisplayFrequencyFrame(frame))
-                return new(RadioDriverObservationKind.Ignored, observedAt, frame);
+                return new IgnoredFrameObservation(observedAt, frame);
         }
         catch (YaesuProtocolException)
         {
             // Preserve malformed or unsupported announcements as diagnostics.
         }
 
-        return new(RadioDriverObservationKind.Unknown, observedAt, frame);
+        return new UnknownFrameObservation(observedAt, frame);
     }
 
     private static bool IsSpectrumDisplayFrequencyFrame(string frame) =>
