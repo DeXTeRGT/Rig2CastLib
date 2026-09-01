@@ -1,6 +1,10 @@
 # Receiver and VFO separation
 
-Status: proposed migration design; no public API migration has started.
+Status: additive migration in progress. Receiver identity, topology capabilities,
+parallel receiver/VFO state, and receiver-targeted controls, switches, choices,
+passband, and meters are implemented. Legacy VFO APIs remain available while the
+new receiver-targeted operations are physically validated and in-tree consumers
+are migrated.
 
 ## Problem
 

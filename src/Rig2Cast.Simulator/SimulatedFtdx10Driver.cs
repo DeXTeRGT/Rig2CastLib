@@ -10,7 +10,9 @@ using Rig2Cast.Abstractions.Meters;
 
 namespace Rig2Cast.Simulator;
 
-public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMeterDriver, IRadioSwitchDriver, IRadioChoiceDriver, IRadioPassbandDriver, IRadioObservationSource
+public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMeterDriver, IRadioSwitchDriver, IRadioChoiceDriver, IRadioPassbandDriver,
+    IRadioReceiverControlDriver, IRadioReceiverMeterDriver, IRadioReceiverSwitchDriver,
+    IRadioReceiverChoiceDriver, IRadioReceiverPassbandDriver, IRadioObservationSource
 {
     private readonly object _gate = new();
     private readonly Dictionary<VfoId, long> _frequencies = new()
@@ -140,6 +142,7 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
         Interlocked.Increment(ref _readStateCount);
         lock (_gate)
         {
+            DateTimeOffset observedAt = DateTimeOffset.UtcNow;
             return new RadioState(
                 1,
                 ConnectionStatus.Connected,
@@ -148,9 +151,21 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
                 _mode,
                 _split,
                 _ptt,
-                DateTimeOffset.UtcNow)
+                observedAt)
             {
-                TransmitVfo = _activeVfo == VfoId.A ? VfoId.B : VfoId.A
+                TransmitVfo = _activeVfo == VfoId.A ? VfoId.B : VfoId.A,
+                Vfos = _frequencies.ToDictionary(
+                    pair => pair.Key,
+                    pair => new RadioVfoState(
+                        pair.Key, pair.Value, pair.Key == _activeVfo ? _mode : null, observedAt)),
+                Receivers = new Dictionary<ReceiverId, RadioReceiverState>
+                {
+                    [ReceiverId.Main] = new(
+                        ReceiverId.Main, true, _activeVfo, _frequencies[_activeVfo],
+                        _mode, null, observedAt)
+                },
+                SelectedReceiver = ReceiverId.Main,
+                TransmitReceiver = ReceiverId.Main
             };
         }
     }
@@ -351,6 +366,69 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
         }
     }
 
+    public async ValueTask<RadioControlValue> ReadControlAsync(
+        RadioControlId control, ReceiverId receiver, CancellationToken cancellationToken = default)
+    {
+        EnsureMainReceiver(receiver);
+        return (await ReadControlAsync(control, cancellationToken).ConfigureAwait(false)) with { Receiver = receiver };
+    }
+
+    public ValueTask WriteControlAsync(
+        RadioControlId control, ReceiverId receiver, int value, CancellationToken cancellationToken = default)
+    {
+        EnsureMainReceiver(receiver);
+        return WriteControlAsync(control, value, cancellationToken);
+    }
+
+    public async ValueTask<RadioMeterReading> ReadMeterAsync(
+        RadioMeterId meter, ReceiverId receiver, CancellationToken cancellationToken = default)
+    {
+        EnsureMainReceiver(receiver);
+        return (await ReadMeterAsync(meter, cancellationToken).ConfigureAwait(false)) with { Receiver = receiver };
+    }
+
+    public async ValueTask<RadioSwitchValue> ReadSwitchAsync(
+        RadioSwitchId control, ReceiverId receiver, CancellationToken cancellationToken = default)
+    {
+        EnsureMainReceiver(receiver);
+        return (await ReadSwitchAsync(control, cancellationToken).ConfigureAwait(false)) with { Receiver = receiver };
+    }
+
+    public ValueTask WriteSwitchAsync(
+        RadioSwitchId control, ReceiverId receiver, bool enabled, CancellationToken cancellationToken = default)
+    {
+        EnsureMainReceiver(receiver);
+        return WriteSwitchAsync(control, enabled, cancellationToken);
+    }
+
+    public async ValueTask<RadioChoiceValue> ReadChoiceAsync(
+        RadioChoiceId control, ReceiverId receiver, CancellationToken cancellationToken = default)
+    {
+        EnsureMainReceiver(receiver);
+        return (await ReadChoiceAsync(control, cancellationToken).ConfigureAwait(false)) with { Receiver = receiver };
+    }
+
+    public ValueTask WriteChoiceAsync(
+        RadioChoiceId control, ReceiverId receiver, string value, CancellationToken cancellationToken = default)
+    {
+        EnsureMainReceiver(receiver);
+        return WriteChoiceAsync(control, value, cancellationToken);
+    }
+
+    public async ValueTask<RadioPassbandValue> ReadPassbandAsync(
+        ReceiverId receiver, CancellationToken cancellationToken = default)
+    {
+        EnsureMainReceiver(receiver);
+        return (await ReadPassbandAsync(cancellationToken).ConfigureAwait(false)) with { Receiver = receiver };
+    }
+
+    public ValueTask SetPassbandAsync(
+        ReceiverId receiver, int widthHz, CancellationToken cancellationToken = default)
+    {
+        EnsureMainReceiver(receiver);
+        return SetPassbandAsync(widthHz, cancellationToken);
+    }
+
     public ValueTask DisposeAsync()
     {
         _disposed = true;
@@ -456,7 +534,8 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
             CreateMeterCapabilities(),
             new Dictionary<string, object?>())
         {
-            Passband = CreatePassbandCapability(readWrite)
+            Passband = CreatePassbandCapability(readWrite),
+            Receivers = ReceiverTopologyCapability.MainOnly(new HashSet<VfoId> { VfoId.A, VfoId.B })
         };
     }
 
@@ -470,7 +549,7 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
         Add([RadioMode.Lsb, RadioMode.Usb], ssb);
         Add([RadioMode.Cw, RadioMode.CwReverse, RadioMode.Rtty, RadioMode.RttyReverse,
             RadioMode.Psk, RadioMode.DataLsb, RadioMode.DataUsb], narrow);
-        return new PassbandCapability(feature, constraints);
+        return new PassbandCapability(feature, constraints) { ReceiverTargets = MainReceiverTargets() };
 
         void Add(IReadOnlyList<RadioMode> modes, int[] values)
         {
@@ -484,13 +563,16 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
         var feature = new FeatureDescriptor(CapabilitySupport.Supported, FeatureAccess.Read | FeatureAccess.Write);
         return Enum.GetValues<RadioSwitchId>().ToDictionary(
             id => id,
-            id => new SwitchControlDescriptor(id, id.ToString(), feature));
+            id => new SwitchControlDescriptor(id, id.ToString(), feature)
+            {
+                ReceiverTargets = MainReceiverTargets()
+            });
     }
 
     private static Dictionary<RadioChoiceId, ChoiceControlDescriptor> CreateChoiceCapabilities()
     {
         var feature = new FeatureDescriptor(CapabilitySupport.Supported, FeatureAccess.Read | FeatureAccess.Write);
-        return new Dictionary<RadioChoiceId, ChoiceControlDescriptor>
+        Dictionary<RadioChoiceId, ChoiceControlDescriptor> choices = new()
         {
             [RadioChoiceId.Attenuator] = CreateChoice(RadioChoiceId.Attenuator,
                 ("off", "Off", true), ("6db", "6 dB", true), ("12db", "12 dB", true), ("18db", "18 dB", true)),
@@ -562,6 +644,10 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
                 options[$"{milliseconds}ms"] = new($"{milliseconds}ms", $"{milliseconds} ms");
             return new ChoiceControlDescriptor(RadioChoiceId.VoxDelay, "VOX delay", feature, options);
         }
+
+        return choices.ToDictionary(
+            pair => pair.Key,
+            pair => pair.Value with { ReceiverTargets = MainReceiverTargets() });
     }
 
     private static Dictionary<RadioControlId, NumericControlDescriptor> CreateControlCapabilities()
@@ -594,13 +680,31 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
                 RadioControlId.AudioPeakFilterOffsetHz =>
                     new NumericControlDescriptor(id, "APF offset", feature, -250, 250, 10, "Hz"),
                 _ => new NumericControlDescriptor(id, id.ToString(), feature, 0, 100, 1, "%")
-            });
+            })
+            .ToDictionary(
+                pair => pair.Key,
+                pair => pair.Value with { ReceiverTargets = MainReceiverTargets() });
     }
 
     private static Dictionary<RadioMeterId, RadioMeterDescriptor> CreateMeterCapabilities() =>
         Enum.GetValues<RadioMeterId>().ToDictionary(
             id => id,
-            id => new RadioMeterDescriptor(id, id.ToString(), 0, 255, "raw", false));
+            id => new RadioMeterDescriptor(id, id.ToString(), 0, 255, "raw", false)
+            {
+                RangesByReceiver = new Dictionary<ReceiverId, RadioMeterRange>
+                {
+                    [ReceiverId.Main] = new(0, 255, "raw")
+                }
+            });
+
+    private static HashSet<ReceiverId> MainReceiverTargets() =>
+        new() { ReceiverId.Main };
+
+    private static void EnsureMainReceiver(ReceiverId receiver)
+    {
+        if (receiver != ReceiverId.Main)
+            throw new NotSupportedException($"Receiver '{receiver}' is not supported by the FTDX10 simulator.");
+    }
 
     private sealed class OperationLease(SimulatedFtdx10Driver owner) : IDisposable
     {

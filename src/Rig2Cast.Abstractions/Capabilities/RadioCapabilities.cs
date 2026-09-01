@@ -30,6 +30,29 @@ public sealed record VfoCapability(
     FeatureDescriptor Selection,
     FeatureDescriptor Split);
 
+public sealed record ReceiverCapability(
+    ReceiverId Id,
+    string DisplayName,
+    IReadOnlySet<VfoId> AvailableVfos,
+    bool IsOptional = false,
+    bool SupportsSimultaneousReception = false,
+    bool HasIndependentFrequency = false,
+    bool HasIndependentMode = false,
+    bool HasIndependentPassband = false);
+
+public sealed record ReceiverTopologyCapability(
+    IReadOnlyDictionary<ReceiverId, ReceiverCapability> Available,
+    FeatureDescriptor Selection)
+{
+    public static ReceiverTopologyCapability MainOnly(IReadOnlySet<VfoId> availableVfos) =>
+        new(
+            new Dictionary<ReceiverId, ReceiverCapability>
+            {
+                [ReceiverId.Main] = new(ReceiverId.Main, "Main receiver", availableVfos)
+            },
+            new FeatureDescriptor(CapabilitySupport.Unsupported, FeatureAccess.None));
+}
+
 public sealed record ModeCapability(
     FeatureDescriptor Feature,
     IReadOnlySet<RadioMode> Values);
@@ -51,4 +74,7 @@ public sealed record RadioCapabilities(
     IReadOnlyDictionary<string, object?> Extensions)
 {
     public PassbandCapability Passband { get; init; } = PassbandCapability.Unsupported;
+
+    public ReceiverTopologyCapability Receivers { get; init; } =
+        ReceiverTopologyCapability.MainOnly(new HashSet<VfoId>());
 }

@@ -107,6 +107,20 @@ internal sealed class RadioClientSession(
         return radio.WriteControlAsync(authorization, control, target, value, cancellationToken);
     }
 
+    public ValueTask<RadioControlValue> ReadControlAsync(
+        RadioControlId control, ReceiverId receiver, CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        return radio.ReadControlAsync(control, receiver, cancellationToken);
+    }
+
+    public ValueTask WriteControlAsync(
+        RadioControlId control, ReceiverId receiver, int value, CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        return radio.WriteControlAsync(authorization, control, receiver, value, cancellationToken);
+    }
+
     public ValueTask<RadioMeterReading> ReadMeterAsync(
         RadioMeterId meter,
         CancellationToken cancellationToken = default)
@@ -120,6 +134,13 @@ internal sealed class RadioClientSession(
     {
         EnsureActive();
         return radio.ReadMeterAsync(meter, target, cancellationToken);
+    }
+
+    public ValueTask<RadioMeterReading> ReadMeterAsync(
+        RadioMeterId meter, ReceiverId receiver, CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        return radio.ReadMeterAsync(meter, receiver, cancellationToken);
     }
 
     public ValueTask<RadioSwitchValue> ReadSwitchAsync(
@@ -137,6 +158,20 @@ internal sealed class RadioClientSession(
     {
         EnsureActive();
         return radio.WriteSwitchAsync(authorization, control, enabled, cancellationToken);
+    }
+
+    public ValueTask<RadioSwitchValue> ReadSwitchAsync(
+        RadioSwitchId control, ReceiverId receiver, CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        return radio.ReadSwitchAsync(control, receiver, cancellationToken);
+    }
+
+    public ValueTask WriteSwitchAsync(
+        RadioSwitchId control, ReceiverId receiver, bool enabled, CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        return radio.WriteSwitchAsync(authorization, control, receiver, enabled, cancellationToken);
     }
 
     public ValueTask<RadioChoiceValue> ReadChoiceAsync(
@@ -170,6 +205,20 @@ internal sealed class RadioClientSession(
         return radio.WriteChoiceAsync(authorization, control, target, value, cancellationToken);
     }
 
+    public ValueTask<RadioChoiceValue> ReadChoiceAsync(
+        RadioChoiceId control, ReceiverId receiver, CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        return radio.ReadChoiceAsync(control, receiver, cancellationToken);
+    }
+
+    public ValueTask WriteChoiceAsync(
+        RadioChoiceId control, ReceiverId receiver, string value, CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        return radio.WriteChoiceAsync(authorization, control, receiver, value, cancellationToken);
+    }
+
     public ValueTask<RadioPassbandValue> ReadPassbandAsync(CancellationToken cancellationToken = default)
     {
         EnsureActive();
@@ -194,6 +243,20 @@ internal sealed class RadioClientSession(
     {
         EnsureActive();
         return radio.SetPassbandAsync(authorization, target, widthHz, cancellationToken);
+    }
+
+    public ValueTask<RadioPassbandValue> ReadPassbandAsync(
+        ReceiverId receiver, CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        return radio.ReadPassbandAsync(receiver, cancellationToken);
+    }
+
+    public ValueTask SetPassbandAsync(
+        ReceiverId receiver, int widthHz, CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        return radio.SetPassbandAsync(authorization, receiver, widthHz, cancellationToken);
     }
 
     public ValueTask<LeaseToken> AcquireLeaseAsync(string kind, TimeSpan requestedDuration, CancellationToken cancellationToken = default)

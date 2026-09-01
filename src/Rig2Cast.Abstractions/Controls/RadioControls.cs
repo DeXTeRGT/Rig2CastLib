@@ -1,4 +1,5 @@
 using Rig2Cast.Abstractions.Capabilities;
+using Rig2Cast.Abstractions.Radios;
 
 namespace Rig2Cast.Abstractions.Controls;
 
@@ -35,10 +36,15 @@ public sealed record NumericControlDescriptor(
 {
     public IReadOnlySet<Rig2Cast.Abstractions.Radios.VfoId> Targets { get; init; } =
         new HashSet<Rig2Cast.Abstractions.Radios.VfoId>();
+
+    public IReadOnlySet<ReceiverId> ReceiverTargets { get; init; } = new HashSet<ReceiverId>();
 }
 
 public sealed record RadioControlValue(
     RadioControlId Id,
     int Value,
     DateTimeOffset ObservedAt,
-    Rig2Cast.Abstractions.Radios.VfoId? Target = null);
+    Rig2Cast.Abstractions.Radios.VfoId? Target = null)
+{
+    public ReceiverId? Receiver { get; init; }
+}

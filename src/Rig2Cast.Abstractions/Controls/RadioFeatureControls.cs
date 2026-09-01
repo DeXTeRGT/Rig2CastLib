@@ -25,12 +25,18 @@ public enum RadioSwitchId
 public sealed record SwitchControlDescriptor(
     RadioSwitchId Id,
     string DisplayName,
-    FeatureDescriptor Feature);
+    FeatureDescriptor Feature)
+{
+    public IReadOnlySet<ReceiverId> ReceiverTargets { get; init; } = new HashSet<ReceiverId>();
+}
 
 public sealed record RadioSwitchValue(
     RadioSwitchId Id,
     bool Enabled,
-    DateTimeOffset ObservedAt);
+    DateTimeOffset ObservedAt)
+{
+    public ReceiverId? Receiver { get; init; }
+}
 
 public enum RadioChoiceId
 {
@@ -58,11 +64,18 @@ public sealed record ChoiceControlDescriptor(
 {
     public IReadOnlySet<VfoId> Targets { get; init; } = new HashSet<VfoId>();
 
+    public IReadOnlySet<ReceiverId> ReceiverTargets { get; init; } = new HashSet<ReceiverId>();
+
     public IReadOnlyDictionary<VfoId, IReadOnlyDictionary<string, RadioChoiceOption>>? OptionsByTarget { get; init; }
+
+    public IReadOnlyDictionary<ReceiverId, IReadOnlyDictionary<string, RadioChoiceOption>>? OptionsByReceiver { get; init; }
 }
 
 public sealed record RadioChoiceValue(
     RadioChoiceId Id,
     string Value,
     DateTimeOffset ObservedAt,
-    VfoId? Target = null);
+    VfoId? Target = null)
+{
+    public ReceiverId? Receiver { get; init; }
+}

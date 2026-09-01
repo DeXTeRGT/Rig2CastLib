@@ -10,7 +10,9 @@ using Rig2Cast.Drivers.Yaesu.Protocol;
 
 namespace Rig2Cast.Drivers.Yaesu.Ftdx10;
 
-public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMeterDriver, IRadioSwitchDriver, IRadioChoiceDriver, IRadioPassbandDriver, IRadioObservationSource
+public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMeterDriver, IRadioSwitchDriver, IRadioChoiceDriver, IRadioPassbandDriver,
+    IRadioReceiverControlDriver, IRadioReceiverMeterDriver, IRadioReceiverSwitchDriver,
+    IRadioReceiverChoiceDriver, IRadioReceiverPassbandDriver, IRadioObservationSource
 {
     private static readonly Dictionary<RadioSwitchId, SwitchCommand> SwitchCommands = new()
     {
@@ -179,6 +181,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         RadioMode mode = ParseMode(await QueryParsedAsync(modeQuery, modeQuery, ParseMode, cancellationToken).ConfigureAwait(false));
         bool split = ParseBoolean(await QueryParsedAsync("ST", "ST", ParseBoolean, cancellationToken).ConfigureAwait(false));
         bool transmitting = ParseTransmit(await QueryParsedAsync("TX", "TX", ParseTransmit, cancellationToken).ConfigureAwait(false));
+        DateTimeOffset observedAt = DateTimeOffset.UtcNow;
 
         return new RadioState(
             1,
@@ -188,10 +191,23 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             mode,
             split,
             transmitting,
-            DateTimeOffset.UtcNow)
+            observedAt)
         {
             // The FTDX10 split model uses the VFO opposite the selected receive VFO.
-            TransmitVfo = OppositeVfo(activeVfo)
+            TransmitVfo = OppositeVfo(activeVfo),
+            Vfos = new Dictionary<VfoId, RadioVfoState>
+            {
+                [VfoId.A] = new(VfoId.A, frequencyA, activeVfo == VfoId.A ? mode : null, observedAt),
+                [VfoId.B] = new(VfoId.B, frequencyB, activeVfo == VfoId.B ? mode : null, observedAt)
+            },
+            Receivers = new Dictionary<ReceiverId, RadioReceiverState>
+            {
+                [ReceiverId.Main] = new(
+                    ReceiverId.Main, true, activeVfo,
+                    activeVfo == VfoId.A ? frequencyA : frequencyB, mode, null, observedAt)
+            },
+            SelectedReceiver = ReceiverId.Main,
+            TransmitReceiver = ReceiverId.Main
         };
     }
 
@@ -524,6 +540,69 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         await _protocol.SendAsync($"SH00{code:D2}", cancellationToken).ConfigureAwait(false);
     }
 
+    public async ValueTask<RadioControlValue> ReadControlAsync(
+        RadioControlId control, ReceiverId receiver, CancellationToken cancellationToken = default)
+    {
+        EnsureMainReceiver(receiver);
+        return (await ReadControlAsync(control, cancellationToken).ConfigureAwait(false)) with { Receiver = receiver };
+    }
+
+    public ValueTask WriteControlAsync(
+        RadioControlId control, ReceiverId receiver, int value, CancellationToken cancellationToken = default)
+    {
+        EnsureMainReceiver(receiver);
+        return WriteControlAsync(control, value, cancellationToken);
+    }
+
+    public async ValueTask<RadioMeterReading> ReadMeterAsync(
+        RadioMeterId meter, ReceiverId receiver, CancellationToken cancellationToken = default)
+    {
+        EnsureMainReceiver(receiver);
+        return (await ReadMeterAsync(meter, cancellationToken).ConfigureAwait(false)) with { Receiver = receiver };
+    }
+
+    public async ValueTask<RadioSwitchValue> ReadSwitchAsync(
+        RadioSwitchId control, ReceiverId receiver, CancellationToken cancellationToken = default)
+    {
+        EnsureMainReceiver(receiver);
+        return (await ReadSwitchAsync(control, cancellationToken).ConfigureAwait(false)) with { Receiver = receiver };
+    }
+
+    public ValueTask WriteSwitchAsync(
+        RadioSwitchId control, ReceiverId receiver, bool enabled, CancellationToken cancellationToken = default)
+    {
+        EnsureMainReceiver(receiver);
+        return WriteSwitchAsync(control, enabled, cancellationToken);
+    }
+
+    public async ValueTask<RadioChoiceValue> ReadChoiceAsync(
+        RadioChoiceId control, ReceiverId receiver, CancellationToken cancellationToken = default)
+    {
+        EnsureMainReceiver(receiver);
+        return (await ReadChoiceAsync(control, cancellationToken).ConfigureAwait(false)) with { Receiver = receiver };
+    }
+
+    public ValueTask WriteChoiceAsync(
+        RadioChoiceId control, ReceiverId receiver, string value, CancellationToken cancellationToken = default)
+    {
+        EnsureMainReceiver(receiver);
+        return WriteChoiceAsync(control, value, cancellationToken);
+    }
+
+    public async ValueTask<RadioPassbandValue> ReadPassbandAsync(
+        ReceiverId receiver, CancellationToken cancellationToken = default)
+    {
+        EnsureMainReceiver(receiver);
+        return (await ReadPassbandAsync(cancellationToken).ConfigureAwait(false)) with { Receiver = receiver };
+    }
+
+    public ValueTask SetPassbandAsync(
+        ReceiverId receiver, int widthHz, CancellationToken cancellationToken = default)
+    {
+        EnsureMainReceiver(receiver);
+        return SetPassbandAsync(widthHz, cancellationToken);
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -791,7 +870,8 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
                 ["rig2cast.coverage"] = "core-vfo-mode-split-ptt-controls-meters-features"
             })
         {
-            Passband = CreatePassbandCapability(readWrite)
+            Passband = CreatePassbandCapability(readWrite),
+            Receivers = ReceiverTopologyCapability.MainOnly(new HashSet<VfoId> { VfoId.A, VfoId.B })
         };
     }
 
@@ -807,20 +887,32 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
                 pair.Value.Minimum,
                 pair.Value.Maximum,
                 pair.Value.Scale,
-                pair.Value.Unit));
+                pair.Value.Unit)
+            {
+                ReceiverTargets = MainReceiverTargets()
+            });
     }
 
     private static Dictionary<RadioMeterId, RadioMeterDescriptor> CreateMeterCapabilities() =>
         MeterCommands.ToDictionary(
             pair => pair.Key,
-            pair => new RadioMeterDescriptor(pair.Key, pair.Value.DisplayName, 0, 255, "raw", false));
+            pair => new RadioMeterDescriptor(pair.Key, pair.Value.DisplayName, 0, 255, "raw", false)
+            {
+                RangesByReceiver = new Dictionary<ReceiverId, RadioMeterRange>
+                {
+                    [ReceiverId.Main] = new(0, 255, "raw")
+                }
+            });
 
     private static Dictionary<RadioSwitchId, SwitchControlDescriptor> CreateSwitchCapabilities()
     {
         var feature = new FeatureDescriptor(CapabilitySupport.Supported, FeatureAccess.Read | FeatureAccess.Write);
         return SwitchCommands.ToDictionary(
             pair => pair.Key,
-            pair => new SwitchControlDescriptor(pair.Key, pair.Value.DisplayName, feature));
+            pair => new SwitchControlDescriptor(pair.Key, pair.Value.DisplayName, feature)
+            {
+                ReceiverTargets = MainReceiverTargets()
+            });
     }
 
     private static Dictionary<RadioChoiceId, ChoiceControlDescriptor> CreateChoiceCapabilities()
@@ -834,11 +926,16 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
                 feature,
                 pair.Value.Options.ToDictionary(
                     option => option.Key,
-                    option => new RadioChoiceOption(option.Key, option.Value.DisplayName, option.Value.Writable))));
+                    option => new RadioChoiceOption(option.Key, option.Value.DisplayName, option.Value.Writable)))
+            {
+                ReceiverTargets = MainReceiverTargets()
+            });
         choices[RadioChoiceId.FilterWidth] = CreateFilterWidthCapability(feature);
         choices[RadioChoiceId.VoxDelay] = CreateVoxDelayCapability(feature);
         choices[RadioChoiceId.TuningStep] = CreateTuningStepCapability(feature);
-        return choices;
+        return choices.ToDictionary(
+            pair => pair.Key,
+            pair => pair.Value with { ReceiverTargets = MainReceiverTargets() });
     }
 
     private static ChoiceControlDescriptor CreateVoxDelayCapability(FeatureDescriptor feature)
@@ -901,7 +998,19 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         AddPassbandModes(constraints,
             [RadioMode.Cw, RadioMode.CwReverse, RadioMode.Rtty, RadioMode.RttyReverse,
              RadioMode.Psk, RadioMode.DataLsb, RadioMode.DataUsb], NarrowFilterWidths);
-        return new PassbandCapability(feature, constraints);
+        return new PassbandCapability(feature, constraints)
+        {
+            ReceiverTargets = MainReceiverTargets()
+        };
+    }
+
+    private static HashSet<ReceiverId> MainReceiverTargets() =>
+        new HashSet<ReceiverId> { ReceiverId.Main };
+
+    private static void EnsureMainReceiver(ReceiverId receiver)
+    {
+        if (receiver != ReceiverId.Main)
+            throw new NotSupportedException($"Receiver '{receiver}' is not supported by the FTDX10 driver.");
     }
 
     private static void AddPassbandModes(

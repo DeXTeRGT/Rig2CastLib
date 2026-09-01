@@ -14,7 +14,9 @@ namespace Rig2Cast.Drivers.Elecraft.K3Family;
 public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
     IRadioControlDriver, IRadioSwitchDriver, IRadioChoiceDriver, IRadioPassbandDriver,
     IRadioMeterDriver, IRadioTargetedControlDriver, IRadioTargetedChoiceDriver,
-    IRadioTargetedPassbandDriver, IRadioTargetedMeterDriver
+    IRadioTargetedPassbandDriver, IRadioTargetedMeterDriver,
+    IRadioReceiverControlDriver, IRadioReceiverSwitchDriver, IRadioReceiverChoiceDriver,
+    IRadioReceiverPassbandDriver, IRadioReceiverMeterDriver
 {
     private readonly IRadioTransport _transport;
     private readonly ElecraftAsciiProtocol _protocol;
@@ -90,6 +92,19 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
             await _protocol.QueryAsync("IF", "IF", cancellationToken).ConfigureAwait(false));
         VfoId transmitVfo = ParseVfo(await _protocol.QueryAsync("FT", "FT", cancellationToken).ConfigureAwait(false));
         bool transmitting = ParseTransmit(await _protocol.QueryAsync("TQ", "TQ", cancellationToken).ConfigureAwait(false));
+        DateTimeOffset observedAt = DateTimeOffset.UtcNow;
+        var receivers = new Dictionary<ReceiverId, RadioReceiverState>
+        {
+            [ReceiverId.Main] = new(
+                ReceiverId.Main, true, information.ActiveVfo,
+                information.ActiveVfo == VfoId.A ? frequencyA : frequencyB,
+                information.Mode, null, observedAt)
+        };
+        if (HasSecondaryReceiver)
+        {
+            receivers[ReceiverId.Sub] = new(
+                ReceiverId.Sub, null, VfoId.B, frequencyB, null, null, observedAt);
+        }
         return new RadioState(
             1,
             ConnectionStatus.Connected,
@@ -98,9 +113,19 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
             information.Mode,
             information.IsSplit,
             transmitting,
-            DateTimeOffset.UtcNow)
+            observedAt)
         {
-            TransmitVfo = transmitVfo
+            TransmitVfo = transmitVfo,
+            Vfos = new Dictionary<VfoId, RadioVfoState>
+            {
+                [VfoId.A] = new(VfoId.A, frequencyA,
+                    information.ActiveVfo == VfoId.A ? information.Mode : null, observedAt),
+                [VfoId.B] = new(VfoId.B, frequencyB,
+                    information.ActiveVfo == VfoId.B ? information.Mode : null, observedAt)
+            },
+            Receivers = receivers,
+            SelectedReceiver = ReceiverId.Main,
+            TransmitReceiver = ReceiverId.Main
         };
     }
 
@@ -261,6 +286,18 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
         return _protocol.SendAsync($"{command}{value.ToString("D3", CultureInfo.InvariantCulture)}", cancellationToken);
     }
 
+    public async ValueTask<RadioControlValue> ReadControlAsync(
+        RadioControlId control, ReceiverId receiver, CancellationToken cancellationToken = default)
+    {
+        VfoId legacyTarget = MapReceiverToLegacyTarget(receiver);
+        RadioControlValue value = await ReadControlAsync(control, legacyTarget, cancellationToken).ConfigureAwait(false);
+        return value with { Receiver = receiver };
+    }
+
+    public ValueTask WriteControlAsync(
+        RadioControlId control, ReceiverId receiver, int value, CancellationToken cancellationToken = default) =>
+        WriteControlAsync(control, MapReceiverToLegacyTarget(receiver), value, cancellationToken);
+
     public async ValueTask<RadioSwitchValue> ReadSwitchAsync(
         RadioSwitchId control,
         CancellationToken cancellationToken = default)
@@ -295,6 +332,21 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
             _ => throw new NotSupportedException($"Switch '{control}' is not supported by the Elecraft K3-family driver.")
         };
         return _protocol.SendAsync($"{command}{(enabled ? '1' : '0')}", cancellationToken);
+    }
+
+    public async ValueTask<RadioSwitchValue> ReadSwitchAsync(
+        RadioSwitchId control, ReceiverId receiver, CancellationToken cancellationToken = default)
+    {
+        EnsureMainReceiver(receiver);
+        RadioSwitchValue value = await ReadSwitchAsync(control, cancellationToken).ConfigureAwait(false);
+        return value with { Receiver = receiver };
+    }
+
+    public ValueTask WriteSwitchAsync(
+        RadioSwitchId control, ReceiverId receiver, bool enabled, CancellationToken cancellationToken = default)
+    {
+        EnsureMainReceiver(receiver);
+        return WriteSwitchAsync(control, enabled, cancellationToken);
     }
 
     public async ValueTask<RadioChoiceValue> ReadChoiceAsync(
@@ -411,6 +463,18 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
         return _protocol.SendAsync(command, cancellationToken);
     }
 
+    public async ValueTask<RadioChoiceValue> ReadChoiceAsync(
+        RadioChoiceId control, ReceiverId receiver, CancellationToken cancellationToken = default)
+    {
+        VfoId legacyTarget = MapReceiverToLegacyTarget(receiver);
+        RadioChoiceValue value = await ReadChoiceAsync(control, legacyTarget, cancellationToken).ConfigureAwait(false);
+        return value with { Receiver = receiver };
+    }
+
+    public ValueTask WriteChoiceAsync(
+        RadioChoiceId control, ReceiverId receiver, string value, CancellationToken cancellationToken = default) =>
+        WriteChoiceAsync(control, MapReceiverToLegacyTarget(receiver), value, cancellationToken);
+
     public async ValueTask<RadioPassbandValue> ReadPassbandAsync(CancellationToken cancellationToken = default)
     {
         EnsureActive();
@@ -448,6 +512,18 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
         string command = target == VfoId.B ? "BW$" : "BW";
         return _protocol.SendAsync($"{command}{(widthHz / 10).ToString("D4", CultureInfo.InvariantCulture)}", cancellationToken);
     }
+
+    public async ValueTask<RadioPassbandValue> ReadPassbandAsync(
+        ReceiverId receiver, CancellationToken cancellationToken = default)
+    {
+        VfoId legacyTarget = MapReceiverToLegacyTarget(receiver);
+        RadioPassbandValue value = await ReadPassbandAsync(legacyTarget, cancellationToken).ConfigureAwait(false);
+        return value with { Receiver = receiver };
+    }
+
+    public ValueTask SetPassbandAsync(
+        ReceiverId receiver, int widthHz, CancellationToken cancellationToken = default) =>
+        SetPassbandAsync(MapReceiverToLegacyTarget(receiver), widthHz, cancellationToken);
 
     public async ValueTask<RadioMeterReading> ReadMeterAsync(
         RadioMeterId meter,
@@ -508,6 +584,14 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
             await _protocol.QueryAsync("SM$", "SM$", cancellationToken).ConfigureAwait(false),
             "SM$", 4, 15);
         return new RadioMeterReading(meter, raw, raw / 15d, DateTimeOffset.UtcNow, target);
+    }
+
+    public async ValueTask<RadioMeterReading> ReadMeterAsync(
+        RadioMeterId meter, ReceiverId receiver, CancellationToken cancellationToken = default)
+    {
+        VfoId legacyTarget = MapReceiverToLegacyTarget(receiver);
+        RadioMeterReading value = await ReadMeterAsync(meter, legacyTarget, cancellationToken).ConfigureAwait(false);
+        return value with { Receiver = receiver };
     }
 
     public async ValueTask DisposeAsync()
@@ -630,13 +714,16 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
             }
             if (frame.StartsWith("BW$", StringComparison.OrdinalIgnoreCase))
                 return new PassbandChangedObservation(observedAt, frame,
-                    new(ParseUnsignedControl(frame, "BW$", 4, 9_999) * 10, observedAt, VfoId.B));
+                    new RadioPassbandValue(ParseUnsignedControl(frame, "BW$", 4, 9_999) * 10, observedAt, VfoId.B)
+                        { Receiver = ReceiverId.Sub });
             if (frame.StartsWith("BW", StringComparison.OrdinalIgnoreCase))
                 return new PassbandChangedObservation(observedAt, frame,
-                    new(ParseUnsignedControl(frame, "BW", 4, 9_999) * 10, observedAt));
+                    new RadioPassbandValue(ParseUnsignedControl(frame, "BW", 4, 9_999) * 10, observedAt)
+                        { Receiver = ReceiverId.Main });
             if (frame.StartsWith("FW", StringComparison.OrdinalIgnoreCase))
                 return new PassbandChangedObservation(observedAt, frame,
-                    new(ParseFilterWidthAnnouncement(frame) * 10, observedAt));
+                    new RadioPassbandValue(ParseFilterWidthAnnouncement(frame) * 10, observedAt)
+                        { Receiver = ReceiverId.Main });
             if (KnownControlPrefixes.Any(prefix => frame.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
                 return new IgnoredFrameObservation(observedAt, frame);
         }
@@ -649,7 +736,12 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
 
     private static NumericControlChangedObservation NumericObservation(
         string frame, RadioControlId id, int value, DateTimeOffset observedAt, VfoId? target = null) =>
-        new NumericControlChangedObservation(observedAt, frame, new(id, value, observedAt, target));
+        new NumericControlChangedObservation(observedAt, frame,
+            new RadioControlValue(id, value, observedAt, target)
+            {
+                Receiver = target == VfoId.B ? ReceiverId.Sub :
+                    id is RadioControlId.AfGain or RadioControlId.RfGain ? ReceiverId.Main : null
+            });
 
     private static SwitchControlChangedObservation SwitchObservation(
         string frame, RadioSwitchId id, bool value, DateTimeOffset observedAt) =>
@@ -657,7 +749,12 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
 
     private static ChoiceControlChangedObservation ChoiceObservation(
         string frame, RadioChoiceId id, string value, DateTimeOffset observedAt, VfoId? target = null) =>
-        new ChoiceControlChangedObservation(observedAt, frame, new(id, value, observedAt, target));
+        new ChoiceControlChangedObservation(observedAt, frame,
+            new RadioChoiceValue(id, value, observedAt, target)
+            {
+                Receiver = target == VfoId.B ? ReceiverId.Sub :
+                    id is RadioChoiceId.Attenuator or RadioChoiceId.Preamp ? ReceiverId.Main : null
+            });
 
     private static bool ParseBinary(string response, string prefix) => response switch
     {
@@ -756,8 +853,37 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
                 ["rig2cast.coverage"] = "core-vfo-mode-split-ptt"
             })
         {
-            Passband = CreatePassbandCapability(profile, optionResponse, readWrite)
+            Passband = CreatePassbandCapability(profile, optionResponse, readWrite),
+            Receivers = CreateReceiverCapabilities(profile, optionResponse)
         };
+    }
+
+    private static ReceiverTopologyCapability CreateReceiverCapabilities(
+        ElecraftK3Profile profile,
+        string optionResponse)
+    {
+        var available = new Dictionary<ReceiverId, ReceiverCapability>
+        {
+            [ReceiverId.Main] = new(
+                ReceiverId.Main,
+                "Main receiver",
+                new HashSet<VfoId> { VfoId.A, VfoId.B })
+        };
+        if (SupportsSecondaryReceiver(profile, optionResponse))
+        {
+            available[ReceiverId.Sub] = new(
+                ReceiverId.Sub,
+                "Sub receiver",
+                new HashSet<VfoId> { VfoId.B },
+                IsOptional: true,
+                SupportsSimultaneousReception: true,
+                HasIndependentFrequency: true,
+                HasIndependentMode: true,
+                HasIndependentPassband: true);
+        }
+        return new ReceiverTopologyCapability(
+            available,
+            new FeatureDescriptor(CapabilitySupport.Unsupported, FeatureAccess.None));
     }
 
     private int GetControlMaximum(RadioControlId control) => control switch
@@ -810,6 +936,22 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
 
     private bool HasSecondaryReceiver => SupportsSecondaryReceiver(_profile, _optionResponse);
 
+    private VfoId MapReceiverToLegacyTarget(ReceiverId receiver)
+    {
+        if (receiver == ReceiverId.Main)
+            return VfoId.A;
+        if (receiver == ReceiverId.Sub && HasSecondaryReceiver)
+            return VfoId.B;
+        throw new NotSupportedException(
+            $"Receiver '{receiver}' is not available on the {_profile.Model} configuration.");
+    }
+
+    private static void EnsureMainReceiver(ReceiverId receiver)
+    {
+        if (receiver != ReceiverId.Main)
+            throw new NotSupportedException($"Switch operation does not support receiver '{receiver}'.");
+    }
+
     private void EnsureTargetSupported(VfoId target)
     {
         if (target == VfoId.A)
@@ -827,6 +969,12 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
         SupportsSecondaryReceiver(profile, optionResponse)
             ? new HashSet<VfoId> { VfoId.A, VfoId.B }
             : new HashSet<VfoId> { VfoId.A };
+
+    private static HashSet<ReceiverId> CreateReceiverIds(
+        ElecraftK3Profile profile, string optionResponse) =>
+        SupportsSecondaryReceiver(profile, optionResponse)
+            ? new HashSet<ReceiverId> { ReceiverId.Main, ReceiverId.Sub }
+            : new HashSet<ReceiverId> { ReceiverId.Main };
 
     private static string DecodeSubAttenuator(string response) => response switch
     {
@@ -860,10 +1008,13 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
         ElecraftK3Profile profile, string optionResponse, FeatureDescriptor feature)
     {
         HashSet<VfoId> targets = CreateReceiverTargets(profile, optionResponse);
+        HashSet<ReceiverId> receivers = CreateReceiverIds(profile, optionResponse);
         return new()
     {
-        [RadioControlId.AfGain] = new(RadioControlId.AfGain, "AF gain", feature, 0, 255, 1, "raw") { Targets = targets },
-        [RadioControlId.RfGain] = new(RadioControlId.RfGain, "RF gain", feature, 0, 250, 1, "raw") { Targets = targets },
+        [RadioControlId.AfGain] = new(RadioControlId.AfGain, "AF gain", feature, 0, 255, 1, "raw")
+            { Targets = targets, ReceiverTargets = receivers },
+        [RadioControlId.RfGain] = new(RadioControlId.RfGain, "RF gain", feature, 0, 250, 1, "raw")
+            { Targets = targets, ReceiverTargets = receivers },
         [RadioControlId.TransmitPower] = new(
             RadioControlId.TransmitPower, "Requested transmit power", feature, 0,
             GetPowerMaximum(profile, optionResponse), 1, "W"),
@@ -876,14 +1027,17 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
 
     private static Dictionary<RadioSwitchId, SwitchControlDescriptor> CreateSwitchCapabilities(FeatureDescriptor feature) => new()
     {
-        [RadioSwitchId.ReceiveClarifier] = new(RadioSwitchId.ReceiveClarifier, "RIT", feature),
+        [RadioSwitchId.ReceiveClarifier] = new(RadioSwitchId.ReceiveClarifier, "RIT", feature)
+            { ReceiverTargets = new HashSet<ReceiverId> { ReceiverId.Main } },
         [RadioSwitchId.TransmitClarifier] = new(RadioSwitchId.TransmitClarifier, "XIT", feature)
+            { ReceiverTargets = new HashSet<ReceiverId> { ReceiverId.Main } }
     };
 
     private static Dictionary<RadioChoiceId, ChoiceControlDescriptor> CreateChoiceCapabilities(
         ElecraftK3Profile profile, string optionResponse, FeatureDescriptor feature)
     {
         HashSet<VfoId> targets = CreateReceiverTargets(profile, optionResponse);
+        HashSet<ReceiverId> receivers = CreateReceiverIds(profile, optionResponse);
         var subAttenuatorOptions = new Dictionary<string, RadioChoiceOption>
         {
             ["off"] = new("off", "Off"), ["10db"] = new("10db", "10 dB")
@@ -902,19 +1056,31 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
                 CreateAttenuatorOptions(profile))
             {
                 Targets = targets,
+                ReceiverTargets = receivers,
                 OptionsByTarget = new Dictionary<VfoId, IReadOnlyDictionary<string, RadioChoiceOption>>
                 {
                     [VfoId.A] = CreateAttenuatorOptions(profile), [VfoId.B] = subAttenuatorOptions
-                }.Where(pair => targets.Contains(pair.Key)).ToDictionary(pair => pair.Key, pair => pair.Value)
+                }.Where(pair => targets.Contains(pair.Key)).ToDictionary(pair => pair.Key, pair => pair.Value),
+                OptionsByReceiver = new Dictionary<ReceiverId, IReadOnlyDictionary<string, RadioChoiceOption>>
+                {
+                    [ReceiverId.Main] = CreateAttenuatorOptions(profile),
+                    [ReceiverId.Sub] = subAttenuatorOptions
+                }.Where(pair => receivers.Contains(pair.Key)).ToDictionary(pair => pair.Key, pair => pair.Value)
             },
             [RadioChoiceId.Preamp] = new(RadioChoiceId.Preamp, "Preamplifier", feature,
                 CreatePreampOptions(profile, optionResponse))
             {
                 Targets = targets,
+                ReceiverTargets = receivers,
                 OptionsByTarget = new Dictionary<VfoId, IReadOnlyDictionary<string, RadioChoiceOption>>
                 {
                     [VfoId.A] = CreatePreampOptions(profile, optionResponse), [VfoId.B] = subPreampOptions
-                }.Where(pair => targets.Contains(pair.Key)).ToDictionary(pair => pair.Key, pair => pair.Value)
+                }.Where(pair => targets.Contains(pair.Key)).ToDictionary(pair => pair.Key, pair => pair.Value),
+                OptionsByReceiver = new Dictionary<ReceiverId, IReadOnlyDictionary<string, RadioChoiceOption>>
+                {
+                    [ReceiverId.Main] = CreatePreampOptions(profile, optionResponse),
+                    [ReceiverId.Sub] = subPreampOptions
+                }.Where(pair => receivers.Contains(pair.Key)).ToDictionary(pair => pair.Key, pair => pair.Value)
             }
         };
         return choices;
@@ -930,7 +1096,8 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
             feature,
             profile.SupportedModes.ToDictionary(mode => mode, _ => constraint))
         {
-            Targets = CreateReceiverTargets(profile, optionResponse)
+            Targets = CreateReceiverTargets(profile, optionResponse),
+            ReceiverTargets = CreateReceiverIds(profile, optionResponse)
         };
     }
 
@@ -939,20 +1106,31 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
     {
         bool desktop = profile.ModelId is ElecraftK3Profile.K3SModelId or ElecraftK3Profile.K3ModelId;
         HashSet<VfoId> targets = CreateReceiverTargets(profile, optionResponse);
+        HashSet<ReceiverId> receivers = CreateReceiverIds(profile, optionResponse);
         var signalRanges = new Dictionary<VfoId, RadioMeterRange>
         {
             [VfoId.A] = desktop ? new(0, 140, "raw SMH") : new(0, 15, "raw SM")
         };
         if (targets.Contains(VfoId.B))
             signalRanges[VfoId.B] = new(0, 15, "raw SM$");
+        var receiverSignalRanges = new Dictionary<ReceiverId, RadioMeterRange>
+        {
+            [ReceiverId.Main] = desktop ? new(0, 140, "raw SMH") : new(0, 15, "raw SM")
+        };
+        if (receivers.Contains(ReceiverId.Sub))
+            receiverSignalRanges[ReceiverId.Sub] = new(0, 15, "raw SM$");
         return new Dictionary<RadioMeterId, RadioMeterDescriptor>
         {
             [RadioMeterId.SignalStrength] = desktop
-                ? new(RadioMeterId.SignalStrength, "High-resolution S-meter", 0, 140, "raw SMH", false) { RangesByTarget = signalRanges }
-                : new(RadioMeterId.SignalStrength, "S-meter", 0, 15, "raw SM", false) { RangesByTarget = signalRanges },
+                ? new(RadioMeterId.SignalStrength, "High-resolution S-meter", 0, 140, "raw SMH", false)
+                    { RangesByTarget = signalRanges, RangesByReceiver = receiverSignalRanges }
+                : new(RadioMeterId.SignalStrength, "S-meter", 0, 15, "raw SM", false)
+                    { RangesByTarget = signalRanges, RangesByReceiver = receiverSignalRanges },
             [RadioMeterId.Swr] = new(RadioMeterId.Swr, "SWR", 10, 999, "0.1 SWR", false)
             {
-                RangesByTarget = new Dictionary<VfoId, RadioMeterRange> { [VfoId.A] = new(10, 999, "0.1 SWR") }
+                RangesByTarget = new Dictionary<VfoId, RadioMeterRange> { [VfoId.A] = new(10, 999, "0.1 SWR") },
+                RangesByReceiver = new Dictionary<ReceiverId, RadioMeterRange>
+                    { [ReceiverId.Main] = new(10, 999, "0.1 SWR") }
             }
         };
     }

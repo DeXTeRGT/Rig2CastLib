@@ -3,6 +3,8 @@ using Rig2Cast.Abstractions.Radios;
 using Rig2Cast.Abstractions.Controls;
 using Rig2Cast.Abstractions.Capabilities;
 using Rig2Cast.Abstractions.Meters;
+using Rig2Cast.Abstractions.Security;
+using Rig2Cast.Abstractions.Sessions;
 using Rig2Cast.Drivers.Elecraft.K3Family;
 using Rig2Cast.Drivers.Elecraft.Protocol;
 using Rig2Cast.Runtime.Sessions;
@@ -57,6 +59,10 @@ public sealed class ElecraftK3DriverTests
         Assert.Equal(RadioMode.Usb, state.Mode);
         Assert.True(state.IsSplit);
         Assert.False(state.IsTransmitting);
+        Assert.Equal(VfoId.A, state.Receivers[ReceiverId.Main].SelectedVfo);
+        Assert.Equal(VfoId.B, state.Receivers[ReceiverId.Sub].SelectedVfo);
+        Assert.Equal(14_275_000, state.Receivers[ReceiverId.Sub].FrequencyHz);
+        Assert.Null(state.Receivers[ReceiverId.Sub].IsEnabled);
     }
 
     [Fact]
@@ -122,6 +128,9 @@ public sealed class ElecraftK3DriverTests
             transport, ElecraftK3Profile.Models[ElecraftK3Profile.KX2ModelId]);
 
         Assert.DoesNotContain(RadioMode.Fm, driver.Capabilities.Modes.Values);
+        Assert.Single(driver.Capabilities.Receivers.Available);
+        Assert.Contains(ReceiverId.Main, driver.Capabilities.Receivers.Available.Keys);
+        Assert.DoesNotContain(ReceiverId.Sub, driver.Capabilities.Receivers.Available.Keys);
         Assert.Throws<NotSupportedException>(() =>
             ElecraftK3Profile.Models[ElecraftK3Profile.KX2ModelId].EncodeMode(RadioMode.Fm));
     }
@@ -375,6 +384,10 @@ public sealed class ElecraftK3DriverTests
         Assert.Contains("15db", driver.Capabilities.Choices[RadioChoiceId.Attenuator].Options.Keys);
         Assert.Contains("preamp2", driver.Capabilities.Choices[RadioChoiceId.Preamp].Options.Keys);
         Assert.Contains(RadioSwitchId.ReceiveClarifier, driver.Capabilities.Switches.Keys);
+        ReceiverCapability sub = driver.Capabilities.Receivers.Available[ReceiverId.Sub];
+        Assert.True(sub.IsOptional);
+        Assert.True(sub.SupportsSimultaneousReception);
+        Assert.Equal(new HashSet<VfoId> { VfoId.B }, sub.AvailableVfos);
     }
 
     [Fact]
@@ -483,10 +496,12 @@ public sealed class ElecraftK3DriverTests
         RadioControlValue control = Assert.IsType<NumericControlChangedObservation>(observations.Current).Control;
         Assert.Equal(RadioControlId.RfGain, control.Id);
         Assert.Equal(VfoId.B, control.Target);
+        Assert.Equal(ReceiverId.Sub, control.Receiver);
         Assert.True(await observations.MoveNextAsync());
         control = Assert.IsType<NumericControlChangedObservation>(observations.Current).Control;
         Assert.Equal(RadioControlId.AfGain, control.Id);
         Assert.Equal(VfoId.B, control.Target);
+        Assert.Equal(ReceiverId.Sub, control.Receiver);
         Assert.True(await observations.MoveNextAsync());
         control = Assert.IsType<NumericControlChangedObservation>(observations.Current).Control;
         Assert.Equal(RadioControlId.KeyerSpeedWpm, control.Id);
@@ -532,16 +547,17 @@ public sealed class ElecraftK3DriverTests
         await using ElecraftK3Driver driver = await ElecraftK3Driver.OpenAsync(
             transport, ElecraftK3Profile.Models[ElecraftK3Profile.K3SModelId]);
 
-        Assert.Equal(36, (await driver.ReadControlAsync(RadioControlId.AfGain, VfoId.B)).Value);
-        await driver.WriteControlAsync(RadioControlId.RfGain, VfoId.B, 200);
-        Assert.Equal("10db", (await driver.ReadChoiceAsync(RadioChoiceId.Attenuator, VfoId.B)).Value);
-        await driver.WriteChoiceAsync(RadioChoiceId.Preamp, VfoId.B, "preamp1");
-        Assert.Equal(2_400, (await driver.ReadPassbandAsync(VfoId.B)).WidthHz);
-        await driver.SetPassbandAsync(VfoId.B, 2_700);
-        RadioMeterReading meter = await driver.ReadMeterAsync(RadioMeterId.SignalStrength, VfoId.B);
+        Assert.Equal(36, (await driver.ReadControlAsync(RadioControlId.AfGain, ReceiverId.Sub)).Value);
+        await driver.WriteControlAsync(RadioControlId.RfGain, ReceiverId.Sub, 200);
+        Assert.Equal("10db", (await driver.ReadChoiceAsync(RadioChoiceId.Attenuator, ReceiverId.Sub)).Value);
+        await driver.WriteChoiceAsync(RadioChoiceId.Preamp, ReceiverId.Sub, "preamp1");
+        Assert.Equal(2_400, (await driver.ReadPassbandAsync(ReceiverId.Sub)).WidthHz);
+        await driver.SetPassbandAsync(ReceiverId.Sub, 2_700);
+        RadioMeterReading meter = await driver.ReadMeterAsync(RadioMeterId.SignalStrength, ReceiverId.Sub);
 
         Assert.Equal(9, meter.RawValue);
         Assert.Equal(VfoId.B, meter.Target);
+        Assert.Equal(ReceiverId.Sub, meter.Receiver);
         transport.AssertComplete();
     }
 
@@ -554,11 +570,41 @@ public sealed class ElecraftK3DriverTests
             transport, ElecraftK3Profile.Models[ElecraftK3Profile.K3SModelId]);
 
         Assert.Contains(VfoId.B, driver.Capabilities.Controls[RadioControlId.AfGain].Targets);
+        Assert.Contains(ReceiverId.Sub, driver.Capabilities.Controls[RadioControlId.AfGain].ReceiverTargets);
         Assert.Contains(VfoId.B, driver.Capabilities.Passband.Targets);
+        Assert.Contains(ReceiverId.Sub, driver.Capabilities.Passband.ReceiverTargets);
         ChoiceControlDescriptor attenuator = driver.Capabilities.Choices[RadioChoiceId.Attenuator];
         Assert.Equal(["off", "10db"], attenuator.OptionsByTarget![VfoId.B].Keys);
+        Assert.Equal(["off", "10db"], attenuator.OptionsByReceiver![ReceiverId.Sub].Keys);
         RadioMeterRange subMeter = driver.Capabilities.Meters[RadioMeterId.SignalStrength].RangesByTarget![VfoId.B];
         Assert.Equal(15, subMeter.RawMaximum);
+        Assert.Equal(15, driver.Capabilities.Meters[RadioMeterId.SignalStrength]
+            .RangesByReceiver![ReceiverId.Sub].RawMaximum);
         Assert.DoesNotContain(VfoId.B, driver.Capabilities.Meters[RadioMeterId.Swr].RangesByTarget!.Keys);
+        Assert.DoesNotContain(ReceiverId.Sub,
+            driver.Capabilities.Meters[RadioMeterId.Swr].RangesByReceiver!.Keys);
+    }
+
+    [Fact]
+    public async Task ManagedSessionRoutesReceiverTargetedReadThroughScheduler()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("OM;", "OM-P-S---LVR--;");
+        transport.Add("FA;", "FA00014250000;");
+        transport.Add("FB;", "FB00014275000;");
+        transport.Add("IF;", "IF00014250000     +000000 0002001001 ;");
+        transport.Add("FT;", "FT1;");
+        transport.Add("TQ;", "TQ0;");
+        transport.Add("AG$;", "AG$036;");
+        ElecraftK3Driver driver = await ElecraftK3Driver.OpenAsync(
+            transport, ElecraftK3Profile.Models[ElecraftK3Profile.K3SModelId]);
+        await using ManagedRadio radio = await ManagedRadio.CreateAsync("k3s", driver);
+        await using IRadioSession session = radio.OpenSession(new ClientIdentity("receiver-client"));
+
+        RadioControlValue value = await session.ReadControlAsync(RadioControlId.AfGain, ReceiverId.Sub);
+
+        Assert.Equal(36, value.Value);
+        Assert.Equal(ReceiverId.Sub, value.Receiver);
+        transport.AssertComplete();
     }
 }

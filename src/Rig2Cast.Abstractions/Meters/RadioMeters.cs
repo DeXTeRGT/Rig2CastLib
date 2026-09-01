@@ -22,6 +22,8 @@ public sealed record RadioMeterDescriptor(
     bool CalibrationAvailable)
 {
     public IReadOnlyDictionary<VfoId, RadioMeterRange>? RangesByTarget { get; init; }
+
+    public IReadOnlyDictionary<ReceiverId, RadioMeterRange>? RangesByReceiver { get; init; }
 }
 
 public sealed record RadioMeterRange(int RawMinimum, int RawMaximum, string RawUnit);
@@ -31,4 +33,7 @@ public sealed record RadioMeterReading(
     int RawValue,
     double NormalizedValue,
     DateTimeOffset ObservedAt,
-    VfoId? Target = null);
+    VfoId? Target = null)
+{
+    public ReceiverId? Receiver { get; init; }
+}

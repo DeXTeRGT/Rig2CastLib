@@ -49,6 +49,12 @@ public interface IRadioSession : IAsyncDisposable
     ValueTask WriteControlAsync(
         RadioControlId control, VfoId target, int value, CancellationToken cancellationToken = default);
 
+    ValueTask<RadioControlValue> ReadControlAsync(
+        RadioControlId control, ReceiverId receiver, CancellationToken cancellationToken = default);
+
+    ValueTask WriteControlAsync(
+        RadioControlId control, ReceiverId receiver, int value, CancellationToken cancellationToken = default);
+
     ValueTask<RadioSwitchValue> ReadSwitchAsync(
         RadioSwitchId control,
         CancellationToken cancellationToken = default);
@@ -57,6 +63,12 @@ public interface IRadioSession : IAsyncDisposable
         RadioSwitchId control,
         bool enabled,
         CancellationToken cancellationToken = default);
+
+    ValueTask<RadioSwitchValue> ReadSwitchAsync(
+        RadioSwitchId control, ReceiverId receiver, CancellationToken cancellationToken = default);
+
+    ValueTask WriteSwitchAsync(
+        RadioSwitchId control, ReceiverId receiver, bool enabled, CancellationToken cancellationToken = default);
 
     ValueTask<RadioChoiceValue> ReadChoiceAsync(
         RadioChoiceId control,
@@ -73,6 +85,12 @@ public interface IRadioSession : IAsyncDisposable
     ValueTask WriteChoiceAsync(
         RadioChoiceId control, VfoId target, string value, CancellationToken cancellationToken = default);
 
+    ValueTask<RadioChoiceValue> ReadChoiceAsync(
+        RadioChoiceId control, ReceiverId receiver, CancellationToken cancellationToken = default);
+
+    ValueTask WriteChoiceAsync(
+        RadioChoiceId control, ReceiverId receiver, string value, CancellationToken cancellationToken = default);
+
     ValueTask<RadioPassbandValue> ReadPassbandAsync(CancellationToken cancellationToken = default);
 
     ValueTask SetPassbandAsync(int widthHz, CancellationToken cancellationToken = default);
@@ -83,12 +101,21 @@ public interface IRadioSession : IAsyncDisposable
     ValueTask SetPassbandAsync(
         VfoId target, int widthHz, CancellationToken cancellationToken = default);
 
+    ValueTask<RadioPassbandValue> ReadPassbandAsync(
+        ReceiverId receiver, CancellationToken cancellationToken = default);
+
+    ValueTask SetPassbandAsync(
+        ReceiverId receiver, int widthHz, CancellationToken cancellationToken = default);
+
     ValueTask<RadioMeterReading> ReadMeterAsync(
         RadioMeterId meter,
         CancellationToken cancellationToken = default);
 
     ValueTask<RadioMeterReading> ReadMeterAsync(
         RadioMeterId meter, VfoId target, CancellationToken cancellationToken = default);
+
+    ValueTask<RadioMeterReading> ReadMeterAsync(
+        RadioMeterId meter, ReceiverId receiver, CancellationToken cancellationToken = default);
 
     ValueTask<LeaseToken> AcquireLeaseAsync(
         string kind,
@@ -132,10 +159,16 @@ public interface IRadioOperationScope
     ValueTask WriteControlAsync(
         RadioControlId control, VfoId target, int value, CancellationToken cancellationToken = default);
 
+    ValueTask WriteControlAsync(
+        RadioControlId control, ReceiverId receiver, int value, CancellationToken cancellationToken = default);
+
     ValueTask WriteSwitchAsync(
         RadioSwitchId control,
         bool enabled,
         CancellationToken cancellationToken = default);
+
+    ValueTask WriteSwitchAsync(
+        RadioSwitchId control, ReceiverId receiver, bool enabled, CancellationToken cancellationToken = default);
 
     ValueTask WriteChoiceAsync(
         RadioChoiceId control,
@@ -145,8 +178,14 @@ public interface IRadioOperationScope
     ValueTask WriteChoiceAsync(
         RadioChoiceId control, VfoId target, string value, CancellationToken cancellationToken = default);
 
+    ValueTask WriteChoiceAsync(
+        RadioChoiceId control, ReceiverId receiver, string value, CancellationToken cancellationToken = default);
+
     ValueTask SetPassbandAsync(int widthHz, CancellationToken cancellationToken = default);
 
     ValueTask SetPassbandAsync(
         VfoId target, int widthHz, CancellationToken cancellationToken = default);
+
+    ValueTask SetPassbandAsync(
+        ReceiverId receiver, int widthHz, CancellationToken cancellationToken = default);
 }

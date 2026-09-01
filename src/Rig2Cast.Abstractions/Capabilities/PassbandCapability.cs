@@ -15,9 +15,14 @@ public sealed record PassbandCapability(
 {
     public IReadOnlySet<VfoId> Targets { get; init; } = new HashSet<VfoId>();
 
+    public IReadOnlySet<ReceiverId> ReceiverTargets { get; init; } = new HashSet<ReceiverId>();
+
     public static PassbandCapability Unsupported { get; } = new(
         new FeatureDescriptor(CapabilitySupport.Unsupported, FeatureAccess.None),
         new Dictionary<RadioMode, PassbandConstraint>());
 }
 
-public sealed record RadioPassbandValue(int WidthHz, DateTimeOffset ObservedAt, VfoId? Target = null);
+public sealed record RadioPassbandValue(int WidthHz, DateTimeOffset ObservedAt, VfoId? Target = null)
+{
+    public ReceiverId? Receiver { get; init; }
+}

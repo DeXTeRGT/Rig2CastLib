@@ -292,6 +292,33 @@ public sealed class ManagedRadio : IAsyncDisposable
         }, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
+    internal ValueTask<RadioControlValue> ReadControlAsync(
+        RadioControlId control, ReceiverId receiver, CancellationToken cancellationToken) =>
+        ExecuteHardwareAsync(token =>
+        {
+            ValidateTarget(_driver.Capabilities.Controls[control].ReceiverTargets, receiver, control.ToString());
+            return GetReceiverControlDriver(control).ReadControlAsync(control, receiver, token);
+        }, cancellationToken: cancellationToken);
+
+    internal async ValueTask WriteControlAsync(
+        ClientAuthorization authorization, RadioControlId control, ReceiverId receiver, int value,
+        CancellationToken cancellationToken)
+    {
+        EnsureCanControl(authorization);
+        await ExecuteHardwareAsync(async token =>
+        {
+            NumericControlDescriptor descriptor = _driver.Capabilities.Controls[control];
+            ValidateTarget(descriptor.ReceiverTargets, receiver, control.ToString());
+            if (value < descriptor.Minimum || value > descriptor.Maximum ||
+                (value - descriptor.Minimum) % descriptor.Step != 0)
+                throw new ArgumentOutOfRangeException(nameof(value));
+            IRadioReceiverControlDriver driver = GetReceiverControlDriver(control);
+            await driver.WriteControlAsync(control, receiver, value, token).ConfigureAwait(false);
+            _events.Publish(RadioEventKind.ControlChanged,
+                await driver.ReadControlAsync(control, receiver, token).ConfigureAwait(false));
+        }, cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
     internal ValueTask<RadioMeterReading> ReadMeterAsync(
         RadioMeterId meter,
         CancellationToken cancellationToken) =>
@@ -308,6 +335,17 @@ public sealed class ManagedRadio : IAsyncDisposable
                 throw new NotSupportedException($"Meter '{meter}' is not target-aware.");
             ValidateTarget(descriptor.RangesByTarget.Keys.ToHashSet(), target, meter.ToString());
             return GetTargetedMeterDriver(meter).ReadMeterAsync(meter, target, token);
+        }, cancellationToken: cancellationToken);
+
+    internal ValueTask<RadioMeterReading> ReadMeterAsync(
+        RadioMeterId meter, ReceiverId receiver, CancellationToken cancellationToken) =>
+        ExecuteHardwareAsync(token =>
+        {
+            RadioMeterDescriptor descriptor = _driver.Capabilities.Meters[meter];
+            if (descriptor.RangesByReceiver is null)
+                throw new NotSupportedException($"Meter '{meter}' is not receiver-aware.");
+            ValidateTarget(descriptor.RangesByReceiver.Keys.ToHashSet(), receiver, meter.ToString());
+            return GetReceiverMeterDriver(meter).ReadMeterAsync(meter, receiver, token);
         }, cancellationToken: cancellationToken);
 
     internal ValueTask<RadioSwitchValue> ReadSwitchAsync(
@@ -330,6 +368,29 @@ public sealed class ManagedRadio : IAsyncDisposable
             await switchDriver.WriteSwitchAsync(control, enabled, token).ConfigureAwait(false);
             RadioSwitchValue confirmed = await switchDriver.ReadSwitchAsync(control, token).ConfigureAwait(false);
             _events.Publish(RadioEventKind.ControlChanged, confirmed);
+        }, cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
+    internal ValueTask<RadioSwitchValue> ReadSwitchAsync(
+        RadioSwitchId control, ReceiverId receiver, CancellationToken cancellationToken) =>
+        ExecuteHardwareAsync(token =>
+        {
+            ValidateTarget(_driver.Capabilities.Switches[control].ReceiverTargets, receiver, control.ToString());
+            return GetReceiverSwitchDriver(control).ReadSwitchAsync(control, receiver, token);
+        }, cancellationToken: cancellationToken);
+
+    internal async ValueTask WriteSwitchAsync(
+        ClientAuthorization authorization, RadioSwitchId control, ReceiverId receiver, bool enabled,
+        CancellationToken cancellationToken)
+    {
+        EnsureCanControl(authorization);
+        await ExecuteHardwareAsync(async token =>
+        {
+            ValidateTarget(_driver.Capabilities.Switches[control].ReceiverTargets, receiver, control.ToString());
+            IRadioReceiverSwitchDriver driver = GetReceiverSwitchDriver(control);
+            await driver.WriteSwitchAsync(control, receiver, enabled, token).ConfigureAwait(false);
+            _events.Publish(RadioEventKind.ControlChanged,
+                await driver.ReadSwitchAsync(control, receiver, token).ConfigureAwait(false));
         }, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
@@ -392,6 +453,34 @@ public sealed class ManagedRadio : IAsyncDisposable
         }, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
+    internal ValueTask<RadioChoiceValue> ReadChoiceAsync(
+        RadioChoiceId control, ReceiverId receiver, CancellationToken cancellationToken) =>
+        ExecuteHardwareAsync(token =>
+        {
+            ValidateTarget(_driver.Capabilities.Choices[control].ReceiverTargets, receiver, control.ToString());
+            return GetReceiverChoiceDriver(control).ReadChoiceAsync(control, receiver, token);
+        }, cancellationToken: cancellationToken);
+
+    internal async ValueTask WriteChoiceAsync(
+        ClientAuthorization authorization, RadioChoiceId control, ReceiverId receiver, string value,
+        CancellationToken cancellationToken)
+    {
+        EnsureCanControl(authorization);
+        await ExecuteHardwareAsync(async token =>
+        {
+            ChoiceControlDescriptor descriptor = _driver.Capabilities.Choices[control];
+            ValidateTarget(descriptor.ReceiverTargets, receiver, control.ToString());
+            IReadOnlyDictionary<string, RadioChoiceOption> options =
+                descriptor.OptionsByReceiver?.GetValueOrDefault(receiver) ?? descriptor.Options;
+            if (!options.TryGetValue(value, out RadioChoiceOption? option) || !option.Writable)
+                throw new ArgumentOutOfRangeException(nameof(value));
+            IRadioReceiverChoiceDriver driver = GetReceiverChoiceDriver(control);
+            await driver.WriteChoiceAsync(control, receiver, value, token).ConfigureAwait(false);
+            _events.Publish(RadioEventKind.ControlChanged,
+                await driver.ReadChoiceAsync(control, receiver, token).ConfigureAwait(false));
+        }, cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
     internal ValueTask<RadioPassbandValue> ReadPassbandAsync(CancellationToken cancellationToken) =>
         ExecuteHardwareAsync(
             token => GetPassbandDriver().ReadPassbandAsync(token),
@@ -436,6 +525,29 @@ public sealed class ManagedRadio : IAsyncDisposable
         }, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
+    internal ValueTask<RadioPassbandValue> ReadPassbandAsync(
+        ReceiverId receiver, CancellationToken cancellationToken) =>
+        ExecuteHardwareAsync(token =>
+        {
+            ValidateTarget(_driver.Capabilities.Passband.ReceiverTargets, receiver, "Passband");
+            return GetReceiverPassbandDriver().ReadPassbandAsync(receiver, token);
+        }, cancellationToken: cancellationToken);
+
+    internal async ValueTask SetPassbandAsync(
+        ClientAuthorization authorization, ReceiverId receiver, int widthHz, CancellationToken cancellationToken)
+    {
+        EnsureCanControl(authorization);
+        await ExecuteHardwareAsync(async token =>
+        {
+            ValidateTarget(_driver.Capabilities.Passband.ReceiverTargets, receiver, "Passband");
+            ValidatePassband(widthHz, _state.Mode);
+            IRadioReceiverPassbandDriver driver = GetReceiverPassbandDriver();
+            await driver.SetPassbandAsync(receiver, widthHz, token).ConfigureAwait(false);
+            _events.Publish(RadioEventKind.ControlChanged,
+                await driver.ReadPassbandAsync(receiver, token).ConfigureAwait(false));
+        }, cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
     private IRadioControlDriver GetControlDriver(RadioControlId control) =>
         EnsureConnectedAndGet(_driver.Capabilities.Controls.ContainsKey(control) && _driver is IRadioControlDriver driver
             ? driver
@@ -464,6 +576,30 @@ public sealed class ManagedRadio : IAsyncDisposable
         EnsureConnectedAndGet(_driver.Capabilities.Meters.ContainsKey(meter) &&
             _driver is IRadioTargetedMeterDriver driver ? driver :
             throw new NotSupportedException($"Radio meter '{meter}' does not support explicit targets."));
+
+    private IRadioReceiverControlDriver GetReceiverControlDriver(RadioControlId control) =>
+        EnsureConnectedAndGet(_driver.Capabilities.Controls.ContainsKey(control) &&
+            _driver is IRadioReceiverControlDriver driver ? driver :
+            throw new NotSupportedException($"Radio control '{control}' does not support receiver targets."));
+
+    private IRadioReceiverSwitchDriver GetReceiverSwitchDriver(RadioSwitchId control) =>
+        EnsureConnectedAndGet(_driver.Capabilities.Switches.ContainsKey(control) &&
+            _driver is IRadioReceiverSwitchDriver driver ? driver :
+            throw new NotSupportedException($"Radio switch '{control}' does not support receiver targets."));
+
+    private IRadioReceiverChoiceDriver GetReceiverChoiceDriver(RadioChoiceId control) =>
+        EnsureConnectedAndGet(_driver.Capabilities.Choices.ContainsKey(control) &&
+            _driver is IRadioReceiverChoiceDriver driver ? driver :
+            throw new NotSupportedException($"Radio choice '{control}' does not support receiver targets."));
+
+    private IRadioReceiverPassbandDriver GetReceiverPassbandDriver() =>
+        EnsureConnectedAndGet(_driver is IRadioReceiverPassbandDriver driver ? driver :
+            throw new NotSupportedException("Passband control does not support receiver targets."));
+
+    private IRadioReceiverMeterDriver GetReceiverMeterDriver(RadioMeterId meter) =>
+        EnsureConnectedAndGet(_driver.Capabilities.Meters.ContainsKey(meter) &&
+            _driver is IRadioReceiverMeterDriver driver ? driver :
+            throw new NotSupportedException($"Radio meter '{meter}' does not support receiver targets."));
 
     private IRadioSwitchDriver GetSwitchDriver(RadioSwitchId control) =>
         EnsureConnectedAndGet(_driver.Capabilities.Switches.ContainsKey(control) && _driver is IRadioSwitchDriver driver
@@ -496,6 +632,13 @@ public sealed class ManagedRadio : IAsyncDisposable
     {
         if (!targets.Contains(target))
             throw new NotSupportedException($"{feature} does not support target '{target}'.");
+    }
+
+    private static void ValidateTarget(
+        IReadOnlySet<ReceiverId> targets, ReceiverId receiver, string feature)
+    {
+        if (!targets.Contains(receiver))
+            throw new NotSupportedException($"{feature} does not support receiver '{receiver}'.");
     }
 
     private T EnsureConnectedAndGet<T>(T value)
@@ -627,7 +770,7 @@ public sealed class ManagedRadio : IAsyncDisposable
         }
         else
         {
-            _state = _state with { ObservedAt = refreshedAt };
+            _state = reported with { Revision = _state.Revision, ObservedAt = refreshedAt };
         }
 
         MarkFullStateFresh(refreshedAt);
@@ -642,9 +785,30 @@ public sealed class ManagedRadio : IAsyncDisposable
         current.Mode != reported.Mode ||
         current.IsSplit != reported.IsSplit ||
         current.IsTransmitting != reported.IsTransmitting ||
+        current.SelectedReceiver != reported.SelectedReceiver ||
+        current.TransmitReceiver != reported.TransmitReceiver ||
         current.FrequenciesHz.Count != reported.FrequenciesHz.Count ||
         current.FrequenciesHz.Any(pair =>
-            !reported.FrequenciesHz.TryGetValue(pair.Key, out long frequency) || frequency != pair.Value);
+            !reported.FrequenciesHz.TryGetValue(pair.Key, out long frequency) || frequency != pair.Value) ||
+        !VfoStatesEqual(current.Vfos, reported.Vfos) ||
+        !ReceiverStatesEqual(current.Receivers, reported.Receivers);
+
+    private static bool VfoStatesEqual(
+        IReadOnlyDictionary<VfoId, RadioVfoState> first,
+        IReadOnlyDictionary<VfoId, RadioVfoState> second) =>
+        first.Count == second.Count && first.All(pair =>
+            second.TryGetValue(pair.Key, out RadioVfoState? value) &&
+            pair.Value.Vfo == value.Vfo && pair.Value.FrequencyHz == value.FrequencyHz &&
+            pair.Value.Mode == value.Mode);
+
+    private static bool ReceiverStatesEqual(
+        IReadOnlyDictionary<ReceiverId, RadioReceiverState> first,
+        IReadOnlyDictionary<ReceiverId, RadioReceiverState> second) =>
+        first.Count == second.Count && first.All(pair =>
+            second.TryGetValue(pair.Key, out RadioReceiverState? value) &&
+            pair.Value.Receiver == value.Receiver && pair.Value.IsEnabled == value.IsEnabled &&
+            pair.Value.SelectedVfo == value.SelectedVfo && pair.Value.FrequencyHz == value.FrequencyHz &&
+            pair.Value.Mode == value.Mode && pair.Value.PassbandHz == value.PassbandHz);
 
     private void EnsureConnected()
     {
@@ -994,6 +1158,7 @@ public sealed class ManagedRadio : IAsyncDisposable
                 },
             _ => _state
         };
+        updated = SynchronizeMainReceiverState(updated, observation.ObservedAt);
 
         if (observation is not UnknownFrameObservation && HasStateChanged(_state, updated))
         {
@@ -1008,6 +1173,30 @@ public sealed class ManagedRadio : IAsyncDisposable
         {
             _events.Publish(RadioEventKind.Diagnostic, observation);
         }
+    }
+
+    private static RadioState SynchronizeMainReceiverState(RadioState state, DateTimeOffset observedAt)
+    {
+        var vfos = new Dictionary<VfoId, RadioVfoState>(state.Vfos);
+        foreach ((VfoId vfo, long frequency) in state.FrequenciesHz)
+        {
+            RadioMode? mode = vfo == state.ActiveVfo ? state.Mode :
+                vfos.GetValueOrDefault(vfo)?.Mode;
+            vfos[vfo] = new RadioVfoState(vfo, frequency, mode, observedAt);
+        }
+
+        var receivers = new Dictionary<ReceiverId, RadioReceiverState>(state.Receivers)
+        {
+            [ReceiverId.Main] = new(
+                ReceiverId.Main,
+                true,
+                state.ActiveVfo,
+                state.FrequenciesHz.GetValueOrDefault(state.ActiveVfo),
+                state.Mode,
+                state.Receivers.GetValueOrDefault(ReceiverId.Main)?.PassbandHz,
+                observedAt)
+        };
+        return state with { Vfos = vfos, Receivers = receivers };
     }
 
     private static bool HasCapabilityIdentityChanged(
@@ -1272,6 +1461,13 @@ public sealed class ManagedRadio : IAsyncDisposable
                 ? targeted.WriteControlAsync(control, target, value, cancellationToken)
                 : throw new NotSupportedException($"Radio control '{control}' does not support explicit targets.");
 
+        public ValueTask WriteControlAsync(
+            RadioControlId control, ReceiverId receiver, int value,
+            CancellationToken cancellationToken = default) =>
+            driver is IRadioReceiverControlDriver targeted
+                ? targeted.WriteControlAsync(control, receiver, value, cancellationToken)
+                : throw new NotSupportedException($"Radio control '{control}' does not support receiver targets.");
+
         public ValueTask WriteSwitchAsync(
             RadioSwitchId control,
             bool enabled,
@@ -1279,6 +1475,13 @@ public sealed class ManagedRadio : IAsyncDisposable
             driver is IRadioSwitchDriver switchDriver
                 ? switchDriver.WriteSwitchAsync(control, enabled, cancellationToken)
                 : throw new NotSupportedException($"Radio switch '{control}' is not supported by this driver.");
+
+        public ValueTask WriteSwitchAsync(
+            RadioSwitchId control, ReceiverId receiver, bool enabled,
+            CancellationToken cancellationToken = default) =>
+            driver is IRadioReceiverSwitchDriver targeted
+                ? targeted.WriteSwitchAsync(control, receiver, enabled, cancellationToken)
+                : throw new NotSupportedException($"Radio switch '{control}' does not support receiver targets.");
 
         public ValueTask WriteChoiceAsync(
             RadioChoiceId control,
@@ -1295,6 +1498,13 @@ public sealed class ManagedRadio : IAsyncDisposable
                 ? targeted.WriteChoiceAsync(control, target, value, cancellationToken)
                 : throw new NotSupportedException($"Radio choice '{control}' does not support explicit targets.");
 
+        public ValueTask WriteChoiceAsync(
+            RadioChoiceId control, ReceiverId receiver, string value,
+            CancellationToken cancellationToken = default) =>
+            driver is IRadioReceiverChoiceDriver targeted
+                ? targeted.WriteChoiceAsync(control, receiver, value, cancellationToken)
+                : throw new NotSupportedException($"Radio choice '{control}' does not support receiver targets.");
+
         public ValueTask SetPassbandAsync(int widthHz, CancellationToken cancellationToken = default) =>
             driver is IRadioPassbandDriver passbandDriver
                 ? passbandDriver.SetPassbandAsync(widthHz, cancellationToken)
@@ -1305,5 +1515,11 @@ public sealed class ManagedRadio : IAsyncDisposable
             driver is IRadioTargetedPassbandDriver targeted
                 ? targeted.SetPassbandAsync(target, widthHz, cancellationToken)
                 : throw new NotSupportedException("Passband control does not support explicit targets.");
+
+        public ValueTask SetPassbandAsync(
+            ReceiverId receiver, int widthHz, CancellationToken cancellationToken = default) =>
+            driver is IRadioReceiverPassbandDriver targeted
+                ? targeted.SetPassbandAsync(receiver, widthHz, cancellationToken)
+                : throw new NotSupportedException("Passband control does not support receiver targets.");
     }
 }

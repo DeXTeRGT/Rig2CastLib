@@ -175,6 +175,8 @@ public sealed class Ftdx10DriverTests
         Assert.Equal(RadioEventKind.StateChanged, events.Current.Kind);
         RadioState state = (await session.GetSnapshotAsync(timeout.Token)).State;
         Assert.Equal(14_300_000, state.FrequenciesHz[VfoId.A]);
+        Assert.Equal(14_300_000, state.Vfos[VfoId.A].FrequencyHz);
+        Assert.Equal(14_300_000, state.Receivers[ReceiverId.Main].FrequencyHz);
         Assert.True(state.Revision > 1);
     }
 
@@ -200,6 +202,12 @@ public sealed class Ftdx10DriverTests
         Assert.True(state.IsSplit);
         Assert.Equal(VfoId.B, state.TransmitVfo);
         Assert.False(state.IsTransmitting);
+        Assert.Equal(ReceiverId.Main, state.SelectedReceiver);
+        Assert.Equal(VfoId.A, state.Receivers[ReceiverId.Main].SelectedVfo);
+        Assert.Equal(14_250_000, state.Receivers[ReceiverId.Main].FrequencyHz);
+        Assert.Equal(7_100_000, state.Vfos[VfoId.B].FrequencyHz);
+        Assert.Single(driver.Capabilities.Receivers.Available);
+        Assert.Contains(ReceiverId.Main, driver.Capabilities.Receivers.Available.Keys);
         transport.AssertComplete();
     }
 

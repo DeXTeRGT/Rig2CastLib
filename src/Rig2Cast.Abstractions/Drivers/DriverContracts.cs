@@ -152,3 +152,41 @@ public interface IRadioTargetedMeterDriver
     ValueTask<RadioMeterReading> ReadMeterAsync(
         RadioMeterId meter, VfoId target, CancellationToken cancellationToken = default);
 }
+
+public interface IRadioReceiverControlDriver
+{
+    ValueTask<RadioControlValue> ReadControlAsync(
+        RadioControlId control, ReceiverId receiver, CancellationToken cancellationToken = default);
+    ValueTask WriteControlAsync(
+        RadioControlId control, ReceiverId receiver, int value, CancellationToken cancellationToken = default);
+}
+
+public interface IRadioReceiverSwitchDriver
+{
+    ValueTask<RadioSwitchValue> ReadSwitchAsync(
+        RadioSwitchId control, ReceiverId receiver, CancellationToken cancellationToken = default);
+    ValueTask WriteSwitchAsync(
+        RadioSwitchId control, ReceiverId receiver, bool enabled, CancellationToken cancellationToken = default);
+}
+
+public interface IRadioReceiverChoiceDriver
+{
+    ValueTask<RadioChoiceValue> ReadChoiceAsync(
+        RadioChoiceId control, ReceiverId receiver, CancellationToken cancellationToken = default);
+    ValueTask WriteChoiceAsync(
+        RadioChoiceId control, ReceiverId receiver, string value, CancellationToken cancellationToken = default);
+}
+
+public interface IRadioReceiverPassbandDriver
+{
+    ValueTask<RadioPassbandValue> ReadPassbandAsync(
+        ReceiverId receiver, CancellationToken cancellationToken = default);
+    ValueTask SetPassbandAsync(
+        ReceiverId receiver, int widthHz, CancellationToken cancellationToken = default);
+}
+
+public interface IRadioReceiverMeterDriver
+{
+    ValueTask<RadioMeterReading> ReadMeterAsync(
+        RadioMeterId meter, ReceiverId receiver, CancellationToken cancellationToken = default);
+}
