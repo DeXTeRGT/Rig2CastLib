@@ -45,7 +45,8 @@ public sealed class ElecraftAsciiProtocol : IAsyncDisposable
         await _transactionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await WriteFrameAsync(command, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            await WriteFrameAsync(command, _stopping.Token).ConfigureAwait(false);
         }
         finally
         {
@@ -56,12 +57,20 @@ public sealed class ElecraftAsciiProtocol : IAsyncDisposable
     public async ValueTask<string> QueryAsync(
         string command,
         string expectedPrefix,
+        CancellationToken cancellationToken = default) =>
+        await QueryAsync(command, expectedPrefix, _ => true, cancellationToken).ConfigureAwait(false);
+
+    public async ValueTask<string> QueryAsync(
+        string command,
+        string expectedPrefix,
+        Func<string, bool> responseValidator,
         CancellationToken cancellationToken = default)
     {
         EnsureOperational();
         ValidatePrefix(expectedPrefix);
+        ArgumentNullException.ThrowIfNull(responseValidator);
         await _transactionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        var pending = new PendingQuery(Frame(command), expectedPrefix);
+        var pending = new PendingQuery(Frame(command), expectedPrefix, responseValidator);
         try
         {
             lock (_pendingGate)
@@ -71,7 +80,13 @@ public sealed class ElecraftAsciiProtocol : IAsyncDisposable
                 _pending = pending;
             }
 
-            await WriteFrameAsync(command, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            await WriteFrameAsync(command, _stopping.Token).ConfigureAwait(false);
+            lock (_pendingGate)
+            {
+                if (ReferenceEquals(_pending, pending))
+                    pending.IsArmed = true;
+            }
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(_responseTimeout);
             try
@@ -207,13 +222,15 @@ public sealed class ElecraftAsciiProtocol : IAsyncDisposable
         Exception? rejection = null;
         lock (_pendingGate)
         {
-            if (_pending is not null && frame == "?;")
+            if (_pending is { IsArmed: true } && frame == "?;")
             {
                 match = _pending;
                 rejection = new ElecraftCommandRejectedException(_pending.Command);
                 _pending = null;
             }
-            else if (_pending is not null && frame.StartsWith(_pending.ExpectedPrefix, StringComparison.OrdinalIgnoreCase))
+            else if (_pending is { IsArmed: true } &&
+                     frame.StartsWith(_pending.ExpectedPrefix, StringComparison.OrdinalIgnoreCase) &&
+                     _pending.ResponseValidator(frame))
             {
                 match = _pending;
                 _pending = null;
@@ -264,10 +281,13 @@ public sealed class ElecraftAsciiProtocol : IAsyncDisposable
             throw new ArgumentException("An Elecraft response prefix must contain two or three command characters.", nameof(prefix));
     }
 
-    private sealed class PendingQuery(string command, string expectedPrefix)
+    private sealed class PendingQuery(
+        string command, string expectedPrefix, Func<string, bool> responseValidator)
     {
         public string Command { get; } = command;
         public string ExpectedPrefix { get; } = expectedPrefix;
+        public Func<string, bool> ResponseValidator { get; } = responseValidator;
+        public bool IsArmed { get; set; }
         public TaskCompletionSource<string> Completion { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
     }

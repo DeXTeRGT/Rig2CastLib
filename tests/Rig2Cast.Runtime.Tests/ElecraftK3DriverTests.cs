@@ -147,6 +147,24 @@ public sealed class ElecraftK3DriverTests
     }
 
     [Fact]
+    public async Task ElecraftQueryValidatorRejectsSamePrefixFrameWithWrongShape()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("FA;", "FA1;FA00014250000;");
+        await transport.ConnectAsync();
+        await using var protocol = new ElecraftAsciiProtocol(transport);
+
+        string response = await protocol.QueryAsync("FA", "FA", frame => frame.Length == 14);
+
+        Assert.Equal("FA00014250000;", response);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        await using IAsyncEnumerator<string> frames = protocol
+            .WatchUnsolicitedFramesAsync(timeout.Token).GetAsyncEnumerator();
+        Assert.True(await frames.MoveNextAsync());
+        Assert.Equal("FA1;", frames.Current);
+    }
+
+    [Fact]
     public async Task BusyResponseRejectsQueryWithoutFaultingProtocolSession()
     {
         var transport = new ScriptedRadioTransport();
@@ -160,6 +178,47 @@ public sealed class ElecraftK3DriverTests
 
         Assert.Equal("OM;", exception.Command);
         Assert.Equal("FA00014250000;", await protocol.QueryAsync("FA", "FA"));
+    }
+
+    [Fact]
+    public async Task CallerCancellationDoesNotInterruptStartedElecraftFrameWrite()
+    {
+        var transport = new BlockingWriteRadioTransport();
+        await transport.ConnectAsync();
+        await using var protocol = new ElecraftAsciiProtocol(transport);
+        using var cancellation = new CancellationTokenSource();
+
+        Task send = protocol.SendAsync("FA00014250000", cancellation.Token).AsTask();
+        await transport.WriteStarted.WaitAsync(TimeSpan.FromSeconds(1));
+        cancellation.Cancel();
+
+        Assert.False(send.IsCompleted);
+        transport.CompleteWrite();
+        await send;
+        Assert.Equal("FA00014250000;", transport.WrittenFrame);
+    }
+
+    [Fact]
+    public async Task SamePrefixElecraftFrameDuringWriteCannotCompleteQuery()
+    {
+        var transport = new BlockingWriteRadioTransport();
+        await transport.ConnectAsync();
+        await using var protocol = new ElecraftAsciiProtocol(transport);
+
+        Task<string> query = protocol.QueryAsync("FA", "FA").AsTask();
+        await transport.WriteStarted.WaitAsync(TimeSpan.FromSeconds(1));
+        await transport.EmitAsync("FA00007100000;");
+        using var watchTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        await using IAsyncEnumerator<string> frames = protocol
+            .WatchUnsolicitedFramesAsync(watchTimeout.Token).GetAsyncEnumerator();
+        Assert.True(await frames.MoveNextAsync());
+        Assert.Equal("FA00007100000;", frames.Current);
+        Assert.False(query.IsCompleted);
+
+        transport.CompleteWrite();
+        await Task.Delay(20);
+        await transport.EmitAsync("FA00014250000;");
+        Assert.Equal("FA00014250000;", await query.WaitAsync(TimeSpan.FromSeconds(1)));
     }
 
     [Fact]

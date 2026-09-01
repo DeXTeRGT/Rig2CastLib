@@ -69,6 +69,24 @@ public sealed class YaesuAsciiProtocolTests
     }
 
     [Fact]
+    public async Task QueryValidatorRejectsSamePrefixFrameWithWrongShape()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("FA;", "FA1;FA014250000;");
+        await transport.ConnectAsync();
+        await using var protocol = new YaesuAsciiProtocol(transport);
+
+        string response = await protocol.QueryAsync("FA", "FA", frame => frame.Length == 12);
+
+        Assert.Equal("FA014250000;", response);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        await using IAsyncEnumerator<string> frames = protocol
+            .WatchUnsolicitedFramesAsync(timeout.Token).GetAsyncEnumerator();
+        Assert.True(await frames.MoveNextAsync());
+        Assert.Equal("FA1;", frames.Current);
+    }
+
+    [Fact]
     public async Task QueryDecodesResponseSplitAcrossReads()
     {
         var transport = new ScriptedRadioTransport();
@@ -89,6 +107,47 @@ public sealed class YaesuAsciiProtocolTests
 
         await Assert.ThrowsAsync<TimeoutException>(() => protocol.QueryAsync("FA", "FA").AsTask());
         await Assert.ThrowsAsync<RadioConnectionException>(() => protocol.SendAsync("VS0").AsTask());
+    }
+
+    [Fact]
+    public async Task CallerCancellationDoesNotInterruptStartedFrameWrite()
+    {
+        var transport = new BlockingWriteRadioTransport();
+        await transport.ConnectAsync();
+        await using var protocol = new YaesuAsciiProtocol(transport);
+        using var cancellation = new CancellationTokenSource();
+
+        Task send = protocol.SendAsync("FA014250000", cancellation.Token).AsTask();
+        await transport.WriteStarted.WaitAsync(TimeSpan.FromSeconds(1));
+        cancellation.Cancel();
+
+        Assert.False(send.IsCompleted);
+        transport.CompleteWrite();
+        await send;
+        Assert.Equal("FA014250000;", transport.WrittenFrame);
+    }
+
+    [Fact]
+    public async Task SamePrefixFrameDuringWriteCannotCompleteQuery()
+    {
+        var transport = new BlockingWriteRadioTransport();
+        await transport.ConnectAsync();
+        await using var protocol = new YaesuAsciiProtocol(transport);
+
+        Task<string> query = protocol.QueryAsync("FA", "FA").AsTask();
+        await transport.WriteStarted.WaitAsync(TimeSpan.FromSeconds(1));
+        await transport.EmitAsync("FA007100000;");
+        using var watchTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        await using IAsyncEnumerator<string> frames = protocol
+            .WatchUnsolicitedFramesAsync(watchTimeout.Token).GetAsyncEnumerator();
+        Assert.True(await frames.MoveNextAsync());
+        Assert.Equal("FA007100000;", frames.Current);
+        Assert.False(query.IsCompleted);
+
+        transport.CompleteWrite();
+        await Task.Delay(20);
+        await transport.EmitAsync("FA014250000;");
+        Assert.Equal("FA014250000;", await query.WaitAsync(TimeSpan.FromSeconds(1)));
     }
 }
 
@@ -163,6 +222,57 @@ internal sealed class ScriptedRadioTransport(bool ignoreReadCancellation = false
         }
 
         return count;
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        IsConnected = false;
+        _responses.Writer.TryComplete();
+        return ValueTask.CompletedTask;
+    }
+}
+
+internal sealed class BlockingWriteRadioTransport : IRadioTransport
+{
+    private readonly TaskCompletionSource _writeStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _completeWrite = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly Channel<byte[]> _responses = Channel.CreateUnbounded<byte[]>();
+
+    public string Id => "blocking-write";
+    public bool IsConnected { get; private set; }
+    public Task WriteStarted => _writeStarted.Task;
+    public string? WrittenFrame { get; private set; }
+
+    public void CompleteWrite() => _completeWrite.TrySetResult();
+
+    public ValueTask EmitAsync(string frame, CancellationToken cancellationToken = default) =>
+        _responses.Writer.WriteAsync(Encoding.ASCII.GetBytes(frame), cancellationToken);
+
+    public ValueTask ConnectAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        IsConnected = true;
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask DisconnectAsync(CancellationToken cancellationToken = default)
+    {
+        IsConnected = false;
+        return ValueTask.CompletedTask;
+    }
+
+    public async ValueTask WriteAsync(ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
+    {
+        WrittenFrame = Encoding.ASCII.GetString(data.Span);
+        _writeStarted.TrySetResult();
+        await _completeWrite.Task.WaitAsync(cancellationToken);
+    }
+
+    public async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        byte[] response = await _responses.Reader.ReadAsync(cancellationToken);
+        response.CopyTo(buffer);
+        return response.Length;
     }
 
     public ValueTask DisposeAsync()

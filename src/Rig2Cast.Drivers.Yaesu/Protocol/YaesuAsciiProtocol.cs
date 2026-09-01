@@ -52,7 +52,8 @@ public sealed class YaesuAsciiProtocol : IAsyncDisposable
         await _transactionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await WriteFrameAsync(command, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            await WriteFrameAsync(command, _stopping.Token).ConfigureAwait(false);
         }
         finally
         {
@@ -63,12 +64,20 @@ public sealed class YaesuAsciiProtocol : IAsyncDisposable
     public async ValueTask<string> QueryAsync(
         string command,
         string expectedResponsePrefix,
+        CancellationToken cancellationToken = default) =>
+        await QueryAsync(command, expectedResponsePrefix, _ => true, cancellationToken).ConfigureAwait(false);
+
+    public async ValueTask<string> QueryAsync(
+        string command,
+        string expectedResponsePrefix,
+        Func<string, bool> responseValidator,
         CancellationToken cancellationToken = default)
     {
         EnsureOperational();
         ValidatePrefix(expectedResponsePrefix);
+        ArgumentNullException.ThrowIfNull(responseValidator);
         await _transactionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        var pending = new PendingQuery(expectedResponsePrefix);
+        var pending = new PendingQuery(expectedResponsePrefix, responseValidator);
         try
         {
             lock (_pendingGate)
@@ -81,7 +90,13 @@ public sealed class YaesuAsciiProtocol : IAsyncDisposable
                 _pending = pending;
             }
 
-            await WriteFrameAsync(command, cancellationToken).ConfigureAwait(false);
+            cancellationToken.ThrowIfCancellationRequested();
+            await WriteFrameAsync(command, _stopping.Token).ConfigureAwait(false);
+            lock (_pendingGate)
+            {
+                if (ReferenceEquals(_pending, pending))
+                    pending.IsArmed = true;
+            }
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(_responseTimeout);
             try
@@ -243,7 +258,9 @@ public sealed class YaesuAsciiProtocol : IAsyncDisposable
         PendingQuery? match = null;
         lock (_pendingGate)
         {
-            if (_pending is not null && frame.StartsWith(_pending.ExpectedPrefix, StringComparison.OrdinalIgnoreCase))
+            if (_pending is { IsArmed: true } &&
+                frame.StartsWith(_pending.ExpectedPrefix, StringComparison.OrdinalIgnoreCase) &&
+                _pending.ResponseValidator(frame))
             {
                 match = _pending;
                 _pending = null;
@@ -304,9 +321,11 @@ public sealed class YaesuAsciiProtocol : IAsyncDisposable
         }
     }
 
-    private sealed class PendingQuery(string expectedPrefix)
+    private sealed class PendingQuery(string expectedPrefix, Func<string, bool> responseValidator)
     {
         public string ExpectedPrefix { get; } = expectedPrefix;
+        public Func<string, bool> ResponseValidator { get; } = responseValidator;
+        public bool IsArmed { get; set; }
 
         public TaskCompletionSource<string> Completion { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
