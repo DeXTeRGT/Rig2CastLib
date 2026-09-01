@@ -49,6 +49,13 @@ internal sealed class RadioClientSession(
         return radio.SetFrequencyAsync(authorization, target, frequencyHz, cancellationToken);
     }
 
+    public ValueTask SetFrequencyAsync(
+        ReceiverId receiver, long frequencyHz, CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        return radio.SetFrequencyAsync(authorization, receiver, frequencyHz, cancellationToken);
+    }
+
     public ValueTask SetActiveVfoAsync(VfoId vfo, CancellationToken cancellationToken = default)
     {
         EnsureActive();
@@ -59,6 +66,13 @@ internal sealed class RadioClientSession(
     {
         EnsureActive();
         return radio.SetModeAsync(authorization, mode, cancellationToken);
+    }
+
+    public ValueTask SetModeAsync(
+        ReceiverId receiver, RadioMode mode, CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        return radio.SetModeAsync(authorization, receiver, mode, cancellationToken);
     }
 
     public ValueTask SetSplitAsync(bool enabled, CancellationToken cancellationToken = default)

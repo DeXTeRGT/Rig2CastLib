@@ -213,9 +213,15 @@ internal sealed class ScriptedRadioTransport(bool ignoreReadCancellation = false
     {
         cancellationToken.ThrowIfCancellationRequested();
         Assert.True(IsConnected);
+        string command = Encoding.ASCII.GetString(data.Span);
+        if (command == "RVM;" && (_script.Count == 0 || _script.Peek().Command != command))
+        {
+            _ = EnqueueResponsesAfterWriteAsync([Encoding.ASCII.GetBytes("RVM05.66;")]);
+            return ValueTask.CompletedTask;
+        }
         Assert.NotEmpty(_script);
         (string expected, byte[][] responses) = _script.Dequeue();
-        Assert.Equal(expected, Encoding.ASCII.GetString(data.Span));
+        Assert.Equal(expected, command);
         Assert.Null(_response);
         if (responses.Length > 0)
             _ = EnqueueResponsesAfterWriteAsync(responses);

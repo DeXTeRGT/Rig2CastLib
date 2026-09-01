@@ -12,7 +12,8 @@ namespace Rig2Cast.Simulator;
 
 public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMeterDriver, IRadioSwitchDriver, IRadioChoiceDriver, IRadioPassbandDriver,
     IRadioReceiverControlDriver, IRadioReceiverMeterDriver, IRadioReceiverSwitchDriver,
-    IRadioReceiverChoiceDriver, IRadioReceiverPassbandDriver, IRadioObservationSource
+    IRadioReceiverChoiceDriver, IRadioReceiverPassbandDriver, IRadioReceiverFrequencyDriver,
+    IRadioReceiverModeDriver, IRadioObservationSource
 {
     private readonly object _gate = new();
     private readonly Dictionary<VfoId, long> _frequencies = new()
@@ -41,11 +42,14 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
     private VfoId _activeVfo = VfoId.A;
     private bool _split;
     private bool _ptt;
+    private bool _reportedPtt;
+    private int _pttReadbackLagRemaining;
     private bool _disposed;
 
     public SimulatedFtdx10Driver(SimulatedRadioOptions? options = null)
     {
         Options = options ?? new SimulatedRadioOptions();
+        ArgumentOutOfRangeException.ThrowIfNegative(Options.PttReadbackLagCount);
         Capabilities = CreateCapabilities();
         foreach (NumericControlDescriptor descriptor in Capabilities.Controls.Values)
         {
@@ -143,6 +147,16 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
         lock (_gate)
         {
             DateTimeOffset observedAt = DateTimeOffset.UtcNow;
+            bool reportedPtt = _ptt;
+            if (_pttReadbackLagRemaining > 0)
+            {
+                _pttReadbackLagRemaining--;
+                reportedPtt = _reportedPtt;
+            }
+            else
+            {
+                _reportedPtt = _ptt;
+            }
             return new RadioState(
                 1,
                 ConnectionStatus.Connected,
@@ -150,7 +164,7 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
                 _activeVfo,
                 _mode,
                 _split,
-                _ptt,
+                reportedPtt,
                 observedAt)
             {
                 TransmitVfo = _activeVfo == VfoId.A ? VfoId.B : VfoId.A,
@@ -243,7 +257,9 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
         using IDisposable operation = await BeginOperationAsync($"SetPtt:{enabled}", cancellationToken).ConfigureAwait(false);
         lock (_gate)
         {
+            _reportedPtt = _ptt;
             _ptt = enabled;
+            _pttReadbackLagRemaining = Options.PttReadbackLagCount;
         }
     }
 
@@ -256,6 +272,22 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
         {
             return new RadioControlValue(control, _controls[control], DateTimeOffset.UtcNow);
         }
+    }
+
+    public ValueTask SetFrequencyAsync(
+        ReceiverId receiver, long frequencyHz, CancellationToken cancellationToken = default)
+    {
+        EnsureMainReceiver(receiver);
+        VfoId active;
+        lock (_gate) active = _activeVfo;
+        return SetFrequencyAsync(active, frequencyHz, cancellationToken);
+    }
+
+    public ValueTask SetModeAsync(
+        ReceiverId receiver, RadioMode mode, CancellationToken cancellationToken = default)
+    {
+        EnsureMainReceiver(receiver);
+        return SetModeAsync(mode, cancellationToken);
     }
 
     public async ValueTask WriteControlAsync(
@@ -508,7 +540,14 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
                 readWrite,
                 new HashSet<VfoId> { VfoId.A, VfoId.B },
                 [new FrequencyRange(30_000, 75_000_000, true, false)],
-                1),
+                1)
+            {
+                ReceiverTargets = MainReceiverTargets(),
+                RangesByReceiver = new Dictionary<ReceiverId, IReadOnlyList<FrequencyRange>>
+                {
+                    [ReceiverId.Main] = [new FrequencyRange(30_000, 75_000_000, true, false)]
+                }
+            },
             new ModeCapability(
                 readWrite,
                 new HashSet<RadioMode>
@@ -523,7 +562,10 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
                     RadioMode.DataUsb,
                     RadioMode.Rtty,
                     RadioMode.RttyReverse
-                }),
+                })
+            {
+                ReceiverTargets = MainReceiverTargets()
+            },
             new FeatureDescriptor(
                 CapabilitySupport.Supported,
                 FeatureAccess.Read | FeatureAccess.Write,
@@ -717,5 +759,7 @@ public sealed class SimulatedRadioOptions
     public TimeSpan CommandDelay { get; init; }
 
     public int? DisconnectAfterCommandCount { get; init; }
+
+    public int PttReadbackLagCount { get; init; }
 
 }

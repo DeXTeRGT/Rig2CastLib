@@ -16,6 +16,10 @@ public sealed record FrequencyCapability(
     IReadOnlyList<FrequencyRange> Ranges,
     long? SmallestStepHz = null)
 {
+    public IReadOnlySet<ReceiverId> ReceiverTargets { get; init; } = new HashSet<ReceiverId>();
+
+    public IReadOnlyDictionary<ReceiverId, IReadOnlyList<FrequencyRange>>? RangesByReceiver { get; init; }
+
     public bool CanReceive(long frequencyHz) =>
         Ranges.Any(range => range.Receive &&
                             frequencyHz >= range.MinimumHz && frequencyHz <= range.MaximumHz);
@@ -55,7 +59,12 @@ public sealed record ReceiverTopologyCapability(
 
 public sealed record ModeCapability(
     FeatureDescriptor Feature,
-    IReadOnlySet<RadioMode> Values);
+    IReadOnlySet<RadioMode> Values)
+{
+    public IReadOnlySet<ReceiverId> ReceiverTargets { get; init; } = new HashSet<ReceiverId>();
+
+    public IReadOnlyDictionary<ReceiverId, IReadOnlySet<RadioMode>>? ValuesByReceiver { get; init; }
+}
 
 public sealed record RadioCapabilities(
     long Revision,

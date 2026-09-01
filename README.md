@@ -216,7 +216,7 @@ dotnet build Rig2Cast.sln
 dotnet test tests\Rig2Cast.Runtime.Tests\Rig2Cast.Runtime.Tests.csproj
 ```
 
-The current suite contains **128 automated tests** covering CAT framing and
+The current suite contains **137 automated tests** covering CAT framing and
 parsing, runtime serialization, concurrent clients, roles and leases, capability
 and model discovery, TCP behavior, disconnect/reconnect behavior, unsolicited
 reporting, shutdown cleanup, FTDX10 controls, and the initial Elecraft K3-family
@@ -280,7 +280,9 @@ set choice AudioPeakFilterWidth medium
 set choice TuningStep 10hz
 ```
 
-The console deliberately does not expose PTT or tuner-start operations. See the
+The console exposes CAT PTT only with `--allow-write`, an exclusive time-limited
+transmit lease, verified hardware-state readback, and automatic RX cleanup. It
+continues to withhold tuner-start operations. See the
 [diagnostic console guide](docs/diagnostic-console.md) for all commands and safety
 details.
 

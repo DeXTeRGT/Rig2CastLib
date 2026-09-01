@@ -161,6 +161,18 @@ public interface IRadioReceiverControlDriver
         RadioControlId control, ReceiverId receiver, int value, CancellationToken cancellationToken = default);
 }
 
+public interface IRadioReceiverFrequencyDriver
+{
+    ValueTask SetFrequencyAsync(
+        ReceiverId receiver, long frequencyHz, CancellationToken cancellationToken = default);
+}
+
+public interface IRadioReceiverModeDriver
+{
+    ValueTask SetModeAsync(
+        ReceiverId receiver, RadioMode mode, CancellationToken cancellationToken = default);
+}
+
 public interface IRadioReceiverSwitchDriver
 {
     ValueTask<RadioSwitchValue> ReadSwitchAsync(

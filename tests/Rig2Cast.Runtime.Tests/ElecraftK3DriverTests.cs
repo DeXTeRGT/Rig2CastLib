@@ -93,6 +93,31 @@ public sealed class ElecraftK3DriverTests
     }
 
     [Fact]
+    public async Task ReceiverTargetedFrequencyAndModeMapToElecraftSignalPaths()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("OM;", "OM-P-S---LVR--;");
+        transport.Add("IF;", "IF00014060000     +000000 0001000001 ;");
+        transport.Add("FA00014101000;");
+        transport.Add("FB00007075000;");
+        transport.Add("IF;", "IF00014101000     +000000 0001000001 ;");
+        transport.Add("MD3;");
+        transport.Add("MD$2;");
+        await using ElecraftK3Driver driver = await ElecraftK3Driver.OpenAsync(
+            transport, ElecraftK3Profile.Models[ElecraftK3Profile.K3SModelId]);
+
+        await driver.SetFrequencyAsync(ReceiverId.Main, 14_101_000);
+        await driver.SetFrequencyAsync(ReceiverId.Sub, 7_075_000);
+        await driver.SetModeAsync(ReceiverId.Main, RadioMode.Cw);
+        await driver.SetModeAsync(ReceiverId.Sub, RadioMode.Usb);
+
+        Assert.Contains(ReceiverId.Main, driver.Capabilities.Frequency.ReceiverTargets);
+        Assert.Contains(ReceiverId.Sub, driver.Capabilities.Frequency.ReceiverTargets);
+        Assert.Contains(ReceiverId.Sub, driver.Capabilities.Modes.ReceiverTargets);
+        transport.AssertComplete();
+    }
+
+    [Fact]
     public async Task Ai1InformationBecomesCompleteTypedObservation()
     {
         var transport = new ScriptedRadioTransport();
@@ -427,6 +452,24 @@ public sealed class ElecraftK3DriverTests
         Assert.Equal(15, swr.RawValue);
         Assert.Equal("raw SMH", driver.Capabilities.Meters[RadioMeterId.SignalStrength].RawUnit);
         Assert.Equal("0.1 SWR", driver.Capabilities.Meters[RadioMeterId.Swr].RawUnit);
+        Assert.True(driver.Capabilities.Meters[RadioMeterId.Swr].RequiresTransmit);
+    }
+
+    [Fact]
+    public async Task FirmwareBefore566DoesNotAdvertiseOrQuerySwr()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("OM;", "OM-P-S---LVR--;");
+        transport.Add("RVM;", "RVM05.62;");
+        await using ElecraftK3Driver driver = await ElecraftK3Driver.OpenAsync(
+            transport, ElecraftK3Profile.Models[ElecraftK3Profile.K3SModelId]);
+
+        Assert.False(driver.Capabilities.Meters.ContainsKey(RadioMeterId.Swr));
+        Assert.Equal("5.62", driver.Capabilities.Extensions["elecraft.firmwareVersion"]);
+        NotSupportedException error = await Assert.ThrowsAsync<NotSupportedException>(
+            () => driver.ReadMeterAsync(RadioMeterId.Swr).AsTask());
+        Assert.Contains("5.66", error.Message, StringComparison.Ordinal);
+        transport.AssertComplete();
     }
 
     [Fact]

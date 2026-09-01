@@ -23,9 +23,15 @@ public interface IRadioSession : IAsyncDisposable
 
     ValueTask SetFrequencyAsync(VfoId target, long frequencyHz, CancellationToken cancellationToken = default);
 
+    ValueTask SetFrequencyAsync(
+        ReceiverId receiver, long frequencyHz, CancellationToken cancellationToken = default);
+
     ValueTask SetActiveVfoAsync(VfoId vfo, CancellationToken cancellationToken = default);
 
     ValueTask SetModeAsync(RadioMode mode, CancellationToken cancellationToken = default);
+
+    ValueTask SetModeAsync(
+        ReceiverId receiver, RadioMode mode, CancellationToken cancellationToken = default);
 
     ValueTask SetSplitAsync(bool enabled, CancellationToken cancellationToken = default);
 
@@ -140,9 +146,15 @@ public interface IRadioOperationScope
 {
     ValueTask SetFrequencyAsync(VfoId target, long frequencyHz, CancellationToken cancellationToken = default);
 
+    ValueTask SetFrequencyAsync(
+        ReceiverId receiver, long frequencyHz, CancellationToken cancellationToken = default);
+
     ValueTask SetActiveVfoAsync(VfoId vfo, CancellationToken cancellationToken = default);
 
     ValueTask SetModeAsync(RadioMode mode, CancellationToken cancellationToken = default);
+
+    ValueTask SetModeAsync(
+        ReceiverId receiver, RadioMode mode, CancellationToken cancellationToken = default);
 
     ValueTask SetSplitAsync(bool enabled, CancellationToken cancellationToken = default);
 

@@ -12,7 +12,8 @@ namespace Rig2Cast.Drivers.Yaesu.Ftdx10;
 
 public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMeterDriver, IRadioSwitchDriver, IRadioChoiceDriver, IRadioPassbandDriver,
     IRadioReceiverControlDriver, IRadioReceiverMeterDriver, IRadioReceiverSwitchDriver,
-    IRadioReceiverChoiceDriver, IRadioReceiverPassbandDriver, IRadioObservationSource
+    IRadioReceiverChoiceDriver, IRadioReceiverPassbandDriver, IRadioReceiverFrequencyDriver,
+    IRadioReceiverModeDriver, IRadioObservationSource
 {
     private static readonly Dictionary<RadioSwitchId, SwitchCommand> SwitchCommands = new()
     {
@@ -344,6 +345,21 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         }
 
         return new RadioControlValue(control, value * command.Scale + command.ValueOffset, DateTimeOffset.UtcNow);
+    }
+
+    public async ValueTask SetFrequencyAsync(
+        ReceiverId receiver, long frequencyHz, CancellationToken cancellationToken = default)
+    {
+        EnsureMainReceiver(receiver);
+        RadioState state = await ReadStateAsync(cancellationToken).ConfigureAwait(false);
+        await SetFrequencyAsync(state.ActiveVfo, frequencyHz, cancellationToken).ConfigureAwait(false);
+    }
+
+    public ValueTask SetModeAsync(
+        ReceiverId receiver, RadioMode mode, CancellationToken cancellationToken = default)
+    {
+        EnsureMainReceiver(receiver);
+        return SetModeAsync(mode, cancellationToken);
     }
 
     public ValueTask WriteControlAsync(
@@ -851,8 +867,22 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
                 readWrite,
                 new HashSet<VfoId> { VfoId.A, VfoId.B },
                 [new FrequencyRange(30_000, 75_000_000, true, false)],
-                1),
-            new ModeCapability(readWrite, Ftdx10CatProfile.Modes.Values.ToHashSet()),
+                1)
+            {
+                ReceiverTargets = MainReceiverTargets(),
+                RangesByReceiver = new Dictionary<ReceiverId, IReadOnlyList<FrequencyRange>>
+                {
+                    [ReceiverId.Main] = [new FrequencyRange(30_000, 75_000_000, true, false)]
+                }
+            },
+            new ModeCapability(readWrite, Ftdx10CatProfile.Modes.Values.ToHashSet())
+            {
+                ReceiverTargets = MainReceiverTargets(),
+                ValuesByReceiver = new Dictionary<ReceiverId, IReadOnlySet<RadioMode>>
+                {
+                    [ReceiverId.Main] = Ftdx10CatProfile.Modes.Values.ToHashSet()
+                }
+            },
             new FeatureDescriptor(CapabilitySupport.Supported, FeatureAccess.Read | FeatureAccess.Write, LeaseKinds.Transmit),
             CreateControlCapabilities(),
             CreateSwitchCapabilities(),

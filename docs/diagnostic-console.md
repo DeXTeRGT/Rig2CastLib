@@ -1,6 +1,6 @@
 # Rig2Cast diagnostic console
 
-The diagnostic console is the supported manual test surface during early development. It can use the deterministic FTDX10 simulator or a registered physical radio such as the FTDX10 or Elecraft K3 family. Physical connections are read-only unless write access is explicitly enabled at startup. PTT and tuner-start are not exposed by this console.
+The diagnostic console is the supported manual test surface during early development. It can use the deterministic FTDX10 simulator or a registered physical radio such as the FTDX10 or Elecraft K3 family. Physical connections are read-only unless write access is explicitly enabled at startup. CAT PTT requires write access and a bounded transmit lease; tuner-start is not exposed.
 
 ## Start the console
 
@@ -110,7 +110,8 @@ The runtime rejects out-of-range numeric values, unknown choices, read-only choi
 ## Safety boundary
 
 - Read-only is the default.
-- `--allow-write` does not enable PTT.
-- PTT, tuner-start, radio power, memory writes, and message playback are unavailable.
+- `--allow-write` enables lease-protected CAT PTT. `ptt on` renews a short lease until `ptt off`; `ptt on <seconds>` performs a bounded 1-60 second transmission.
+- Continuous PTT renews a 10-second lease every five seconds. Renewal failure, lease expiry, session close, or normal Console shutdown forces RX.
+- Tuner-start, radio power, memory writes, and message playback remain unavailable.
 - The runtime serializes all operations and confirms typed control writes.
 - Exiting disposes the logical session, managed radio, driver, and serial connection.

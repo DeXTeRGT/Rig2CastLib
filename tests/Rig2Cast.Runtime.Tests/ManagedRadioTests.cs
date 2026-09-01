@@ -222,6 +222,110 @@ public sealed class ManagedRadioTests
     }
 
     [Fact]
+    public async Task RenewingTransmitControllerKeepsLeaseAliveUntilExplicitStop()
+    {
+        await using TestContext context = await TestContext.CreateAsync();
+        await using IRadioSession transmitter = context.Radio.OpenSession(
+            new ClientIdentity("tx"), ClientRole.Operator);
+        await using var controller = new RenewingTransmitController(
+            transmitter,
+            leaseDuration: TimeSpan.FromMilliseconds(180),
+            renewalInterval: TimeSpan.FromMilliseconds(40));
+
+        RadioState keyed = await controller.StartContinuousAsync();
+        Assert.True(keyed.IsTransmitting);
+        await Task.Delay(450);
+        Assert.True((await controller.GetStatusAsync()).IsTransmitting);
+        Assert.Single((await transmitter.GetSnapshotAsync()).Leases.Active);
+
+        RadioState released = await controller.StopAsync();
+        Assert.False(released.IsTransmitting);
+        Assert.Empty((await transmitter.GetSnapshotAsync()).Leases.Active);
+        Assert.Contains("SetPtt:False", context.Driver.CommandLog);
+    }
+
+    [Fact]
+    public async Task RenewingTransmitControllerBoundedStartExpiresAndForcesReceive()
+    {
+        await using TestContext context = await TestContext.CreateAsync();
+        await using IRadioSession transmitter = context.Radio.OpenSession(
+            new ClientIdentity("tx"), ClientRole.Operator);
+        await using var controller = new RenewingTransmitController(
+            transmitter,
+            leaseDuration: TimeSpan.FromMilliseconds(180),
+            renewalInterval: TimeSpan.FromMilliseconds(40));
+
+        Assert.True((await controller.StartForAsync(TimeSpan.FromMilliseconds(100))).IsTransmitting);
+        await WaitUntilAsync(
+            async () => !(await controller.GetStatusAsync()).IsTransmitting,
+            TimeSpan.FromSeconds(2));
+
+        Assert.Empty((await transmitter.GetSnapshotAsync()).Leases.Active);
+        Assert.Contains("SetPtt:False", context.Driver.CommandLog);
+    }
+
+    [Fact]
+    public async Task RenewingTransmitControllerLosesSessionAndRadioReturnsToReceive()
+    {
+        await using TestContext context = await TestContext.CreateAsync();
+        IRadioSession transmitter = context.Radio.OpenSession(new ClientIdentity("tx"), ClientRole.Operator);
+        await using IRadioSession observer = context.Radio.OpenSession(
+            new ClientIdentity("observer"), ClientRole.Observer);
+        await using var controller = new RenewingTransmitController(
+            transmitter,
+            leaseDuration: TimeSpan.FromMilliseconds(180),
+            renewalInterval: TimeSpan.FromMilliseconds(40));
+
+        Assert.True((await controller.StartContinuousAsync()).IsTransmitting);
+        await transmitter.DisposeAsync();
+
+        await WaitUntilAsync(
+            async () => !(await observer.GetSnapshotAsync()).State.IsTransmitting,
+            TimeSpan.FromSeconds(2));
+        await WaitUntilAsync(
+            () => Task.FromResult(controller.RenewalFailure is not null),
+            TimeSpan.FromSeconds(2));
+        Assert.Empty((await observer.GetSnapshotAsync()).Leases.Active);
+    }
+
+    [Fact]
+    public async Task PttVerificationWaitsForDelayedHardwareReadback()
+    {
+        await using TestContext context = await TestContext.CreateAsync(pttReadbackLagCount: 3);
+        await using IRadioSession transmitter = context.Radio.OpenSession(
+            new ClientIdentity("tx"), ClientRole.Operator);
+        LeaseToken lease = await transmitter.AcquireLeaseAsync(
+            LeaseKinds.Transmit, TimeSpan.FromSeconds(5));
+
+        await transmitter.SetPttAsync(true, lease);
+        int readsBeforeRelease = context.Driver.ReadStateCount;
+        await transmitter.SetPttAsync(false, lease);
+
+        Assert.False((await transmitter.GetSnapshotAsync()).State.IsTransmitting);
+        Assert.True(context.Driver.ReadStateCount - readsBeforeRelease >= 4);
+        await transmitter.ReleaseLeaseAsync(lease);
+    }
+
+    [Fact]
+    public async Task ReceiverTargetedFrequencyAndModeUseCommonRuntimePath()
+    {
+        await using TestContext context = await TestContext.CreateAsync();
+        await using IRadioSession session = context.Radio.OpenSession(
+            new ClientIdentity("operator"), ClientRole.Operator);
+
+        await session.SetFrequencyAsync(ReceiverId.Main, 14_275_000);
+        await session.SetModeAsync(ReceiverId.Main, RadioMode.Cw);
+        RadioState state = await session.RefreshStateAsync();
+
+        Assert.Equal(14_275_000, state.Receivers[ReceiverId.Main].FrequencyHz);
+        Assert.Equal(RadioMode.Cw, state.Receivers[ReceiverId.Main].Mode);
+        await Assert.ThrowsAsync<NotSupportedException>(
+            () => session.SetFrequencyAsync(ReceiverId.Sub, 7_100_000).AsTask());
+        await Assert.ThrowsAsync<NotSupportedException>(
+            () => session.SetModeAsync(ReceiverId.Sub, RadioMode.Usb).AsTask());
+    }
+
+    [Fact]
     public async Task ExclusiveScopeDoesNotAllowInterleavedMutation()
     {
         await using TestContext context = await TestContext.CreateAsync(TimeSpan.FromMilliseconds(25));
@@ -659,11 +763,13 @@ public sealed class ManagedRadioTests
 
         public static async ValueTask<TestContext> CreateAsync(
             TimeSpan? commandDelay = null,
-            TimeProvider? timeProvider = null)
+            TimeProvider? timeProvider = null,
+            int pttReadbackLagCount = 0)
         {
             var driver = new SimulatedFtdx10Driver(new SimulatedRadioOptions
             {
-                CommandDelay = commandDelay ?? TimeSpan.Zero
+                CommandDelay = commandDelay ?? TimeSpan.Zero,
+                PttReadbackLagCount = pttReadbackLagCount
             });
             ManagedRadio radio = await ManagedRadio.CreateAsync("sim-ftdx10", driver, timeProvider);
             return new TestContext(radio, driver);

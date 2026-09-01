@@ -82,9 +82,10 @@ await using ManagedRadio radio = managedRadio;
 ClientRole role = allowWrite ? ClientRole.Operator : ClientRole.Observer;
 await using IRadioSession session = radio.OpenSession(
     new ClientIdentity("console", "Rig2Cast diagnostic console"), role);
+await using var transmitController = new RenewingTransmitController(session);
 
 Console.WriteLine($"Connected in {(allowWrite ? "WRITE-ENABLED" : "READ-ONLY")} mode.");
-Console.WriteLine("Type 'help' for commands. PTT and tuner-start are not available in this console.");
+Console.WriteLine("Type 'help' for commands. CAT PTT uses a time-limited transmit lease; tuner-start is unavailable.");
 
 CancellationTokenSource? watchStopping = null;
 Task? watchTask = null;
@@ -131,13 +132,15 @@ while (!stopping.IsCancellationRequested)
                 PrintCapabilities((await session.GetSnapshotAsync()).Capabilities, parts.ElementAtOrDefault(1));
                 break;
             case "meters":
-                await PrintMetersAsync(session, parts.Length > 1 ? ParseEnum<VfoId>(parts[1]) : null);
+                await PrintMetersAsync(session, parts.ElementAtOrDefault(1));
                 break;
             case "passband":
-                RadioPassbandValue passband = parts.Length > 1
-                    ? await session.ReadPassbandAsync(ParseEnum<VfoId>(parts[1]), stopping.Token)
-                    : await session.ReadPassbandAsync(stopping.Token);
-                Console.WriteLine($"Passband{FormatTarget(passband.Target)} = {passband.WidthHz} Hz");
+                RadioPassbandValue passband = parts.Length <= 1
+                    ? await session.ReadPassbandAsync(stopping.Token)
+                    : IsReceiver(parts[1])
+                        ? await session.ReadPassbandAsync(ParseReceiver(parts[1]), stopping.Token)
+                        : await session.ReadPassbandAsync(ParseEnum<VfoId>(parts[1]), stopping.Token);
+                Console.WriteLine($"Passband{FormatAddress(passband.Target, passband.Receiver)} = {passband.WidthHz} Hz");
                 break;
             case "get":
                 await ExecuteGetAsync(session, parts);
@@ -145,6 +148,9 @@ while (!stopping.IsCancellationRequested)
             case "set":
                 EnsureWriteAllowed(allowWrite);
                 await ExecuteSetAsync(session, parts);
+                break;
+            case "ptt":
+                await ExecutePttAsync(transmitController, parts, allowWrite, stopping.Token);
                 break;
             case "watch":
                 (watchStopping, watchTask) = await ConfigureWatchAsync(session, parts, watchStopping, watchTask, stopping.Token);
@@ -178,6 +184,51 @@ if (pollStopping is not null)
     if (pollTask is not null) await IgnoreCancellationAsync(pollTask);
     pollStopping.Dispose();
 }
+static async Task ExecutePttAsync(
+    RenewingTransmitController controller,
+    string[] parts,
+    bool allowWrite,
+    CancellationToken cancellationToken)
+{
+    string action = parts.ElementAtOrDefault(1)?.ToLowerInvariant() ?? "status";
+    if (action == "status")
+    {
+        RadioState state = await controller.GetStatusAsync(cancellationToken);
+        Console.WriteLine($"PTT = {(state.IsTransmitting ? "on" : "off")} (hardware state)");
+        if (controller.RenewalFailure is Exception failure)
+            Console.WriteLine($"PTT lease renewal failed: {failure.Message}");
+        return;
+    }
+
+    EnsureWriteAllowed(allowWrite);
+    if (action == "on")
+    {
+        RadioState state;
+        if (parts.Length > 2)
+        {
+            int seconds = int.Parse(parts[2], CultureInfo.InvariantCulture);
+            if (seconds is < 1 or > 60)
+                throw new ArgumentOutOfRangeException(nameof(parts), "PTT duration must be between 1 and 60 seconds.");
+            state = await controller.StartForAsync(TimeSpan.FromSeconds(seconds), cancellationToken);
+            Console.WriteLine($"PTT = {(state.IsTransmitting ? "on" : "off")}; automatic RX after at most {seconds} seconds");
+        }
+        else
+        {
+            state = await controller.StartContinuousAsync(cancellationToken);
+            Console.WriteLine($"PTT = {(state.IsTransmitting ? "on" : "off")}; lease heartbeat active until 'ptt off'");
+        }
+        return;
+    }
+
+    if (action == "off")
+    {
+        RadioState state = await controller.StopAsync(cancellationToken);
+        Console.WriteLine($"PTT = {(state.IsTransmitting ? "on" : "off")} (hardware state)");
+        return;
+    }
+
+    throw new ArgumentException("Usage: ptt [status|on [seconds]|off]");
+}
 
 static async Task ExecuteGetAsync(IRadioSession session, string[] parts)
 {
@@ -187,21 +238,27 @@ static async Task ExecuteGetAsync(IRadioSession session, string[] parts)
         case "numeric":
             RadioControlId numeric = ParseEnum<RadioControlId>(parts[2]);
             RadioControlValue numericValue = parts.Length > 3
-                ? await session.ReadControlAsync(numeric, ParseEnum<VfoId>(parts[3]))
+                ? IsReceiver(parts[3])
+                    ? await session.ReadControlAsync(numeric, ParseReceiver(parts[3]))
+                    : await session.ReadControlAsync(numeric, ParseEnum<VfoId>(parts[3]))
                 : await session.ReadControlAsync(numeric);
-            Console.WriteLine($"{numeric}{FormatTarget(numericValue.Target)} = {numericValue.Value}");
+            Console.WriteLine($"{numeric}{FormatAddress(numericValue.Target, numericValue.Receiver)} = {numericValue.Value}");
             break;
         case "switch":
             RadioSwitchId switchId = ParseEnum<RadioSwitchId>(parts[2]);
-            RadioSwitchValue switchValue = await session.ReadSwitchAsync(switchId);
-            Console.WriteLine($"{switchId} = {(switchValue.Enabled ? "on" : "off")}");
+            RadioSwitchValue switchValue = parts.Length > 3
+                ? await session.ReadSwitchAsync(switchId, ParseReceiver(parts[3]))
+                : await session.ReadSwitchAsync(switchId);
+            Console.WriteLine($"{switchId}{FormatAddress(null, switchValue.Receiver)} = {(switchValue.Enabled ? "on" : "off")}");
             break;
         case "choice":
             RadioChoiceId choice = ParseEnum<RadioChoiceId>(parts[2]);
             RadioChoiceValue choiceValue = parts.Length > 3
-                ? await session.ReadChoiceAsync(choice, ParseEnum<VfoId>(parts[3]))
+                ? IsReceiver(parts[3])
+                    ? await session.ReadChoiceAsync(choice, ParseReceiver(parts[3]))
+                    : await session.ReadChoiceAsync(choice, ParseEnum<VfoId>(parts[3]))
                 : await session.ReadChoiceAsync(choice);
-            Console.WriteLine($"{choice}{FormatTarget(choiceValue.Target)} = {choiceValue.Value}");
+            Console.WriteLine($"{choice}{FormatAddress(choiceValue.Target, choiceValue.Receiver)} = {choiceValue.Value}");
             break;
         default:
             throw new ArgumentException("Expected numeric, switch, or choice.");
@@ -214,11 +271,20 @@ static async Task ExecuteSetAsync(IRadioSession session, string[] parts)
     switch (parts[1].ToLowerInvariant())
     {
         case "frequency":
-            RequireParts(parts, 4, "set frequency <A|B> <hz>");
-            VfoId target = ParseEnum<VfoId>(parts[2]);
+            RequireParts(parts, 4, "set frequency <main|sub|A|B> <hz>");
             long frequency = long.Parse(parts[3], CultureInfo.InvariantCulture);
-            await session.SetFrequencyAsync(target, frequency);
-            Console.WriteLine($"Confirmed {target} = {(await session.GetSnapshotAsync()).State.FrequenciesHz[target]} Hz");
+            if (IsReceiver(parts[2]))
+            {
+                ReceiverId receiver = ParseReceiver(parts[2]);
+                await session.SetFrequencyAsync(receiver, frequency);
+                Console.WriteLine($"Confirmed receiver {receiver} = {(await session.GetSnapshotAsync()).State.Receivers[receiver].FrequencyHz} Hz");
+            }
+            else
+            {
+                VfoId target = ParseEnum<VfoId>(parts[2]);
+                await session.SetFrequencyAsync(target, frequency);
+                Console.WriteLine($"Confirmed {target} = {(await session.GetSnapshotAsync()).State.FrequenciesHz[target]} Hz");
+            }
             break;
         case "vfo":
             VfoId vfo = ParseEnum<VfoId>(parts[2]);
@@ -226,21 +292,32 @@ static async Task ExecuteSetAsync(IRadioSession session, string[] parts)
             Console.WriteLine($"Confirmed active VFO = {(await session.GetSnapshotAsync()).State.ActiveVfo}");
             break;
         case "mode":
-            RadioMode mode = ParseEnum<RadioMode>(parts[2]);
-            await session.SetModeAsync(mode);
-            Console.WriteLine($"Confirmed mode = {(await session.GetSnapshotAsync()).State.Mode}");
+            ReceiverId? modeReceiver = parts.Length > 3 ? ParseReceiver(parts[2]) : null;
+            RadioMode mode = ParseEnum<RadioMode>(parts[modeReceiver is null ? 2 : 3]);
+            if (modeReceiver is ReceiverId selectedModeReceiver)
+                await session.SetModeAsync(selectedModeReceiver, mode);
+            else
+                await session.SetModeAsync(mode);
+            RadioState modeState = (await session.GetSnapshotAsync()).State;
+            Console.WriteLine(modeReceiver is ReceiverId confirmedModeReceiver
+                ? $"Confirmed mode[{confirmedModeReceiver}] = {modeState.Receivers[confirmedModeReceiver].Mode}"
+                : $"Confirmed mode = {modeState.Mode}");
             break;
         case "passband":
-            VfoId? passbandTarget = parts.Length > 3 ? ParseEnum<VfoId>(parts[2]) : null;
+            string? passbandTarget = parts.Length > 3 ? parts[2] : null;
             int widthHz = int.Parse(parts[passbandTarget is null ? 2 : 3], CultureInfo.InvariantCulture);
-            if (passbandTarget is VfoId selectedPassbandTarget)
-                await session.SetPassbandAsync(selectedPassbandTarget, widthHz);
+            if (passbandTarget is not null && IsReceiver(passbandTarget))
+                await session.SetPassbandAsync(ParseReceiver(passbandTarget), widthHz);
+            else if (passbandTarget is not null)
+                await session.SetPassbandAsync(ParseEnum<VfoId>(passbandTarget), widthHz);
             else
                 await session.SetPassbandAsync(widthHz);
-            RadioPassbandValue confirmedPassband = passbandTarget is VfoId confirmedTarget
-                ? await session.ReadPassbandAsync(confirmedTarget)
-                : await session.ReadPassbandAsync();
-            Console.WriteLine($"Confirmed passband{FormatTarget(confirmedPassband.Target)} = {confirmedPassband.WidthHz} Hz");
+            RadioPassbandValue confirmedPassband = passbandTarget is null
+                ? await session.ReadPassbandAsync()
+                : IsReceiver(passbandTarget)
+                    ? await session.ReadPassbandAsync(ParseReceiver(passbandTarget))
+                    : await session.ReadPassbandAsync(ParseEnum<VfoId>(passbandTarget));
+            Console.WriteLine($"Confirmed passband{FormatAddress(confirmedPassband.Target, confirmedPassband.Receiver)} = {confirmedPassband.WidthHz} Hz");
             break;
         case "split":
             bool split = ParseBoolean(parts[2]);
@@ -250,37 +327,52 @@ static async Task ExecuteSetAsync(IRadioSession session, string[] parts)
         case "numeric":
             RequireParts(parts, 4, "set numeric <name> <value>");
             RadioControlId numeric = ParseEnum<RadioControlId>(parts[2]);
-            VfoId? numericTarget = parts.Length > 4 ? ParseEnum<VfoId>(parts[3]) : null;
+            string? numericTarget = parts.Length > 4 ? parts[3] : null;
             int numericValue = int.Parse(parts[numericTarget is null ? 3 : 4], CultureInfo.InvariantCulture);
-            if (numericTarget is VfoId selectedNumericTarget)
-                await session.WriteControlAsync(numeric, selectedNumericTarget, numericValue);
+            if (numericTarget is not null && IsReceiver(numericTarget))
+                await session.WriteControlAsync(numeric, ParseReceiver(numericTarget), numericValue);
+            else if (numericTarget is not null)
+                await session.WriteControlAsync(numeric, ParseEnum<VfoId>(numericTarget), numericValue);
             else
                 await session.WriteControlAsync(numeric, numericValue);
-            RadioControlValue confirmedNumeric = numericTarget is VfoId confirmedNumericTarget
-                ? await session.ReadControlAsync(numeric, confirmedNumericTarget)
-                : await session.ReadControlAsync(numeric);
-            Console.WriteLine($"Confirmed {numeric}{FormatTarget(confirmedNumeric.Target)} = {confirmedNumeric.Value}");
+            RadioControlValue confirmedNumeric = numericTarget is null
+                ? await session.ReadControlAsync(numeric)
+                : IsReceiver(numericTarget)
+                    ? await session.ReadControlAsync(numeric, ParseReceiver(numericTarget))
+                    : await session.ReadControlAsync(numeric, ParseEnum<VfoId>(numericTarget));
+            Console.WriteLine($"Confirmed {numeric}{FormatAddress(confirmedNumeric.Target, confirmedNumeric.Receiver)} = {confirmedNumeric.Value}");
             break;
         case "switch":
             RequireParts(parts, 4, "set switch <name> <on|off>");
             RadioSwitchId switchId = ParseEnum<RadioSwitchId>(parts[2]);
-            bool enabled = ParseBoolean(parts[3]);
-            await session.WriteSwitchAsync(switchId, enabled);
-            Console.WriteLine($"Confirmed {switchId} = {((await session.ReadSwitchAsync(switchId)).Enabled ? "on" : "off")}");
+            string? switchTarget = parts.Length > 4 ? parts[3] : null;
+            bool enabled = ParseBoolean(parts[switchTarget is null ? 3 : 4]);
+            if (switchTarget is not null)
+                await session.WriteSwitchAsync(switchId, ParseReceiver(switchTarget), enabled);
+            else
+                await session.WriteSwitchAsync(switchId, enabled);
+            RadioSwitchValue confirmedSwitch = switchTarget is null
+                ? await session.ReadSwitchAsync(switchId)
+                : await session.ReadSwitchAsync(switchId, ParseReceiver(switchTarget));
+            Console.WriteLine($"Confirmed {switchId}{FormatAddress(null, confirmedSwitch.Receiver)} = {(confirmedSwitch.Enabled ? "on" : "off")}");
             break;
         case "choice":
             RequireParts(parts, 4, "set choice <name> <value>");
             RadioChoiceId choice = ParseEnum<RadioChoiceId>(parts[2]);
-            VfoId? choiceTarget = parts.Length > 4 ? ParseEnum<VfoId>(parts[3]) : null;
+            string? choiceTarget = parts.Length > 4 ? parts[3] : null;
             string choiceValue = parts[choiceTarget is null ? 3 : 4];
-            if (choiceTarget is VfoId selectedChoiceTarget)
-                await session.WriteChoiceAsync(choice, selectedChoiceTarget, choiceValue);
+            if (choiceTarget is not null && IsReceiver(choiceTarget))
+                await session.WriteChoiceAsync(choice, ParseReceiver(choiceTarget), choiceValue);
+            else if (choiceTarget is not null)
+                await session.WriteChoiceAsync(choice, ParseEnum<VfoId>(choiceTarget), choiceValue);
             else
                 await session.WriteChoiceAsync(choice, choiceValue);
-            RadioChoiceValue confirmedChoice = choiceTarget is VfoId confirmedChoiceTarget
-                ? await session.ReadChoiceAsync(choice, confirmedChoiceTarget)
-                : await session.ReadChoiceAsync(choice);
-            Console.WriteLine($"Confirmed {choice}{FormatTarget(confirmedChoice.Target)} = {confirmedChoice.Value}");
+            RadioChoiceValue confirmedChoice = choiceTarget is null
+                ? await session.ReadChoiceAsync(choice)
+                : IsReceiver(choiceTarget)
+                    ? await session.ReadChoiceAsync(choice, ParseReceiver(choiceTarget))
+                    : await session.ReadChoiceAsync(choice, ParseEnum<VfoId>(choiceTarget));
+            Console.WriteLine($"Confirmed {choice}{FormatAddress(confirmedChoice.Target, confirmedChoice.Receiver)} = {confirmedChoice.Value}");
             break;
         default:
             throw new ArgumentException("Unknown setter category.");
@@ -314,9 +406,12 @@ static void PrintCapabilities(RadioCapabilities capabilities, string? category)
     {
         Console.WriteLine($"VFOs: {string.Join(", ", capabilities.Vfos.Available)}");
         Console.WriteLine($"Frequency targets: {string.Join(", ", capabilities.Frequency.Targets)}");
+        Console.WriteLine($"Frequency receiver targets: {FormatReceiverTargets(capabilities.Frequency.ReceiverTargets)}");
         Console.WriteLine($"Modes: {string.Join(", ", capabilities.Modes.Values)}");
+        Console.WriteLine($"Mode receiver targets: {FormatReceiverTargets(capabilities.Modes.ReceiverTargets)}");
+        Console.WriteLine($"Receivers: {string.Join(", ", capabilities.Receivers.Available.Keys)}");
         Console.WriteLine($"PTT: {capabilities.Transmit.Support}, {capabilities.Transmit.Access}, lease={capabilities.Transmit.RequiredLease ?? "none"}");
-        Console.WriteLine($"Passband: {capabilities.Passband.Feature.Support}, {capabilities.Passband.Feature.Access}, targets={FormatTargets(capabilities.Passband.Targets)}");
+        Console.WriteLine($"Passband: {capabilities.Passband.Feature.Support}, {capabilities.Passband.Feature.Access}, VFO targets={FormatTargets(capabilities.Passband.Targets)}, receiver targets={FormatReceiverTargets(capabilities.Passband.ReceiverTargets)}");
         foreach ((RadioMode mode, PassbandConstraint constraint) in capabilities.Passband.ByMode)
         {
             string values = constraint.DiscreteValuesHz is null
@@ -329,20 +424,20 @@ static void PrintCapabilities(RadioCapabilities capabilities, string? category)
     {
         Console.WriteLine("Numeric controls:");
         foreach (NumericControlDescriptor item in capabilities.Controls.Values)
-            Console.WriteLine($"  {item.Id}: {item.Minimum}..{item.Maximum}, step {item.Step}, {item.Unit}, {item.Feature.Access}, targets={FormatTargets(item.Targets)}");
+            Console.WriteLine($"  {item.Id}: {item.Minimum}..{item.Maximum}, step {item.Step}, {item.Unit}, {item.Feature.Access}, VFO targets={FormatTargets(item.Targets)}, receiver targets={FormatReceiverTargets(item.ReceiverTargets)}");
     }
     if (selected is "all" or "switches" or "switch")
     {
         Console.WriteLine("Switches:");
         foreach (SwitchControlDescriptor item in capabilities.Switches.Values)
-            Console.WriteLine($"  {item.Id}: {item.Feature.Access}");
+            Console.WriteLine($"  {item.Id}: {item.Feature.Access}, receiver targets={FormatReceiverTargets(item.ReceiverTargets)}");
     }
     if (selected is "all" or "choices" or "choice")
     {
         Console.WriteLine("Choices:");
         foreach (ChoiceControlDescriptor item in capabilities.Choices.Values)
         {
-            Console.WriteLine($"  {item.Id}: targets={FormatTargets(item.Targets)}");
+            Console.WriteLine($"  {item.Id}: VFO targets={FormatTargets(item.Targets)}, receiver targets={FormatReceiverTargets(item.ReceiverTargets)}");
             foreach (RadioChoiceOption option in item.Options.Values)
             {
                 string modes = option.ApplicableModes is null ? "all" : string.Join(",", option.ApplicableModes);
@@ -354,23 +449,36 @@ static void PrintCapabilities(RadioCapabilities capabilities, string? category)
     {
         Console.WriteLine("Meters:");
         foreach (RadioMeterDescriptor item in capabilities.Meters.Values)
-            Console.WriteLine($"  {item.Id}: {item.RawMinimum}..{item.RawMaximum} {item.RawUnit}, calibrated={item.CalibrationAvailable}, targets={FormatTargets(item.RangesByTarget?.Keys)}");
+            Console.WriteLine($"  {item.Id}: {item.RawMinimum}..{item.RawMaximum} {item.RawUnit}, calibrated={item.CalibrationAvailable}, requires TX={item.RequiresTransmit}, VFO targets={FormatTargets(item.RangesByTarget?.Keys)}, receiver targets={FormatReceiverTargets(item.RangesByReceiver?.Keys)}");
     }
 }
 
-static async Task PrintMetersAsync(IRadioSession session, VfoId? target)
+static async Task PrintMetersAsync(IRadioSession session, string? target)
 {
-    RadioCapabilities capabilities = (await session.GetSnapshotAsync()).Capabilities;
+    RadioSnapshot snapshot = await session.GetSnapshotAsync();
+    RadioCapabilities capabilities = snapshot.Capabilities;
     foreach (RadioMeterId meter in capabilities.Meters.Keys)
     {
-        if (target is VfoId selectedTarget &&
-            (capabilities.Meters[meter].RangesByTarget is null ||
-             !capabilities.Meters[meter].RangesByTarget!.ContainsKey(selectedTarget)))
+        RadioMeterDescriptor descriptor = capabilities.Meters[meter];
+        if (descriptor.RequiresTransmit && !snapshot.State.IsTransmitting)
+        {
+            Console.WriteLine($"{meter}: skipped (available while transmitting)");
             continue;
-        RadioMeterReading reading = target is VfoId requestedTarget
-            ? await session.ReadMeterAsync(meter, requestedTarget)
-            : await session.ReadMeterAsync(meter);
-        Console.WriteLine($"{meter}{FormatTarget(reading.Target)}: {reading.RawValue} ({reading.NormalizedValue:P1})");
+        }
+        if (target is not null && IsReceiver(target) &&
+            (descriptor.RangesByReceiver is null ||
+             !descriptor.RangesByReceiver.ContainsKey(ParseReceiver(target))))
+            continue;
+        if (target is not null && !IsReceiver(target) &&
+            (descriptor.RangesByTarget is null ||
+             !descriptor.RangesByTarget.ContainsKey(ParseEnum<VfoId>(target))))
+            continue;
+        RadioMeterReading reading = target is null
+            ? await session.ReadMeterAsync(meter)
+            : IsReceiver(target)
+                ? await session.ReadMeterAsync(meter, ParseReceiver(target))
+                : await session.ReadMeterAsync(meter, ParseEnum<VfoId>(target));
+        Console.WriteLine($"{meter}{FormatAddress(reading.Target, reading.Receiver)}: {reading.RawValue} ({reading.NormalizedValue:P1})");
     }
 }
 
@@ -459,18 +567,36 @@ static async Task<(CancellationTokenSource?, Task?)> ConfigurePollAsync(
 
 static void PrintHelp()
 {
-    Console.WriteLine("Read: radio | state | refresh | capabilities [core|numeric|switches|choices|meters] | meters [A|B] | passband [A|B]");
-    Console.WriteLine("Read: get numeric <name> [A|B] | get switch <name> | get choice <name> [A|B]");
+    Console.WriteLine("Read: radio | state | refresh | capabilities [core|numeric|switches|choices|meters] | meters [main|sub|A|B] | passband [main|sub|A|B]");
+    Console.WriteLine("Read: get numeric <name> [main|sub|A|B] | get switch <name> [main|sub] | get choice <name> [main|sub|A|B]");
     Console.WriteLine("Events: watch [on|off] | poll start [milliseconds] | poll stop");
-    Console.WriteLine("Write: set frequency <A|B> <hz> | set vfo <A|B> | set mode <mode> | set passband [A|B] <hz> | set split <on|off>");
-    Console.WriteLine("Write: set numeric <name> [A|B] <value> | set switch <name> <on|off> | set choice <name> [A|B] <value>");
+    Console.WriteLine("Transmit: ptt status | ptt on (renewed until off) | ptt on <1..60 seconds> | ptt off (writes require --allow-write)");
+    Console.WriteLine("Write: set frequency <main|sub|A|B> <hz> | set vfo <A|B> | set mode [main|sub] <mode> | set passband [main|sub|A|B] <hz> | set split <on|off>");
+    Console.WriteLine("Write: set numeric <name> [main|sub|A|B] <value> | set switch <name> [main|sub] <on|off> | set choice <name> [main|sub|A|B] <value>");
     Console.WriteLine("Exit: exit | quit");
 }
 
 static string FormatTarget(VfoId? target) => target is null ? string.Empty : $"[{target}]";
 
+static string FormatAddress(VfoId? target, ReceiverId? receiver) =>
+    receiver is ReceiverId selectedReceiver ? $"[{selectedReceiver}]" : FormatTarget(target);
+
 static string FormatTargets(IEnumerable<VfoId>? targets) =>
     targets is null || !targets.Any() ? "primary" : string.Join(",", targets);
+
+static string FormatReceiverTargets(IEnumerable<ReceiverId>? targets) =>
+    targets is null || !targets.Any() ? "none" : string.Join(",", targets);
+
+static bool IsReceiver(string value) =>
+    value.Equals("main", StringComparison.OrdinalIgnoreCase) ||
+    value.Equals("sub", StringComparison.OrdinalIgnoreCase) ||
+    value.StartsWith("receiver-", StringComparison.OrdinalIgnoreCase) ||
+    value.StartsWith("slice-", StringComparison.OrdinalIgnoreCase);
+
+static ReceiverId ParseReceiver(string value) =>
+    string.IsNullOrWhiteSpace(value)
+        ? throw new ArgumentException("Receiver identity cannot be empty.")
+        : new ReceiverId(value.ToLowerInvariant());
 
 static void EnsureWriteAllowed(bool allowed)
 {

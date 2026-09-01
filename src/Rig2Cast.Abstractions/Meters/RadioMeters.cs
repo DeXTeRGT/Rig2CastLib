@@ -21,6 +21,8 @@ public sealed record RadioMeterDescriptor(
     string RawUnit,
     bool CalibrationAvailable)
 {
+    public bool RequiresTransmit { get; init; }
+
     public IReadOnlyDictionary<VfoId, RadioMeterRange>? RangesByTarget { get; init; }
 
     public IReadOnlyDictionary<ReceiverId, RadioMeterRange>? RangesByReceiver { get; init; }

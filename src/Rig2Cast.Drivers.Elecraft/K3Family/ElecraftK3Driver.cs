@@ -16,12 +16,15 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
     IRadioMeterDriver, IRadioTargetedControlDriver, IRadioTargetedChoiceDriver,
     IRadioTargetedPassbandDriver, IRadioTargetedMeterDriver,
     IRadioReceiverControlDriver, IRadioReceiverSwitchDriver, IRadioReceiverChoiceDriver,
-    IRadioReceiverPassbandDriver, IRadioReceiverMeterDriver
+    IRadioReceiverPassbandDriver, IRadioReceiverMeterDriver, IRadioReceiverFrequencyDriver,
+    IRadioReceiverModeDriver
 {
+    private static readonly Version MinimumSwrFirmware = new(5, 66);
     private readonly IRadioTransport _transport;
     private readonly ElecraftAsciiProtocol _protocol;
     private readonly ElecraftK3Profile _profile;
     private readonly string _optionResponse;
+    private readonly Version _firmwareVersion;
     private readonly int _automaticInformationMode;
     private int _disposed;
 
@@ -30,14 +33,17 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
         ElecraftAsciiProtocol protocol,
         ElecraftK3Profile profile,
         string optionResponse,
+        string firmwareResponse,
+        Version firmwareVersion,
         int automaticInformationMode)
     {
         _transport = transport;
         _protocol = protocol;
         _profile = profile;
         _optionResponse = optionResponse;
+        _firmwareVersion = firmwareVersion;
         _automaticInformationMode = automaticInformationMode;
-        Capabilities = CreateCapabilities(profile, optionResponse);
+        Capabilities = CreateCapabilities(profile, optionResponse, firmwareResponse, firmwareVersion);
     }
 
     public RadioCapabilities Capabilities { get; }
@@ -62,6 +68,9 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
             if (!profile.MatchesOptionResponse(options))
                 throw new ElecraftProtocolException(
                     $"Connected radio option response '{options}' does not match requested model {profile.Model}.");
+            string firmwareResponse = await protocol.QueryAsync(
+                "RVM", "RVM", IsValidFirmwareResponse, cancellationToken).ConfigureAwait(false);
+            Version firmwareVersion = ParseFirmwareVersion(firmwareResponse);
             if (automaticInformationMode is < 1 or > 3)
                 throw new ArgumentOutOfRangeException(nameof(automaticInformationMode));
             int selectedAutoInformationMode = enableAutomaticInformation ? automaticInformationMode : 0;
@@ -72,7 +81,9 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
                 await protocol.SendAsync("K31", cancellationToken).ConfigureAwait(false);
                 await protocol.SendAsync($"AI{selectedAutoInformationMode}", cancellationToken).ConfigureAwait(false);
             }
-            return new ElecraftK3Driver(transport, protocol, profile, options, selectedAutoInformationMode);
+            return new ElecraftK3Driver(
+                transport, protocol, profile, options, firmwareResponse, firmwareVersion,
+                selectedAutoInformationMode);
         }
         catch
         {
@@ -155,6 +166,28 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
             await _protocol.QueryAsync("IF", "IF", cancellationToken).ConfigureAwait(false));
         string prefix = information.ActiveVfo == VfoId.B ? "MD$" : "MD";
         await _protocol.SendAsync($"{prefix}{_profile.EncodeMode(mode)}", cancellationToken).ConfigureAwait(false);
+    }
+
+    public async ValueTask SetFrequencyAsync(
+        ReceiverId receiver, long frequencyHz, CancellationToken cancellationToken = default)
+    {
+        VfoId target = MapReceiverToLegacyTarget(receiver);
+        if (receiver == ReceiverId.Main)
+        {
+            ElecraftInformation information = ParseInformation(
+                await _protocol.QueryAsync("IF", "IF", cancellationToken).ConfigureAwait(false));
+            target = information.ActiveVfo;
+        }
+        await SetFrequencyAsync(target, frequencyHz, cancellationToken).ConfigureAwait(false);
+    }
+
+    public ValueTask SetModeAsync(
+        ReceiverId receiver, RadioMode mode, CancellationToken cancellationToken = default)
+    {
+        _ = MapReceiverToLegacyTarget(receiver);
+        return receiver == ReceiverId.Main
+            ? SetModeAsync(mode, cancellationToken)
+            : _protocol.SendAsync($"MD${_profile.EncodeMode(mode)}", cancellationToken);
     }
 
     public ValueTask SetSplitAsync(bool enabled, CancellationToken cancellationToken = default) =>
@@ -550,6 +583,9 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
                 maximum = 15;
                 break;
             case RadioMeterId.Swr:
+                if (_firmwareVersion.CompareTo(MinimumSwrFirmware) < 0)
+                    throw new NotSupportedException(
+                        $"SWR requires Elecraft firmware {MinimumSwrFirmware} or newer; connected firmware is {_firmwareVersion}.");
                 raw = ParseUnsignedControl(
                     await _protocol.QueryAsync("SW", "SW", cancellationToken).ConfigureAwait(false),
                     "SW", 3, 999);
@@ -817,7 +853,11 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
             response[28] == '1');
     }
 
-    private static RadioCapabilities CreateCapabilities(ElecraftK3Profile profile, string optionResponse)
+    private static RadioCapabilities CreateCapabilities(
+        ElecraftK3Profile profile,
+        string optionResponse,
+        string firmwareResponse,
+        Version firmwareVersion)
     {
         var readWrite = new FeatureDescriptor(CapabilitySupport.Supported, FeatureAccess.Read | FeatureAccess.Write);
         var unsupported = new FeatureDescriptor(
@@ -835,18 +875,32 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
                 readWrite,
                 new HashSet<VfoId> { VfoId.A, VfoId.B },
                 [new FrequencyRange(100_000, 54_000_000, true, false)],
-                1),
-            new ModeCapability(readWrite, profile.SupportedModes),
+                1)
+            {
+                ReceiverTargets = CreateReceiverIds(profile, optionResponse),
+                RangesByReceiver = CreateReceiverIds(profile, optionResponse).ToDictionary(
+                    receiver => receiver,
+                    _ => (IReadOnlyList<FrequencyRange>)[new FrequencyRange(100_000, 54_000_000, true, false)])
+            },
+            new ModeCapability(readWrite, profile.SupportedModes)
+            {
+                ReceiverTargets = CreateReceiverIds(profile, optionResponse),
+                ValuesByReceiver = CreateReceiverIds(profile, optionResponse).ToDictionary(
+                    receiver => receiver,
+                    _ => profile.SupportedModes)
+            },
             new FeatureDescriptor(CapabilitySupport.Supported, FeatureAccess.Read | FeatureAccess.Write, LeaseKinds.Transmit),
             CreateControlCapabilities(profile, optionResponse, readWrite),
             CreateSwitchCapabilities(readWrite),
             CreateChoiceCapabilities(profile, optionResponse, readWrite),
-            CreateMeterCapabilities(profile, optionResponse),
+            CreateMeterCapabilities(profile, optionResponse, firmwareVersion),
             new Dictionary<string, object?>
             {
                 ["elecraft.protocolFamily"] = "K3",
                 ["elecraft.modelId"] = profile.ModelId,
                 ["elecraft.optionResponse"] = optionResponse,
+                ["elecraft.firmwareResponse"] = firmwareResponse,
+                ["elecraft.firmwareVersion"] = firmwareVersion.ToString(2),
                 ["elecraft.receiverTargets"] = CreateReceiverTargets(profile, optionResponse),
                 ["elecraft.autoInformation.modes"] = ElecraftK3Profile.AutoInformationModes,
                 ["serial.supportedBaudRates"] = ElecraftK3Profile.SupportedBaudRates,
@@ -1102,7 +1156,7 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
     }
 
     private static Dictionary<RadioMeterId, RadioMeterDescriptor> CreateMeterCapabilities(
-        ElecraftK3Profile profile, string optionResponse)
+        ElecraftK3Profile profile, string optionResponse, Version firmwareVersion)
     {
         bool desktop = profile.ModelId is ElecraftK3Profile.K3SModelId or ElecraftK3Profile.K3ModelId;
         HashSet<VfoId> targets = CreateReceiverTargets(profile, optionResponse);
@@ -1119,20 +1173,48 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
         };
         if (receivers.Contains(ReceiverId.Sub))
             receiverSignalRanges[ReceiverId.Sub] = new(0, 15, "raw SM$");
-        return new Dictionary<RadioMeterId, RadioMeterDescriptor>
+        var meters = new Dictionary<RadioMeterId, RadioMeterDescriptor>
         {
             [RadioMeterId.SignalStrength] = desktop
                 ? new(RadioMeterId.SignalStrength, "High-resolution S-meter", 0, 140, "raw SMH", false)
                     { RangesByTarget = signalRanges, RangesByReceiver = receiverSignalRanges }
                 : new(RadioMeterId.SignalStrength, "S-meter", 0, 15, "raw SM", false)
-                    { RangesByTarget = signalRanges, RangesByReceiver = receiverSignalRanges },
-            [RadioMeterId.Swr] = new(RadioMeterId.Swr, "SWR", 10, 999, "0.1 SWR", false)
+                    { RangesByTarget = signalRanges, RangesByReceiver = receiverSignalRanges }
+        };
+        if (firmwareVersion.CompareTo(MinimumSwrFirmware) >= 0)
+        {
+            meters[RadioMeterId.Swr] = new(RadioMeterId.Swr, "SWR", 10, 999, "0.1 SWR", false)
             {
+                RequiresTransmit = true,
                 RangesByTarget = new Dictionary<VfoId, RadioMeterRange> { [VfoId.A] = new(10, 999, "0.1 SWR") },
                 RangesByReceiver = new Dictionary<ReceiverId, RadioMeterRange>
                     { [ReceiverId.Main] = new(10, 999, "0.1 SWR") }
-            }
-        };
+            };
+        }
+        return meters;
+    }
+
+    private static bool IsValidFirmwareResponse(string response)
+    {
+        try
+        {
+            _ = ParseFirmwareVersion(response);
+            return true;
+        }
+        catch (ElecraftProtocolException)
+        {
+            return false;
+        }
+    }
+
+    private static Version ParseFirmwareVersion(string response)
+    {
+        if (response.Length != 9 || !response.StartsWith("RVM", StringComparison.OrdinalIgnoreCase) ||
+            response[5] != '.' || response[^1] != ';' ||
+            !int.TryParse(response.AsSpan(3, 2), NumberStyles.None, CultureInfo.InvariantCulture, out int major) ||
+            !int.TryParse(response.AsSpan(6, 2), NumberStyles.None, CultureInfo.InvariantCulture, out int minor))
+            throw new ElecraftProtocolException($"Invalid firmware response '{response}'.");
+        return new Version(major, minor);
     }
 
     private static Dictionary<string, RadioChoiceOption> CreateAttenuatorOptions(ElecraftK3Profile profile)

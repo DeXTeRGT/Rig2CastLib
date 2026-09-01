@@ -209,6 +209,24 @@ public sealed class ManagedRadio : IAsyncDisposable
             token => _driver.SetFrequencyAsync(target, frequencyHz, token),
             cancellationToken);
 
+    internal ValueTask SetFrequencyAsync(
+        ClientAuthorization authorization,
+        ReceiverId receiver,
+        long frequencyHz,
+        CancellationToken cancellationToken)
+    {
+        ValidateTarget(_driver.Capabilities.Frequency.ReceiverTargets, receiver, "Frequency");
+        IReadOnlyList<FrequencyRange> ranges =
+            _driver.Capabilities.Frequency.RangesByReceiver?.GetValueOrDefault(receiver) ??
+            _driver.Capabilities.Frequency.Ranges;
+        if (!ranges.Any(range => range.Receive && frequencyHz >= range.MinimumHz && frequencyHz <= range.MaximumHz))
+            throw new ArgumentOutOfRangeException(nameof(frequencyHz));
+        return ExecuteMutationAsync(
+            authorization,
+            token => GetReceiverFrequencyDriver().SetFrequencyAsync(receiver, frequencyHz, token),
+            cancellationToken);
+    }
+
     internal ValueTask SetActiveVfoAsync(
         ClientAuthorization authorization,
         VfoId vfo,
@@ -220,6 +238,24 @@ public sealed class ManagedRadio : IAsyncDisposable
         RadioMode mode,
         CancellationToken cancellationToken) =>
         ExecuteMutationAsync(authorization, token => _driver.SetModeAsync(mode, token), cancellationToken);
+
+    internal ValueTask SetModeAsync(
+        ClientAuthorization authorization,
+        ReceiverId receiver,
+        RadioMode mode,
+        CancellationToken cancellationToken)
+    {
+        ValidateTarget(_driver.Capabilities.Modes.ReceiverTargets, receiver, "Mode");
+        IReadOnlySet<RadioMode> modes =
+            _driver.Capabilities.Modes.ValuesByReceiver?.GetValueOrDefault(receiver) ??
+            _driver.Capabilities.Modes.Values;
+        if (!modes.Contains(mode))
+            throw new NotSupportedException($"Mode '{mode}' is not supported by receiver '{receiver}'.");
+        return ExecuteMutationAsync(
+            authorization,
+            token => GetReceiverModeDriver().SetModeAsync(receiver, mode, token),
+            cancellationToken);
+    }
 
     internal ValueTask SetSplitAsync(
         ClientAuthorization authorization,
@@ -582,6 +618,14 @@ public sealed class ManagedRadio : IAsyncDisposable
             _driver is IRadioReceiverControlDriver driver ? driver :
             throw new NotSupportedException($"Radio control '{control}' does not support receiver targets."));
 
+    private IRadioReceiverFrequencyDriver GetReceiverFrequencyDriver() =>
+        EnsureConnectedAndGet(_driver is IRadioReceiverFrequencyDriver driver ? driver :
+            throw new NotSupportedException("Frequency control does not support receiver targets."));
+
+    private IRadioReceiverModeDriver GetReceiverModeDriver() =>
+        EnsureConnectedAndGet(_driver is IRadioReceiverModeDriver driver ? driver :
+            throw new NotSupportedException("Mode control does not support receiver targets."));
+
     private IRadioReceiverSwitchDriver GetReceiverSwitchDriver(RadioSwitchId control) =>
         EnsureConnectedAndGet(_driver.Capabilities.Switches.ContainsKey(control) &&
             _driver is IRadioReceiverSwitchDriver driver ? driver :
@@ -700,8 +744,24 @@ public sealed class ManagedRadio : IAsyncDisposable
             EnsureConnected();
             _leases.Validate(transmitLease, authorization.Client, LeaseKinds.Transmit);
             await _driver.SetPttAsync(enabled, token).ConfigureAwait(false);
-            await RefreshStateCoreAsync(token).ConfigureAwait(false);
+            await VerifyPttStateAsync(enabled, token).ConfigureAwait(false);
         }, enabled ? RadioCommandPriority.Normal : RadioCommandPriority.Safety, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async ValueTask VerifyPttStateAsync(bool expected, CancellationToken cancellationToken)
+    {
+        const int maximumAttempts = 21;
+        for (int attempt = 1; attempt <= maximumAttempts; attempt++)
+        {
+            await RefreshStateCoreAsync(cancellationToken).ConfigureAwait(false);
+            if (_state.IsTransmitting == expected)
+                return;
+            if (attempt < maximumAttempts)
+                await Task.Delay(TimeSpan.FromMilliseconds(50), cancellationToken).ConfigureAwait(false);
+        }
+
+        throw new InvalidOperationException(
+            $"The radio did not reach the requested PTT state '{(expected ? "on" : "off")}' within one second.");
     }
 
     internal async ValueTask ExecuteExclusiveAsync(
@@ -1431,11 +1491,23 @@ public sealed class ManagedRadio : IAsyncDisposable
         public ValueTask SetFrequencyAsync(VfoId target, long frequencyHz, CancellationToken cancellationToken = default) =>
             driver.SetFrequencyAsync(target, frequencyHz, cancellationToken);
 
+        public ValueTask SetFrequencyAsync(
+            ReceiverId receiver, long frequencyHz, CancellationToken cancellationToken = default) =>
+            driver is IRadioReceiverFrequencyDriver targeted
+                ? targeted.SetFrequencyAsync(receiver, frequencyHz, cancellationToken)
+                : throw new NotSupportedException("Frequency control does not support receiver targets.");
+
         public ValueTask SetActiveVfoAsync(VfoId vfo, CancellationToken cancellationToken = default) =>
             driver.SetActiveVfoAsync(vfo, cancellationToken);
 
         public ValueTask SetModeAsync(RadioMode mode, CancellationToken cancellationToken = default) =>
             driver.SetModeAsync(mode, cancellationToken);
+
+        public ValueTask SetModeAsync(
+            ReceiverId receiver, RadioMode mode, CancellationToken cancellationToken = default) =>
+            driver is IRadioReceiverModeDriver targeted
+                ? targeted.SetModeAsync(receiver, mode, cancellationToken)
+                : throw new NotSupportedException("Mode control does not support receiver targets.");
 
         public ValueTask SetSplitAsync(bool enabled, CancellationToken cancellationToken = default) =>
             driver.SetSplitAsync(enabled, cancellationToken);
