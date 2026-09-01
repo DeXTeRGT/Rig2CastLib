@@ -433,7 +433,7 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
             new FrequencyCapability(
                 readWrite,
                 new HashSet<VfoId> { VfoId.A, VfoId.B },
-                [new FrequencyRange(1_800_000, 54_000_000, true, true)],
+                [new FrequencyRange(30_000, 75_000_000, true, false)],
                 1),
             new ModeCapability(
                 readWrite,

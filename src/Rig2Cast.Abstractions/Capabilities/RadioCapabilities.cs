@@ -14,7 +14,16 @@ public sealed record FrequencyCapability(
     FeatureDescriptor Feature,
     IReadOnlySet<VfoId> Targets,
     IReadOnlyList<FrequencyRange> Ranges,
-    long? SmallestStepHz = null);
+    long? SmallestStepHz = null)
+{
+    public bool CanReceive(long frequencyHz) =>
+        Ranges.Any(range => range.Receive &&
+                            frequencyHz >= range.MinimumHz && frequencyHz <= range.MaximumHz);
+
+    public bool CanTransmit(long frequencyHz) =>
+        Ranges.Any(range => range.Transmit &&
+                            frequencyHz >= range.MinimumHz && frequencyHz <= range.MaximumHz);
+}
 
 public sealed record VfoCapability(
     IReadOnlySet<VfoId> Available,

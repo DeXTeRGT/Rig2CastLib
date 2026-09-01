@@ -8,6 +8,7 @@ using Rig2Cast.Abstractions.Controls;
 using Rig2Cast.Abstractions.Meters;
 using Rig2Cast.Abstractions.Capabilities;
 using Rig2Cast.Abstractions.Drivers;
+using Rig2Cast.Runtime.Leases;
 
 namespace Rig2Cast.Runtime.Tests;
 
@@ -164,6 +165,36 @@ public sealed class ManagedRadioTests
         _ = await first.AcquireLeaseAsync(LeaseKinds.Transmit, TimeSpan.FromSeconds(5));
         await Assert.ThrowsAsync<LeaseUnavailableException>(
             () => second.AcquireLeaseAsync(LeaseKinds.Transmit, TimeSpan.FromSeconds(5)).AsTask());
+    }
+
+    [Fact]
+    public void SameOwnerMustRenewRatherThanSilentlySupersedeActiveLease()
+    {
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var manager = new RadioLeaseManager(clock);
+        var owner = new ClientIdentity("owner");
+        LeaseToken original = manager.Acquire(LeaseKinds.Transmit, owner, TimeSpan.FromSeconds(5));
+
+        Assert.Throws<LeaseUnavailableException>(
+            () => manager.Acquire(LeaseKinds.Transmit, owner, TimeSpan.FromSeconds(10)));
+        manager.Validate(original, owner, LeaseKinds.Transmit);
+    }
+
+    [Fact]
+    public void ExpiredLeaseCanBeReplacedAtomicallyWithoutBackgroundCleanup()
+    {
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        var manager = new RadioLeaseManager(clock);
+        var first = new ClientIdentity("first");
+        var second = new ClientIdentity("second");
+        LeaseToken expired = manager.Acquire(LeaseKinds.Transmit, first, TimeSpan.FromSeconds(1));
+        clock.Advance(TimeSpan.FromSeconds(2));
+
+        LeaseToken replacement = manager.Acquire(LeaseKinds.Transmit, second, TimeSpan.FromSeconds(5));
+
+        manager.Validate(replacement, second, LeaseKinds.Transmit);
+        Assert.Throws<InvalidLeaseException>(
+            () => manager.Validate(expired, first, LeaseKinds.Transmit));
     }
 
     [Fact]

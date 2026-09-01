@@ -176,10 +176,12 @@ internal sealed class ScriptedRadioTransport(bool ignoreReadCancellation = false
     private readonly Channel<byte[]> _responses = Channel.CreateUnbounded<byte[]>();
     private byte[]? _response;
     private int _responseOffset;
+    private int _disposeCount;
 
     public string Id => "scripted";
 
     public bool IsConnected { get; private set; }
+    public int DisposeCount => Volatile.Read(ref _disposeCount);
 
     public void Add(string command, params string[] responses) =>
         _script.Enqueue((command, responses.Select(Encoding.ASCII.GetBytes).ToArray()));
@@ -215,11 +217,18 @@ internal sealed class ScriptedRadioTransport(bool ignoreReadCancellation = false
         (string expected, byte[][] responses) = _script.Dequeue();
         Assert.Equal(expected, Encoding.ASCII.GetString(data.Span));
         Assert.Null(_response);
-        foreach (byte[] response in responses)
-        {
-            Assert.True(_responses.Writer.TryWrite(response));
-        }
+        if (responses.Length > 0)
+            _ = EnqueueResponsesAfterWriteAsync(responses);
         return ValueTask.CompletedTask;
+    }
+
+    private async Task EnqueueResponsesAfterWriteAsync(byte[][] responses)
+    {
+        // A physical radio cannot complete a response before the command write
+        // has completed. Yielding here preserves that causal boundary in tests.
+        await Task.Delay(1).ConfigureAwait(false);
+        foreach (byte[] response in responses)
+            await _responses.Writer.WriteAsync(response).ConfigureAwait(false);
     }
 
     public async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
@@ -245,6 +254,7 @@ internal sealed class ScriptedRadioTransport(bool ignoreReadCancellation = false
 
     public ValueTask DisposeAsync()
     {
+        Interlocked.Increment(ref _disposeCount);
         IsConnected = false;
         _responses.Writer.TryComplete();
         return ValueTask.CompletedTask;

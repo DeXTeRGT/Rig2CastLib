@@ -100,7 +100,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
     private readonly IRadioTransport _transport;
     private readonly YaesuAsciiProtocol _protocol;
     private readonly bool _automaticInformationEnabled;
-    private bool _disposed;
+    private int _disposed;
 
     private Ftdx10Driver(
         IRadioTransport transport,
@@ -130,7 +130,10 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         var protocol = new YaesuAsciiProtocol(transport, responseTimeout);
         try
         {
-            string identification = await protocol.QueryAsync("ID", "ID", cancellationToken).ConfigureAwait(false);
+            string identification = await protocol.QueryAsync(
+                "ID", "ID", candidate => candidate.Length == 7 && candidate[^1] == ';' &&
+                    candidate.AsSpan(2, 4).IndexOfAnyExceptInRange('0', '9') < 0,
+                cancellationToken).ConfigureAwait(false);
             if (!StringComparer.Ordinal.Equals(identification, $"ID{Ftdx10CatProfile.Identification};"))
             {
                 throw new YaesuProtocolException(
@@ -140,7 +143,9 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             if (enableAutomaticInformation)
             {
                 await protocol.SendAsync("AI1", cancellationToken).ConfigureAwait(false);
-                string automaticInformation = await protocol.QueryAsync("AI", "AI", cancellationToken).ConfigureAwait(false);
+                string automaticInformation = await protocol.QueryAsync(
+                    "AI", "AI", candidate => candidate is "AI0;" or "AI1;",
+                    cancellationToken).ConfigureAwait(false);
                 if (!StringComparer.Ordinal.Equals(automaticInformation, "AI1;"))
                 {
                     throw new YaesuProtocolException(
@@ -167,12 +172,13 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
     public async ValueTask<RadioState> ReadStateAsync(CancellationToken cancellationToken = default)
     {
         EnsureActive();
-        long frequencyA = ParseFrequency(await _protocol.QueryAsync("FA", "FA", cancellationToken).ConfigureAwait(false));
-        long frequencyB = ParseFrequency(await _protocol.QueryAsync("FB", "FB", cancellationToken).ConfigureAwait(false));
-        VfoId activeVfo = ParseVfo(await _protocol.QueryAsync("VS", "VS", cancellationToken).ConfigureAwait(false));
-        RadioMode mode = ParseMode(await _protocol.QueryAsync(activeVfo == VfoId.A ? "MD0" : "MD1", "MD", cancellationToken).ConfigureAwait(false));
-        bool split = ParseBoolean(await _protocol.QueryAsync("ST", "ST", cancellationToken).ConfigureAwait(false));
-        bool transmitting = ParseTransmit(await _protocol.QueryAsync("TX", "TX", cancellationToken).ConfigureAwait(false));
+        long frequencyA = ParseFrequency(await QueryParsedAsync("FA", "FA", ParseFrequency, cancellationToken).ConfigureAwait(false));
+        long frequencyB = ParseFrequency(await QueryParsedAsync("FB", "FB", ParseFrequency, cancellationToken).ConfigureAwait(false));
+        VfoId activeVfo = ParseVfo(await QueryParsedAsync("VS", "VS", ParseVfo, cancellationToken).ConfigureAwait(false));
+        string modeQuery = activeVfo == VfoId.A ? "MD0" : "MD1";
+        RadioMode mode = ParseMode(await QueryParsedAsync(modeQuery, modeQuery, ParseMode, cancellationToken).ConfigureAwait(false));
+        bool split = ParseBoolean(await QueryParsedAsync("ST", "ST", ParseBoolean, cancellationToken).ConfigureAwait(false));
+        bool transmitting = ParseTransmit(await QueryParsedAsync("TX", "TX", ParseTransmit, cancellationToken).ConfigureAwait(false));
 
         return new RadioState(
             1,
@@ -192,10 +198,11 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
     public async ValueTask SetFrequencyAsync(VfoId target, long frequencyHz, CancellationToken cancellationToken = default)
     {
         EnsureActive();
-        ArgumentOutOfRangeException.ThrowIfLessThan(frequencyHz, 30_000);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(frequencyHz, 75_000_000);
+        if (!Capabilities.Frequency.CanReceive(frequencyHz))
+            throw new ArgumentOutOfRangeException(nameof(frequencyHz), frequencyHz,
+                "Frequency is outside the FTDX10 receive coverage advertised by this driver.");
         VfoId resolved = target == VfoId.Current ?
-            ParseVfo(await _protocol.QueryAsync("VS", "VS", cancellationToken).ConfigureAwait(false)) : target;
+            ParseVfo(await QueryParsedAsync("VS", "VS", ParseVfo, cancellationToken).ConfigureAwait(false)) : target;
         string prefix = resolved switch
         {
             VfoId.A => "FA",
@@ -208,7 +215,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
     public async ValueTask SetModeAsync(RadioMode mode, CancellationToken cancellationToken = default)
     {
         EnsureActive();
-        VfoId active = ParseVfo(await _protocol.QueryAsync("VS", "VS", cancellationToken).ConfigureAwait(false));
+        VfoId active = ParseVfo(await QueryParsedAsync("VS", "VS", ParseVfo, cancellationToken).ConfigureAwait(false));
         char target = active == VfoId.A ? '0' : '1';
         await _protocol.SendAsync($"MD{target}{Ftdx10CatProfile.EncodeMode(mode)}", cancellationToken).ConfigureAwait(false);
     }
@@ -242,7 +249,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             return;
         }
         VfoId activeVfo = ParseVfo(
-            await _protocol.QueryAsync("VS", "VS", cancellationToken).ConfigureAwait(false));
+            await QueryParsedAsync("VS", "VS", ParseVfo, cancellationToken).ConfigureAwait(false));
         if (transmitVfo != OppositeVfo(activeVfo))
         {
             throw new NotSupportedException(
@@ -279,7 +286,8 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         ControlCommand command = GetControlCommand(control);
         if (control == RadioControlId.IfShiftHz)
         {
-            string shiftResponse = await _protocol.QueryAsync("IS0", "IS", cancellationToken).ConfigureAwait(false);
+            string shiftResponse = await _protocol.QueryAsync(
+                "IS0", "IS00", IsValidIfShiftResponse, cancellationToken).ConfigureAwait(false);
             if (shiftResponse.Length != 10 || !shiftResponse.StartsWith("IS00", StringComparison.Ordinal) ||
                 shiftResponse[4] is not ('+' or '-') ||
                 !int.TryParse(shiftResponse.AsSpan(5, 4), NumberStyles.None, CultureInfo.InvariantCulture, out int magnitude) ||
@@ -294,7 +302,8 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
 
         if (control == RadioControlId.ClarifierOffsetHz)
         {
-            string clarifierResponse = await _protocol.QueryAsync("CF001", "CF", cancellationToken).ConfigureAwait(false);
+            string clarifierResponse = await _protocol.QueryAsync(
+                "CF001", "CF001", IsValidClarifierResponse, cancellationToken).ConfigureAwait(false);
             if (clarifierResponse.Length != 11 || !clarifierResponse.StartsWith("CF001", StringComparison.Ordinal) ||
                 clarifierResponse[5] is not ('+' or '-') ||
                 !int.TryParse(clarifierResponse.AsSpan(6, 4), NumberStyles.None, CultureInfo.InvariantCulture, out int magnitude))
@@ -306,7 +315,9 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             return new RadioControlValue(control, offset, DateTimeOffset.UtcNow);
         }
 
-        string response = await _protocol.QueryAsync(command.Query, command.ResponsePrefix[..2], cancellationToken).ConfigureAwait(false);
+        string response = await _protocol.QueryAsync(
+            command.Query, command.ResponsePrefix,
+            candidate => IsValidControlResponse(candidate, command), cancellationToken).ConfigureAwait(false);
         int valueOffset = command.ResponsePrefix.Length;
         if (response.Length != valueOffset + command.Digits + 1 ||
             !response.StartsWith(command.ResponsePrefix, StringComparison.Ordinal) ||
@@ -367,7 +378,9 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             throw new NotSupportedException($"Meter '{meter}' is not supported by the FTDX10 CAT profile.");
         }
 
-        string response = await _protocol.QueryAsync(command.Query, command.ResponsePrefix[..2], cancellationToken).ConfigureAwait(false);
+        string response = await _protocol.QueryAsync(
+            command.Query, command.ResponsePrefix,
+            candidate => IsValidMeterResponse(candidate, command), cancellationToken).ConfigureAwait(false);
         if (response.Length != command.ResponseLength ||
             !response.StartsWith(command.ResponsePrefix, StringComparison.Ordinal) ||
             !int.TryParse(response.AsSpan(3, 3), NumberStyles.None, CultureInfo.InvariantCulture, out int raw) ||
@@ -385,7 +398,9 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
     {
         EnsureActive();
         SwitchCommand command = GetSwitchCommand(control);
-        string response = await _protocol.QueryAsync(command.Query, command.ResponsePrefix[..2], cancellationToken).ConfigureAwait(false);
+        string response = await _protocol.QueryAsync(
+            command.Query, command.ResponsePrefix,
+            candidate => IsValidSwitchResponse(candidate, command), cancellationToken).ConfigureAwait(false);
         int expectedLength = command.ResponsePrefix.Length + command.ValueDigits + 1;
         if (response.Length != expectedLength || !response.StartsWith(command.ResponsePrefix, StringComparison.Ordinal))
         {
@@ -426,7 +441,8 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         if (control == RadioChoiceId.FilterWidth)
         {
             RadioMode mode = await ReadActiveModeAsync(cancellationToken).ConfigureAwait(false);
-            string widthResponse = await _protocol.QueryAsync("SH0", "SH", cancellationToken).ConfigureAwait(false);
+            string widthResponse = await _protocol.QueryAsync(
+                "SH0", "SH00", IsValidFilterWidthResponse, cancellationToken).ConfigureAwait(false);
             if (widthResponse.Length != 7 || !widthResponse.StartsWith("SH00", StringComparison.Ordinal) ||
                 !int.TryParse(widthResponse.AsSpan(4, 2), NumberStyles.None, CultureInfo.InvariantCulture, out int widthCode))
             {
@@ -438,7 +454,9 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         }
 
         ChoiceCommand command = GetChoiceCommand(control);
-        string response = await _protocol.QueryAsync(command.Query, command.ResponsePrefix[..2], cancellationToken).ConfigureAwait(false);
+        string response = await _protocol.QueryAsync(
+            command.Query, command.ResponsePrefix,
+            candidate => IsValidChoiceResponse(candidate, command), cancellationToken).ConfigureAwait(false);
         if (response.Length != command.ResponsePrefix.Length + 2 ||
             !response.StartsWith(command.ResponsePrefix, StringComparison.Ordinal))
         {
@@ -486,7 +504,8 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
     {
         EnsureActive();
         RadioMode mode = await ReadActiveModeAsync(cancellationToken).ConfigureAwait(false);
-        string response = await _protocol.QueryAsync("SH0", "SH", cancellationToken).ConfigureAwait(false);
+        string response = await _protocol.QueryAsync(
+            "SH0", "SH00", IsValidFilterWidthResponse, cancellationToken).ConfigureAwait(false);
         if (response.Length != 7 || !response.StartsWith("SH00", StringComparison.Ordinal) ||
             !int.TryParse(response.AsSpan(4, 2), NumberStyles.None, CultureInfo.InvariantCulture, out int code))
             throw new YaesuProtocolException($"Invalid filter-width response '{response}'.");
@@ -508,38 +527,133 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
 
     public async ValueTask DisposeAsync()
     {
-        if (!_disposed)
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+        if (_automaticInformationEnabled)
         {
-            _disposed = true;
-            if (_automaticInformationEnabled)
-            {
-                using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(1));
-                try
-                {
-                    await _protocol.SendAsync("AI0", cleanup.Token).ConfigureAwait(false);
-                }
-                catch (Exception exception) when (exception is IOException or InvalidOperationException or OperationCanceledException or TimeoutException)
-                {
-                    // Best-effort cleanup; transport disposal remains mandatory.
-                }
-            }
-
+            using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(1));
             try
             {
-                // Closing the transport is what reliably unblocks SerialPort.BaseStream.ReadAsync
-                // on Windows; cancellation alone is not sufficient on every driver/runtime pair.
-                await _transport.DisposeAsync().ConfigureAwait(false);
+                await _protocol.SendAsync("AI0", cleanup.Token).ConfigureAwait(false);
             }
-            finally
+            catch (Exception exception) when (exception is IOException or InvalidOperationException or OperationCanceledException or TimeoutException)
             {
-                await _protocol.DisposeAsync().ConfigureAwait(false);
+                // Best-effort cleanup; transport disposal remains mandatory.
             }
+        }
+
+        try
+        {
+            // Closing the transport is what reliably unblocks SerialPort.BaseStream.ReadAsync
+            // on Windows; cancellation alone is not sufficient on every driver/runtime pair.
+            await _transport.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            await _protocol.DisposeAsync().ConfigureAwait(false);
         }
     }
 
+    private ValueTask<string> QueryParsedAsync<T>(
+        string command,
+        string expectedPrefix,
+        Func<string, T> parser,
+        CancellationToken cancellationToken) =>
+        _protocol.QueryAsync(
+            command,
+            expectedPrefix,
+            candidate => CanParse(candidate, parser),
+            cancellationToken);
+
+    private static bool CanParse<T>(string response, Func<string, T> parser)
+    {
+        try
+        {
+            _ = parser(response);
+            return true;
+        }
+        catch (YaesuProtocolException)
+        {
+            return false;
+        }
+    }
+
+    private static bool IsValidIfShiftResponse(string response) =>
+        response.Length == 10 && response.StartsWith("IS00", StringComparison.Ordinal) &&
+        response[4] is '+' or '-' &&
+        int.TryParse(response.AsSpan(5, 4), NumberStyles.None, CultureInfo.InvariantCulture, out int magnitude) &&
+        magnitude <= 1200 && magnitude % 20 == 0;
+
+    private static bool IsValidClarifierResponse(string response) =>
+        response.Length == 11 && response.StartsWith("CF001", StringComparison.Ordinal) &&
+        response[5] is '+' or '-' &&
+        int.TryParse(response.AsSpan(6, 4), NumberStyles.None, CultureInfo.InvariantCulture, out _);
+
+    private static bool IsValidControlResponse(string response, ControlCommand command)
+    {
+        int valueOffset = command.ResponsePrefix.Length;
+        return response.Length == valueOffset + command.Digits + 1 && response[^1] == ';' &&
+               response.StartsWith(command.ResponsePrefix, StringComparison.Ordinal) &&
+               int.TryParse(response.AsSpan(valueOffset, command.Digits), NumberStyles.None,
+                   CultureInfo.InvariantCulture, out int encoded) &&
+               encoded * command.Scale + command.ValueOffset >= command.Minimum &&
+               encoded * command.Scale + command.ValueOffset <= command.Maximum;
+    }
+
+    private static bool IsValidMeterResponse(string response, MeterCommand command)
+    {
+        if (response.Length != command.ResponseLength || response[^1] != ';' ||
+            !response.StartsWith(command.ResponsePrefix, StringComparison.Ordinal) ||
+            !int.TryParse(response.AsSpan(command.ResponsePrefix.Length, 3), NumberStyles.None,
+                CultureInfo.InvariantCulture, out int raw) || raw is < 0 or > 255)
+            return false;
+        return !command.Query.StartsWith("RM", StringComparison.Ordinal) ||
+               response.AsSpan(command.ResponsePrefix.Length + 3, 3).SequenceEqual("000");
+    }
+
+    private static bool IsValidSwitchResponse(string response, SwitchCommand command)
+    {
+        int expectedLength = command.ResponsePrefix.Length + command.ValueDigits + 1;
+        if (response.Length != expectedLength || response[^1] != ';' ||
+            !response.StartsWith(command.ResponsePrefix, StringComparison.Ordinal))
+            return false;
+        ReadOnlySpan<char> encoded = response.AsSpan(command.ResponsePrefix.Length, command.ValueDigits);
+        return encoded[..^1].IndexOfAnyExcept('0') < 0 &&
+               encoded[^1] is var code && (code == command.DisabledCode || code == command.EnabledCode);
+    }
+
+    private static bool IsValidChoiceResponse(string response, ChoiceCommand command)
+    {
+        if (response.Length != command.ResponsePrefix.Length + 2 || response[^1] != ';' ||
+            !response.StartsWith(command.ResponsePrefix, StringComparison.Ordinal))
+            return false;
+        char code = response[^2];
+        return command.Options.Values.Any(option => (option.ReadCode ?? option.Code) == code);
+    }
+
+    private static bool IsValidFilterWidthResponse(string response) =>
+        response.Length == 7 && response[^1] == ';' &&
+        response.StartsWith("SH00", StringComparison.Ordinal) &&
+        int.TryParse(response.AsSpan(4, 2), NumberStyles.None, CultureInfo.InvariantCulture, out _);
+
+    private static bool IsValidVoxDelayResponse(string response)
+    {
+        if (response.Length != 5 || response[^1] != ';' ||
+            !response.StartsWith("VD", StringComparison.Ordinal) ||
+            !int.TryParse(response.AsSpan(2, 2), NumberStyles.None, CultureInfo.InvariantCulture, out int code))
+            return false;
+        return code is 0 or 2 or 4 or >= 6 and <= 33;
+    }
+
+    private static bool IsValidFastStepResponse(string response) =>
+        response.Length == 4 && response[^1] == ';' &&
+        response.StartsWith("FS", StringComparison.Ordinal) && response[2] is '0' or '1';
+
     private static long ParseFrequency(string response)
     {
-        if (response.Length != 12 ||
+        if (response.Length != 12 || response[^1] != ';' ||
+            !(response.StartsWith("FA", StringComparison.Ordinal) ||
+              response.StartsWith("FB", StringComparison.Ordinal)) ||
             !long.TryParse(response.AsSpan(2, 9), NumberStyles.None, CultureInfo.InvariantCulture, out long frequency))
         {
             throw new YaesuProtocolException($"Invalid frequency response '{response}'.");
@@ -807,7 +921,8 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
 
     private async ValueTask<RadioChoiceValue> ReadVoxDelayAsync(CancellationToken cancellationToken)
     {
-        string response = await _protocol.QueryAsync("VD", "VD", cancellationToken).ConfigureAwait(false);
+        string response = await _protocol.QueryAsync(
+            "VD", "VD", IsValidVoxDelayResponse, cancellationToken).ConfigureAwait(false);
         if (response.Length != 5 || !int.TryParse(response.AsSpan(2, 2), NumberStyles.None,
                 CultureInfo.InvariantCulture, out int code))
             throw new YaesuProtocolException($"Invalid VOX delay response '{response}'.");
@@ -838,7 +953,8 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
     private async ValueTask<RadioChoiceValue> ReadTuningStepAsync(CancellationToken cancellationToken)
     {
         RadioMode mode = await ReadActiveModeAsync(cancellationToken).ConfigureAwait(false);
-        string response = await _protocol.QueryAsync("FS", "FS", cancellationToken).ConfigureAwait(false);
+        string response = await _protocol.QueryAsync(
+            "FS", "FS", IsValidFastStepResponse, cancellationToken).ConfigureAwait(false);
         if (response.Length != 4 || response[2] is not ('0' or '1'))
             throw new YaesuProtocolException($"Invalid fast-step response '{response}'.");
         (string normal, string fast) = GetTuningSteps(mode);
@@ -869,8 +985,9 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
 
     private async ValueTask<RadioMode> ReadActiveModeAsync(CancellationToken cancellationToken)
     {
-        VfoId active = ParseVfo(await _protocol.QueryAsync("VS", "VS", cancellationToken).ConfigureAwait(false));
-        return ParseMode(await _protocol.QueryAsync(active == VfoId.A ? "MD0" : "MD1", "MD", cancellationToken).ConfigureAwait(false));
+        VfoId active = ParseVfo(await QueryParsedAsync("VS", "VS", ParseVfo, cancellationToken).ConfigureAwait(false));
+        string modeQuery = active == VfoId.A ? "MD0" : "MD1";
+        return ParseMode(await QueryParsedAsync(modeQuery, modeQuery, ParseMode, cancellationToken).ConfigureAwait(false));
     }
 
     private async ValueTask WriteFilterWidthAsync(string value, CancellationToken cancellationToken)
@@ -930,7 +1047,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             ? command
             : throw new NotSupportedException($"Choice '{control}' is not supported by the FTDX10 CAT profile.");
 
-    private void EnsureActive() => ObjectDisposedException.ThrowIf(_disposed, this);
+    private void EnsureActive() => ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
 
     private sealed record ControlCommand(
         string DisplayName,

@@ -25,15 +25,15 @@ public sealed class RadioLeaseManager(TimeProvider? timeProvider = null)
         ValidateDuration(duration);
         lock (_gate)
         {
+            DateTimeOffset now = _timeProvider.GetUtcNow();
             if (_leases.TryGetValue(kind, out LeaseToken? existing))
             {
-                if (existing.ExpiresAt <= _timeProvider.GetUtcNow() || !SameOwner(existing.Owner, owner))
-                {
+                if (existing.ExpiresAt > now)
                     throw new LeaseUnavailableException(kind);
-                }
+                _leases.Remove(kind);
             }
 
-            var lease = new LeaseToken(Guid.NewGuid(), kind, owner, _timeProvider.GetUtcNow() + duration);
+            var lease = new LeaseToken(Guid.NewGuid(), kind, owner, now + duration);
             _leases[kind] = lease;
             _revision++;
             return lease;

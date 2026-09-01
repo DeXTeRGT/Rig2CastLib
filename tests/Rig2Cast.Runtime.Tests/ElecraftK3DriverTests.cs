@@ -270,6 +270,67 @@ public sealed class ElecraftK3DriverTests
         Assert.Equal("preamp1", (await driver.ReadChoiceAsync(RadioChoiceId.Preamp)).Value);
     }
 
+    [Theory]
+    [InlineData("GT002;", "fast")]
+    [InlineData("GT004;", "slow")]
+    public async Task BasicGtFixtureContainsOnlyDocumentedTimeConstants(string response, string expected)
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("OM;", "OM-P-S---LVR--;");
+        transport.Add("GT;", response);
+        await using ElecraftK3Driver driver = await ElecraftK3Driver.OpenAsync(
+            transport, ElecraftK3Profile.Models[ElecraftK3Profile.K3SModelId]);
+
+        Assert.Equal(expected, (await driver.ReadChoiceAsync(RadioChoiceId.Agc)).Value);
+    }
+
+    [Fact]
+    public async Task UndocumentedBasicGt000IsRejected()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("OM;", "OM-P-S---LVR--;");
+        transport.Add("GT;", "GT000;");
+        await using ElecraftK3Driver driver = await ElecraftK3Driver.OpenAsync(
+            transport, ElecraftK3Profile.Models[ElecraftK3Profile.K3SModelId]);
+
+        await Assert.ThrowsAsync<ElecraftProtocolException>(
+            () => driver.ReadChoiceAsync(RadioChoiceId.Agc).AsTask());
+    }
+
+    [Theory]
+    [InlineData(ElecraftK3Profile.K3ModelId, "OM-P-S--------;", "RA$01;")]
+    [InlineData(ElecraftK3Profile.K3SModelId, "OM-P-S---LVR--;", "RA$10;")]
+    public async Task SubReceiverAttenuatorFixtureAcceptsModelSpecificTenDbFormat(
+        string modelId, string optionResponse, string response)
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("OM;", optionResponse);
+        transport.Add("RA$;", response);
+        await using ElecraftK3Driver driver = await ElecraftK3Driver.OpenAsync(
+            transport, ElecraftK3Profile.Models[modelId]);
+
+        RadioChoiceValue attenuator = await driver.ReadChoiceAsync(RadioChoiceId.Attenuator, VfoId.B);
+        Assert.Equal("10db", attenuator.Value);
+        Assert.Equal(VfoId.B, attenuator.Target);
+    }
+
+    [Theory]
+    [InlineData(ElecraftK3Profile.K3ModelId, "OM-P-S--------;", "RA$01;")]
+    [InlineData(ElecraftK3Profile.K3SModelId, "OM-P-S---LVR--;", "RA$10;")]
+    public async Task SubReceiverAttenuatorWritesModelSpecificTenDbFormat(
+        string modelId, string optionResponse, string expectedCommand)
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("OM;", optionResponse);
+        transport.Add(expectedCommand);
+        await using ElecraftK3Driver driver = await ElecraftK3Driver.OpenAsync(
+            transport, ElecraftK3Profile.Models[modelId]);
+
+        await driver.WriteChoiceAsync(RadioChoiceId.Attenuator, VfoId.B, "10db");
+
+        transport.AssertComplete();
+    }
+
     [Fact]
     public async Task WritesSecondMilestoneControlsSwitchesAndChoices()
     {

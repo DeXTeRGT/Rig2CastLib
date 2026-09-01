@@ -27,6 +27,20 @@ public sealed class Ftdx10DriverTests
     }
 
     [Fact]
+    public async Task ConcurrentDisposeClaimsDriverCleanupExactlyOnce()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+
+        await Task.WhenAll(Enumerable.Range(0, 16).Select(_ => driver.DisposeAsync().AsTask()));
+
+        Assert.Equal(1, transport.DisposeCount);
+        await Assert.ThrowsAsync<ObjectDisposedException>(
+            () => driver.ReadStateAsync().AsTask());
+    }
+
+    [Fact]
     public async Task UnsolicitedFrequencyFrameBecomesTypedObservation()
     {
         var transport = new ScriptedRadioTransport();
@@ -91,6 +105,12 @@ public sealed class Ftdx10DriverTests
         Assert.Equal(expectedKind, observations.Current.Kind);
         Assert.Equal(expectedFrequency, observations.Current.FrequencyHz);
         Assert.Equal(expectedMode, observations.Current.Mode);
+        // Yaesu CAT 2308-F: IF reports the VFO-A frequency and operating mode,
+        // but does not report selected A/B VFO or split state.
+        Assert.Equal(VfoId.A, observations.Current.Vfo);
+        Assert.Null(observations.Current.ActiveVfo);
+        Assert.Null(observations.Current.IsSplit);
+        Assert.Null(observations.Current.TransmitVfo);
     }
 
     [Fact]
@@ -239,6 +259,21 @@ public sealed class Ftdx10DriverTests
     }
 
     [Fact]
+    public async Task FrequencyCapabilitiesDistinguishReceiveCoverageFromTransmitCoverage()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+
+        Assert.True(driver.Capabilities.Frequency.CanReceive(14_250_000));
+        Assert.False(driver.Capabilities.Frequency.CanReceive(29_999));
+        Assert.False(driver.Capabilities.Frequency.CanTransmit(14_250_000));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => driver.SetFrequencyAsync(VfoId.A, 29_999).AsTask());
+        transport.AssertComplete();
+    }
+
+    [Fact]
     public async Task OpenRejectsDifferentRadioIdentification()
     {
         var transport = new ScriptedRadioTransport();
@@ -291,8 +326,27 @@ public sealed class Ftdx10DriverTests
 
         readings = values.ToArray();
         Assert.Equal([123, 64, 75, 86, 97, 108, 119], readings);
+        // Yaesu CAT 2308-F defines RM as selector + three-digit P2 value +
+        // fixed P3="000". The fixed suffix is not part of the meter value.
+        Assert.Equal(64d / 255d,
+            (await ReadSingleMeterAsync(RadioMeterId.Compression, "RM3064000;")).NormalizedValue,
+            6);
         Assert.All(driver.Capabilities.Meters.Values, descriptor => Assert.False(descriptor.CalibrationAvailable));
         transport.AssertComplete();
+    }
+
+    private static async Task<RadioMeterReading> ReadSingleMeterAsync(RadioMeterId meter, string response)
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        string query = meter switch
+        {
+            RadioMeterId.Compression => "RM3;",
+            _ => throw new ArgumentOutOfRangeException(nameof(meter))
+        };
+        transport.Add(query, response);
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+        return await driver.ReadMeterAsync(meter);
     }
 
     [Fact]
@@ -435,6 +489,30 @@ public sealed class Ftdx10DriverTests
 
         Assert.Equal(-150, (await driver.ReadControlAsync(RadioControlId.ClarifierOffsetHz)).Value);
         await driver.WriteControlAsync(RadioControlId.ClarifierOffsetHz, 200);
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task ClarifierQueryIgnoresWrongSubcommandAndMalformedFrames()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("CF001;", "CF999+0001;CF001+99999;CF001+0123;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+
+        Assert.Equal(123, (await driver.ReadControlAsync(RadioControlId.ClarifierOffsetHz)).Value);
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task MeterQueryRejectsNonzeroReservedSuffix()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("RM3;", "RM3064123;RM3064000;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+
+        Assert.Equal(64, (await driver.ReadMeterAsync(RadioMeterId.Compression)).RawValue);
         transport.AssertComplete();
     }
 

@@ -107,8 +107,9 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
     public ValueTask SetFrequencyAsync(VfoId target, long frequencyHz, CancellationToken cancellationToken = default)
     {
         EnsureActive();
-        ArgumentOutOfRangeException.ThrowIfLessThan(frequencyHz, 100_000);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(frequencyHz, 54_000_000);
+        if (!Capabilities.Frequency.CanReceive(frequencyHz))
+            throw new ArgumentOutOfRangeException(nameof(frequencyHz), frequencyHz,
+                $"Frequency is outside the {Capabilities.Model} receive coverage advertised by this driver.");
         string prefix = target switch
         {
             VfoId.A => "FA",
@@ -397,7 +398,8 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
         {
             RadioChoiceId.Attenuator => value.ToLowerInvariant() switch
             {
-                "off" => "RA$00", "10db" => "RA$10",
+                "off" => "RA$00",
+                "10db" => _profile.ModelId == ElecraftK3Profile.K3SModelId ? "RA$10" : "RA$01",
                 _ => throw new ArgumentOutOfRangeException(nameof(value))
             },
             RadioChoiceId.Preamp => value.ToLowerInvariant() switch

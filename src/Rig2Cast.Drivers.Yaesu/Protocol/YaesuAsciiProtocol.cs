@@ -323,9 +323,11 @@ public sealed class YaesuAsciiProtocol : IAsyncDisposable
     private static void ValidatePrefix(string prefix)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(prefix);
-        if (prefix.Length != 2 || prefix.Any(character => !char.IsAsciiLetter(character)))
+        if (prefix.Length is < 2 or > 16 ||
+            prefix.Any(character => !char.IsAsciiLetterOrDigit(character)))
         {
-            throw new ArgumentException("A Yaesu response prefix must contain exactly two ASCII letters.", nameof(prefix));
+            throw new ArgumentException(
+                "A Yaesu response prefix must contain 2-16 ASCII letters or digits.", nameof(prefix));
         }
     }
 
