@@ -101,37 +101,45 @@ public sealed class RadioPluginLoader(RadioPluginLoaderOptions? options = null)
         var diagnostics = new List<PluginLoadDiagnostic>();
         var pluginIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var modelIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (string manifestPath in Directory.EnumerateFiles(
-                     fullDirectory, "*.rig2cast-plugin.json", SearchOption.TopDirectoryOnly)
-                 .Order(StringComparer.OrdinalIgnoreCase))
+        try
         {
-            LoadedRadioPlugin? plugin = null;
-            try
+            foreach (string manifestPath in Directory.EnumerateFiles(
+                         fullDirectory, "*.rig2cast-plugin.json", SearchOption.TopDirectoryOnly)
+                     .Order(StringComparer.OrdinalIgnoreCase))
             {
-                plugin = await LoadAsync(manifestPath, trustRecords, cancellationToken).ConfigureAwait(false);
-                string[] candidateModelIds = plugin.Factory.Descriptor.Models
-                    .Select(model => model.Id)
-                    .ToArray();
-                bool duplicate = pluginIds.Contains(plugin.Manifest.Id) ||
-                    candidateModelIds.Any(modelIds.Contains);
-                if (duplicate)
+                LoadedRadioPlugin? plugin = null;
+                try
                 {
-                    plugin.Dispose();
-                    diagnostics.Add(new(
-                        manifestPath, plugin.Manifest.Id, PluginLoadStatus.Duplicate,
-                        "The plugin ID or one of its model IDs is already loaded."));
-                    continue;
+                    plugin = await LoadAsync(manifestPath, trustRecords, cancellationToken).ConfigureAwait(false);
+                    string[] candidateModelIds = plugin.Factory.Descriptor.Models
+                        .Select(model => model.Id)
+                        .ToArray();
+                    bool duplicate = pluginIds.Contains(plugin.Manifest.Id) ||
+                        candidateModelIds.Any(modelIds.Contains);
+                    if (duplicate)
+                    {
+                        plugin.Dispose();
+                        diagnostics.Add(new(
+                            manifestPath, plugin.Manifest.Id, PluginLoadStatus.Duplicate,
+                            "The plugin ID or one of its model IDs is already loaded."));
+                        continue;
+                    }
+                    pluginIds.Add(plugin.Manifest.Id);
+                    foreach (string modelId in candidateModelIds) modelIds.Add(modelId);
+                    plugins.Add(plugin);
+                    diagnostics.Add(new(manifestPath, plugin.Manifest.Id, PluginLoadStatus.Loaded, "Plugin loaded."));
                 }
-                pluginIds.Add(plugin.Manifest.Id);
-                foreach (string modelId in candidateModelIds) modelIds.Add(modelId);
-                plugins.Add(plugin);
-                diagnostics.Add(new(manifestPath, plugin.Manifest.Id, PluginLoadStatus.Loaded, "Plugin loaded."));
+                catch (PluginLoadException exception)
+                {
+                    plugin?.Dispose();
+                    diagnostics.Add(new(manifestPath, null, exception.Status, exception.Message));
+                }
             }
-            catch (PluginLoadException exception)
-            {
-                plugin?.Dispose();
-                diagnostics.Add(new(manifestPath, null, exception.Status, exception.Message));
-            }
+        }
+        catch
+        {
+            foreach (LoadedRadioPlugin plugin in plugins) plugin.Dispose();
+            throw;
         }
         return (plugins, diagnostics);
     }
@@ -139,15 +147,26 @@ public sealed class RadioPluginLoader(RadioPluginLoaderOptions? options = null)
     private void ValidateFactory(PluginManifest manifest, IRadioDriverFactory factory)
     {
         RadioDriverDescriptor descriptor = factory.Descriptor;
-        if (!StringComparer.OrdinalIgnoreCase.Equals(descriptor.Id, manifest.Id) ||
-            descriptor.Version != Version.Parse(manifest.Version) ||
-            descriptor.ApiVersion != _options.DriverApiVersion ||
-            descriptor.ApiVersion != Version.Parse(manifest.ApiVersion))
-        {
+        if (!StringComparer.OrdinalIgnoreCase.Equals(descriptor.Id, manifest.Id))
             throw new PluginLoadException(
                 PluginLoadStatus.Incompatible,
-                $"Plugin '{manifest.Id}' factory metadata does not match its manifest or host API version.");
-        }
+                $"Plugin manifest ID '{manifest.Id}' does not match factory driver ID '{descriptor.Id}'.");
+        Version manifestVersion = Version.Parse(manifest.Version);
+        if (descriptor.Version != manifestVersion)
+            throw new PluginLoadException(
+                PluginLoadStatus.Incompatible,
+                $"Plugin '{manifest.Id}' manifest version '{manifestVersion}' does not match " +
+                $"factory version '{descriptor.Version}'.");
+        Version manifestApiVersion = Version.Parse(manifest.ApiVersion);
+        if (descriptor.ApiVersion != manifestApiVersion)
+            throw new PluginLoadException(
+                PluginLoadStatus.Incompatible,
+                $"Plugin '{manifest.Id}' manifest API version '{manifestApiVersion}' does not match " +
+                $"factory API version '{descriptor.ApiVersion}'.");
+        if (!RadioDriverApiCompatibility.IsCompatible(_options.DriverApiVersion, descriptor.ApiVersion))
+            throw new PluginLoadException(
+                PluginLoadStatus.Incompatible,
+                RadioDriverApiCompatibility.DescribeMismatch(_options.DriverApiVersion, descriptor.ApiVersion));
         if (manifest.Models.Count != descriptor.Models.Count)
             throw new PluginLoadException(
                 PluginLoadStatus.Incompatible,
@@ -168,10 +187,12 @@ public sealed class RadioPluginLoader(RadioPluginLoaderOptions? options = null)
         ValidateId(manifest.Id, "plugin");
         if (!Version.TryParse(manifest.Version, out _))
             throw Invalid("Plugin version must be a valid System.Version value.");
-        if (!Version.TryParse(manifest.ApiVersion, out Version? apiVersion) || apiVersion != _options.DriverApiVersion)
+        if (!Version.TryParse(manifest.ApiVersion, out Version? apiVersion))
+            throw Invalid("Plugin API version must be a valid System.Version value.");
+        if (!RadioDriverApiCompatibility.IsCompatible(_options.DriverApiVersion, apiVersion))
             throw new PluginLoadException(
                 PluginLoadStatus.Incompatible,
-                $"Plugin API version '{manifest.ApiVersion}' is not compatible with host API '{_options.DriverApiVersion}'.");
+                RadioDriverApiCompatibility.DescribeMismatch(_options.DriverApiVersion, apiVersion));
         if (string.IsNullOrWhiteSpace(manifest.EntryAssembly) || Path.IsPathRooted(manifest.EntryAssembly) ||
             manifest.EntryAssembly != Path.GetFileName(manifest.EntryAssembly) ||
             !StringComparer.OrdinalIgnoreCase.Equals(Path.GetExtension(manifest.EntryAssembly), ".dll"))

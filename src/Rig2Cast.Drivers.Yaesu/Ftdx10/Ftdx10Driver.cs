@@ -7,6 +7,7 @@ using Rig2Cast.Abstractions.Transports;
 using Rig2Cast.Abstractions.Controls;
 using Rig2Cast.Abstractions.Meters;
 using Rig2Cast.Drivers.Yaesu.Protocol;
+using Rig2Cast.Protocols.Declarative;
 
 namespace Rig2Cast.Drivers.Yaesu.Ftdx10;
 
@@ -89,17 +90,37 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             [RadioControlId.AudioPeakFilterOffsetHz] = new("APF offset", "CO03", "CO03", 4, -250, 250, "Hz", 10, -250)
         };
 
-    private static readonly Dictionary<RadioMeterId, MeterCommand> MeterCommands =
-        new Dictionary<RadioMeterId, MeterCommand>
+    private static readonly AsciiQuerySet<RadioMeterId> MeterCommands = new(
+        "Yaesu FTDX10 meters",
+        new Dictionary<RadioMeterId, AsciiQueryDescriptor>
         {
-            [RadioMeterId.SignalStrength] = new("Signal strength", "SM0", "SM0", 7),
-            [RadioMeterId.Compression] = new("Compression", "RM3", "RM3", 10),
-            [RadioMeterId.Alc] = new("ALC", "RM4", "RM4", 10),
-            [RadioMeterId.Power] = new("Power output", "RM5", "RM5", 10),
-            [RadioMeterId.Swr] = new("SWR", "RM6", "RM6", 10),
-            [RadioMeterId.DrainCurrent] = new("Drain current", "RM7", "RM7", 10),
-            [RadioMeterId.DrainVoltage] = new("Drain voltage", "RM8", "RM8", 10)
-        };
+            [RadioMeterId.SignalStrength] = Meter("Signal strength", "SM0", 7),
+            [RadioMeterId.Compression] = Meter("Compression", "RM3", 10),
+            [RadioMeterId.Alc] = Meter("ALC", "RM4", 10),
+            [RadioMeterId.Power] = Meter("Power output", "RM5", 10),
+            [RadioMeterId.Swr] = Meter("SWR", "RM6", 10),
+            [RadioMeterId.DrainCurrent] = Meter("Drain current", "RM7", 10),
+            [RadioMeterId.DrainVoltage] = Meter("Drain voltage", "RM8", 10)
+        });
+    private static readonly ModeApplicabilityDescriptor<string> TuningSteps = new(
+        "Yaesu FTDX10 tuning steps",
+        Ftdx10CatProfile.Modes.Values,
+        [
+            new("10hz", "10 Hz", new HashSet<RadioMode>
+            {
+                RadioMode.Lsb, RadioMode.Usb, RadioMode.Cw, RadioMode.CwReverse,
+                RadioMode.Rtty, RadioMode.RttyReverse, RadioMode.DataLsb,
+                RadioMode.DataUsb, RadioMode.Psk
+            }),
+            new("100hz", "100 Hz", Ftdx10CatProfile.Modes.Values.ToHashSet()),
+            new("1khz", "1 kHz", new HashSet<RadioMode>
+            {
+                RadioMode.Am, RadioMode.AmNarrow, RadioMode.Fm, RadioMode.FmNarrow,
+                RadioMode.DataFm, RadioMode.DataFmNarrow
+            })
+        ],
+        requiredValuesPerMode: 2,
+        valueComparer: StringComparer.OrdinalIgnoreCase);
     private readonly IRadioTransport _transport;
     private readonly YaesuAsciiProtocol _protocol;
     private readonly bool _automaticInformationEnabled;
@@ -415,7 +436,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         CancellationToken cancellationToken = default)
     {
         EnsureActive();
-        if (!MeterCommands.TryGetValue(meter, out MeterCommand? command))
+        if (!MeterCommands.Entries.TryGetValue(meter, out AsciiQueryDescriptor? command))
         {
             throw new NotSupportedException($"Meter '{meter}' is not supported by the FTDX10 CAT profile.");
         }
@@ -423,10 +444,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         string response = await _protocol.QueryAsync(
             command.Query, command.ResponsePrefix,
             candidate => IsValidMeterResponse(candidate, command), cancellationToken).ConfigureAwait(false);
-        if (response.Length != command.ResponseLength ||
-            !response.StartsWith(command.ResponsePrefix, StringComparison.Ordinal) ||
-            !int.TryParse(response.AsSpan(3, 3), NumberStyles.None, CultureInfo.InvariantCulture, out int raw) ||
-            raw is < 0 or > 255)
+        if (!command.TryParseValue(response, out int raw))
         {
             throw new YaesuProtocolException($"Invalid {meter} meter response '{response}'.");
         }
@@ -705,12 +723,9 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
                encoded * command.Scale + command.ValueOffset <= command.Maximum;
     }
 
-    private static bool IsValidMeterResponse(string response, MeterCommand command)
+    private static bool IsValidMeterResponse(string response, AsciiQueryDescriptor command)
     {
-        if (response.Length != command.ResponseLength || response[^1] != ';' ||
-            !response.StartsWith(command.ResponsePrefix, StringComparison.Ordinal) ||
-            !int.TryParse(response.AsSpan(command.ResponsePrefix.Length, 3), NumberStyles.None,
-                CultureInfo.InvariantCulture, out int raw) || raw is < 0 or > 255)
+        if (!command.TryParseValue(response, out _))
             return false;
         return !command.Query.StartsWith("RM", StringComparison.Ordinal) ||
                response.AsSpan(command.ResponsePrefix.Length + 3, 3).SequenceEqual("000");
@@ -939,9 +954,15 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
     }
 
     private static Dictionary<RadioMeterId, RadioMeterDescriptor> CreateMeterCapabilities() =>
-        MeterCommands.ToDictionary(
+        MeterCommands.Entries.ToDictionary(
             pair => pair.Key,
-            pair => new RadioMeterDescriptor(pair.Key, pair.Value.DisplayName, 0, 255, "raw", false)
+            pair => new RadioMeterDescriptor(
+                pair.Key,
+                pair.Value.DisplayName,
+                pair.Value.ValueField.Minimum,
+                pair.Value.ValueField.Maximum,
+                "raw",
+                false)
             {
                 RangesByReceiver = new Dictionary<ReceiverId, RadioMeterRange>
                 {
@@ -993,19 +1014,12 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
 
     private static ChoiceControlDescriptor CreateTuningStepCapability(FeatureDescriptor feature)
     {
-        HashSet<RadioMode> ssbCw =
-            [RadioMode.Lsb, RadioMode.Usb, RadioMode.Cw, RadioMode.CwReverse, RadioMode.Rtty,
-             RadioMode.RttyReverse, RadioMode.DataLsb, RadioMode.DataUsb, RadioMode.Psk];
-        HashSet<RadioMode> amFm =
-            [RadioMode.Am, RadioMode.AmNarrow, RadioMode.Fm, RadioMode.FmNarrow,
-             RadioMode.DataFm, RadioMode.DataFmNarrow];
         return new ChoiceControlDescriptor(RadioChoiceId.TuningStep, "VFO tuning step", feature,
-            new Dictionary<string, RadioChoiceOption>
-            {
-                ["10hz"] = new("10hz", "10 Hz", true, ssbCw),
-                ["100hz"] = new("100hz", "100 Hz", true, ssbCw.Concat(amFm).ToHashSet()),
-                ["1khz"] = new("1khz", "1 kHz", true, amFm)
-            });
+            TuningSteps.Values.ToDictionary(
+                value => value.Value,
+                value => new RadioChoiceOption(
+                    value.Value, value.DisplayName, true, value.ApplicableModes),
+                StringComparer.OrdinalIgnoreCase));
     }
 
     private static ChoiceControlDescriptor CreateFilterWidthCapability(FeatureDescriptor feature)
@@ -1125,14 +1139,12 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         await _protocol.SendAsync(enabled ? "FS1" : "FS0", cancellationToken).ConfigureAwait(false);
     }
 
-    private static (string Normal, string Fast) GetTuningSteps(RadioMode mode) => mode switch
+    private static (string Normal, string Fast) GetTuningSteps(RadioMode mode)
     {
-        RadioMode.Lsb or RadioMode.Usb or RadioMode.Cw or RadioMode.CwReverse or RadioMode.Rtty or
-            RadioMode.RttyReverse or RadioMode.DataLsb or RadioMode.DataUsb or RadioMode.Psk => ("10hz", "100hz"),
-        RadioMode.Am or RadioMode.AmNarrow or RadioMode.Fm or RadioMode.FmNarrow or
-            RadioMode.DataFm or RadioMode.DataFmNarrow => ("100hz", "1khz"),
-        _ => throw new NotSupportedException($"Tuning step is not available in {mode} mode.")
-    };
+        if (!TuningSteps.TryGetValues(mode, out IReadOnlyList<ModeValueDescriptor<string>>? values))
+            throw new NotSupportedException($"Tuning step is not available in {mode} mode.");
+        return (values[0].Value, values[1].Value);
+    }
 
     private async ValueTask<RadioMode> ReadActiveModeAsync(CancellationToken cancellationToken)
     {
@@ -1211,12 +1223,6 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         int Scale = 1,
         int ValueOffset = 0);
 
-    private sealed record MeterCommand(
-        string DisplayName,
-        string Query,
-        string ResponsePrefix,
-        int ResponseLength);
-
     private sealed record SwitchCommand(
         string DisplayName,
         string Query,
@@ -1233,4 +1239,8 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         IReadOnlyDictionary<string, ChoiceCode> Options);
 
     private sealed record ChoiceCode(char Code, string DisplayName, bool Writable = true, char? ReadCode = null);
+
+    private static AsciiQueryDescriptor Meter(string displayName, string command, int responseLength) =>
+        new(displayName, command, command, responseLength,
+            new NumericFieldDescriptor($"{displayName} raw value", 3, 0, 255));
 }

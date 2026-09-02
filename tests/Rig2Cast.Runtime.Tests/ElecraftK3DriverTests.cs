@@ -344,6 +344,43 @@ public sealed class ElecraftK3DriverTests
         Assert.Equal("preamp1", (await driver.ReadChoiceAsync(RadioChoiceId.Preamp)).Value);
     }
 
+    [Fact]
+    public async Task KeyerSpeedDescriptorDrivesParsingAndCapabilityRange()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("OM;", "OM-P-S---LVR--;");
+        transport.Add("KS;", "ks027;");
+        transport.Add("KS;", "KS051;");
+        await using ElecraftK3Driver driver = await ElecraftK3Driver.OpenAsync(
+            transport, ElecraftK3Profile.Models[ElecraftK3Profile.K3SModelId]);
+
+        Assert.Equal(27, (await driver.ReadControlAsync(RadioControlId.KeyerSpeedWpm)).Value);
+        NumericControlDescriptor capability = driver.Capabilities.Controls[RadioControlId.KeyerSpeedWpm];
+        Assert.Equal(8, capability.Minimum);
+        Assert.Equal(50, capability.Maximum);
+        Assert.Equal(1, capability.Step);
+        await Assert.ThrowsAsync<ElecraftProtocolException>(
+            () => driver.ReadControlAsync(RadioControlId.KeyerSpeedWpm).AsTask());
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task Preamp2ConditionKeepsCapabilityReadAndWriteConsistent()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("OM;", "OM-P-S--------;");
+        transport.Add("PA;", "PA2;");
+        await using ElecraftK3Driver driver = await ElecraftK3Driver.OpenAsync(
+            transport, ElecraftK3Profile.Models[ElecraftK3Profile.K3ModelId]);
+
+        Assert.DoesNotContain("preamp2", driver.Capabilities.Choices[RadioChoiceId.Preamp].Options.Keys);
+        await Assert.ThrowsAsync<ElecraftProtocolException>(
+            () => driver.ReadChoiceAsync(RadioChoiceId.Preamp).AsTask());
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => driver.WriteChoiceAsync(RadioChoiceId.Preamp, "preamp2").AsTask());
+        transport.AssertComplete();
+    }
+
     [Theory]
     [InlineData("GT002;", "fast")]
     [InlineData("GT004;", "slow")]

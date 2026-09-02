@@ -29,6 +29,32 @@ dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --model
 ```
 
 Only one application may own the serial port. Close other CAT software before opening the physical radio.
+
+### External driver plugins
+
+Load trusted plugins before model selection with:
+
+```powershell
+dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --plugin-config .\plugin-host.json --list-models
+dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --plugin-config .\plugin-host.json --model vendor.model --port COM15
+```
+
+`--plugin-directory <path>` may be repeated to add directories from the command line.
+Production loading still requires matching trust records from `--plugin-config`.
+For local development only, `--plugin-development-mode` bypasses hash verification
+and prints a warning. Invalid plugins produce diagnostics without hiding built-in or
+other valid models. See [plugin-host.md](plugin-host.md) for the strict configuration
+schema, hash generation, trust boundary, and lifetime rules.
+
+A plugin model that advertises `Simulator` can be opened without serial settings:
+
+```powershell
+dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --model rig2cast.example.reference-radio --simulator --plugin-directory .\samples\Rig2Cast.ExamplePlugin\bin\Debug\net8.0 --plugin-development-mode
+```
+
+Without `--simulator`, the Console rejects simulator-only models before applying a
+baud-rate default or attempting to open a serial port.
+
 The FTDX10 manual limits `AI` automatic information to its USB CAT connection. Use
 `--auto-information` only with the enhanced USB CAT port. Rig2Cast confirms `AI1;`
 at startup and sends `AI0;` during clean shutdown.

@@ -49,7 +49,7 @@ categories later, but do not generalize prematurely.
 - Target framework: .NET 8
 - Shell: PowerShell
 - Current baseline commit when this handover was written: `49eed20`
-- Current automated suite: **170 passing tests**.
+- Current automated suite: **192 passing tests**.
 
 Git may report dubious ownership because Codex and the interactive Windows user
 have different SIDs. Do not modify the user's global Git configuration. For
@@ -108,8 +108,8 @@ after this document was written.
 - `samples/Rig2Cast.Console`: primary interactive hardware diagnostic surface.
 - `samples/Rig2Cast.Ftdx10Smoke`: earlier FTDX10 hardware smoke tool.
 - `src/Rig2Cast.PluginHost`: manifest validation, trusted assembly discovery,
-  descriptor verification, duplicate isolation, and diagnostics. It is not yet
-  wired into an application composition root.
+  descriptor verification, duplicate isolation, catalog composition/lifetime, and
+  diagnostics. It is wired into the diagnostic Console.
 - `src/Rig2Cast.Server`: scaffolding/future work.
 
 ### Tests
@@ -154,16 +154,22 @@ Implemented and covered by automated tests:
 - Plugin-host library foundation: strict manifests, exact API compatibility,
   SHA-256 trust, safe entry paths, descriptor matching, duplicate handling,
   collectible load contexts, and per-manifest diagnostics.
+- Strict plugin-host JSON configuration, multi-directory catalog composition,
+  built-in/plugin conflict isolation, and Console options/diagnostics. Plugin owners
+  remain alive until after managed-radio disposal.
+- An independently built, read-only virtual example plugin demonstrates factory,
+  manifest, capabilities, transport ownership, discovery, and SHA-256 trust setup.
+  An architecture test prevents physical drivers and the example plugin from
+  referencing runtime, plugin-host, adapter, server, or Console projects.
 - Diagnostic Console support for built-in model selection, receiver/VFO-targeted
   reads and writes, signal-path display, capability inspection, polling/watch,
   bounded PTT, and continuously renewed PTT.
 
 Not implemented or not integrated yet:
 
-- The Console and rigctld host do not reference `Rig2Cast.PluginHost`; they register
-  built-in factories directly. There are no `--plugin-directory` or trust-store
-  options and no user-facing plugin diagnostics yet.
-- No persisted plugin trust-store/configuration format has been selected.
+- The rigctld host does not yet reuse plugin composition and still registers built-in
+  factories directly. The Console supports `--plugin-config`, repeatable
+  `--plugin-directory`, and explicit `--plugin-development-mode`.
 - `Rig2Cast.Server`, REST, gRPC, WebSocket, desktop, and web hosts remain future work.
 - Icom CI-V and legacy Yaesu binary CAT protocol engines/drivers are not implemented.
 - A general declarative command engine is not implemented. Existing family/model
@@ -442,7 +448,8 @@ Standard test command:
 dotnet test .\tests\Rig2Cast.Runtime.Tests\Rig2Cast.Runtime.Tests.csproj --no-restore
 ```
 
-Expected after ASCII terminal-write cancellation classification: 170 passed, 0 failed.
+Expected after the typed declarative mode, query, applicability, and conditional
+capability pilots: 192 passed, 0 failed.
 
 Console build:
 
@@ -534,7 +541,7 @@ Read `docs/rigctld-adapter.md` before adapter changes.
 
 Before another structural milestone:
 
-1. Run all 170 tests, build the Console, and run `git diff --check`.
+1. Run all 192 tests, build the Console, and run `git diff --check`.
 2. Review the intentionally dirty worktree as one coherent change set. Do not
    discard or rewrite earlier user work and do not commit without explicit approval.
 3. Ask the user for the outstanding physical confirmation:
@@ -548,25 +555,24 @@ validation is a release-confidence checkpoint, not permission to weaken safety.
 
 ### Milestone 2: integrate plugins into a composition host
 
-The plugin library foundation is complete; user-facing discovery is not. Implement
-integration additively without moving discovery into drivers or runtime:
+Console integration is complete without moving discovery into drivers or runtime:
 
-1. Define a host-owned JSON configuration containing one or more plugin directories,
+1. A strict host-owned JSON configuration contains one or more plugin directories,
    trust records (`pluginId` plus SHA-256), and an explicit development-mode flag.
    Reject duplicate trust identities. Do not silently enable development mode.
-2. Add `Rig2Cast.PluginHost` to the chosen composition root, initially the diagnostic
-   Console. Discover before model selection, register each successful factory in the
+2. `Rig2Cast.PluginHost` is referenced by the diagnostic Console. It discovers before
+   model selection, registers each successful factory in the
    existing `RadioDriverCatalog`, and keep `LoadedRadioPlugin` instances alive for as
    long as any catalog registration or driver instance can reference them.
-3. Add CLI options such as `--plugin-directory <path>`, `--plugin-trust <path>`, and
-   an unmistakably unsafe development option. Preserve built-in factories and
-   existing command grammar.
-4. Print concise load diagnostics and include plugin models in `--list-models`.
+3. CLI options are `--plugin-config`, repeatable `--plugin-directory`, and explicit
+   `--plugin-development-mode`. Built-in factories and command grammar are preserved.
+4. The Console prints concise diagnostics and includes plugin models in `--list-models`.
    A bad plugin must not prevent built-in radios or other valid plugins from loading.
-5. Add integration tests for mixed built-in/plugin catalogs, duplicate IDs across
-   those sources, missing directories, malformed trust stores, deterministic load
-   order, lifetime/disposal, and operation of a fixture plugin through the catalog.
-6. Only after the Console path is stable, reuse the same composition helper from the
+5. Integration tests cover strict/relative configuration, duplicate trust, trusted
+   registration and driver opening through the catalog, built-in conflicts, and
+   missing directories. Add more ordering/unload tests only if future behavior
+   depends on immediate unload; .NET unloading is cooperative.
+6. Next, reuse the same composition helper from the
    rigctld host or future server rather than duplicating loading policy.
 
 Trust is the security boundary. `AssemblyLoadContext` provides dependency/lifetime
@@ -578,17 +584,30 @@ loading is safe for hostile code. See `docs/plugin-host.md` and ADR 0004.
 
 Before inviting independent driver distribution:
 
-1. Review the public abstractions and manifest schema for versioning guarantees.
-   Keep the initial compatibility rule exact until a documented minor-version policy
-   and compatibility tests exist.
-2. Provide a minimal external sample plugin and sidecar manifest that references only
-   permitted lower-level projects. Include hash-generation and local trust setup
-   instructions, but do not ship private manuals or copied vendor material.
-3. Add automated architectural dependency checks so driver assemblies cannot
-   reference adapters, hosts, UI, or server projects.
-4. Define plugin replacement/update behavior. Do not unload a context while its
-   factory, descriptor, driver, tasks, or event handlers remain reachable.
-5. Decide packaging and signing only after the contract is stable. SHA-256 trust pins
+1. Complete: `RadioDriverApiCompatibility` defines the initial SDK rule. API versions
+   are canonical `major.minor` values and must match exactly across host, manifest,
+   and factory. There is no forward/backward or build/revision compatibility promise.
+   Boundary tests cover older/newer major and minor versions plus noncanonical
+   `1.0.0`/`1.0.0.0`; diagnostics identify the plugin and host versions and policy.
+2. Complete: the minimal external virtual/read-only sample plugin, sidecar manifest,
+   hash-generation instructions, and local/production trust setup are provided under
+   `samples/Rig2Cast.ExamplePlugin`.
+3. Complete: an automated architectural dependency test prevents driver projects
+   from referencing adapters, runtime, plugin host, server, or Console projects.
+4. Complete: the diagnostic Console opens non-FTDX10 models that advertise
+   `Simulator` through their registered factory and an `InMemoryRadioTransport`.
+   Simulator-only models are rejected clearly if the caller omits `--simulator`;
+   no serial baud default is invented. Runtime PTT mutations now apply the same
+   capability-write gate as other mutations before invoking the driver.
+5. Complete: catalog registration is a startup-only immutable snapshot. First
+   driver/model ID wins; hot replacement and side-by-side versions are rejected with
+   a `Duplicate` diagnostic and do not disturb the existing registration. Updating a
+   plugin requires a host restart with exactly one selected version.
+6. Complete: composition disposal prevents new driver opens and disposes their
+   supplied transports. Existing drivers remain usable, and plugin unload is deferred
+   until their owned transports are disposed. This enforces the documented transport
+   ownership contract without changing driver interfaces or the catalog architecture.
+7. Decide packaging and signing only after the contract is stable. SHA-256 trust pins
    exact bytes; it does not establish publisher identity or provide automatic update
    trust.
 
@@ -601,6 +620,44 @@ pretend to know firmware- or option-dependent capabilities.
 A declarative layer is useful for regular model families and especially legacy Yaesu
 binary status blocks, but it must not become a universal protocol interpreter. Build
 it below drivers and beside protocol-specific framing engines:
+
+Current status: the FTDX10/Elecraft declaration inventory is recorded in
+`docs/declarative-engine.md`. The first typed primitive,
+`ValueMapDescriptor<TWire,TValue>`, validates and freezes a bijective mapping and is
+piloted by both existing mode profiles. It preserves the profiles' `Modes` surface,
+wire output, and failure behavior. Tests cover bidirectional lookup, empty maps,
+duplicate wire values, duplicate domain values, and both production map cardinalities.
+`NumericFieldDescriptor`, `AsciiQueryDescriptor`, and `AsciiQuerySet<TKey>` now
+validate unsigned numeric fields, response envelopes, duplicate commands, and
+overlapping response prefixes. FTDX10 read-only meters are the first regular-command
+pilot: their query metadata, parsing range, and capability range share declarations.
+The Yaesu-specific `RM` reserved suffix remains explicit C#; framing, correlation,
+exception types, and runtime safety are unchanged.
+The Elecraft keyer-speed read path is the cross-vendor pilot. It declares its
+case-insensitive response envelope and shares numeric parsing/capability bounds while
+retaining Elecraft-specific exceptions. This proves the primitive does not impose
+Yaesu response-casing behavior.
+`ModeApplicabilityDescriptor<TValue>` validates complete supported-mode coverage,
+value uniqueness, mode references, and required per-mode value counts. FTDX10 tuning
+steps now derive normal/fast selection and capability applicability from one ordered
+declaration. The `MD` then `FS` sequence remains executable driver logic.
+`ConditionalValueSetDescriptor<TContext,TValue,TWire>` provides validated typed C#
+availability hooks. Elecraft main preamp encoding, decoding, and capability options
+share one declaration evaluated from model and option-discovery context. This also
+rejects a `PA2;` report when that configuration does not expose the second preamp,
+matching its capability and write behavior. Sub-receiver commands remain explicit.
+The compiled C# vocabulary is frozen as version 1 through
+`DeclarativeDescriptorVocabulary.CurrentVersion`. The freeze covers the reviewed
+descriptor construction/lookup semantics for driver API 1.0, not JSON/YAML, command
+execution, or protocol framing. Additive descriptors are possible; semantic changes
+require an API compatibility decision and regression coverage.
+
+`samples/Rig2Cast.DeclarativeExamplePlugin` is an independent external sample that
+references only Abstractions and Protocols. It demonstrates every version-1
+descriptor category, generated capabilities, transport ownership, and a deterministic
+virtual meter response. It loads through the Console with model
+`rig2cast.example.declarative-radio` and `--simulator`. The architecture dependency
+test covers both external samples.
 
 1. Inventory repeated declarations already present in FTDX10 and Elecraft profiles:
    command identifiers, access, targets, mode applicability, value ranges, choice
@@ -722,7 +779,8 @@ dotnet test .\Rig2Cast\tests\Rig2Cast.Runtime.Tests\Rig2Cast.Runtime.Tests.cspro
 dotnet build .\Rig2Cast\samples\Rig2Cast.Console\Rig2Cast.Console.csproj --no-restore
 ```
 
-Then compare the result with the expected 170 tests and inspect changes made after
-this handover. Continue with the physical-validation checkpoint or plugin composition
-integration in section 12; receiver/signal-path stabilization and plugin-host library
-groundwork are already complete. Do not restart the architecture from scratch.
+Then compare the result with the expected 192 tests and inspect changes made after
+this handover. The compiled descriptor vocabulary and external sample are complete.
+Next, either add target applicability only for a concrete receiver-targeted need or
+begin the separate CI-V protocol-family framing work; do not turn the descriptor
+layer into a protocol state machine or restart the architecture from scratch.

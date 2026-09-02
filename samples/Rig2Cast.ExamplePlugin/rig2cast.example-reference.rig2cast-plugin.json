@@ -1,0 +1,18 @@
+{
+  "id": "rig2cast.example.reference-driver",
+  "version": "1.0.0",
+  "apiVersion": "1.0",
+  "entryAssembly": "Rig2Cast.ExamplePlugin.dll",
+  "factoryType": "Rig2Cast.ExamplePlugin.ExampleRadioDriverFactory",
+  "models": [
+    {
+      "id": "rig2cast.example.reference-radio",
+      "manufacturer": "Rig2Cast",
+      "model": "Reference virtual radio",
+      "supportedTransports": ["Simulator"],
+      "supportedBaudRates": [],
+      "defaultBaudRate": null,
+      "defaultConnectionSettings": {}
+    }
+  ]
+}

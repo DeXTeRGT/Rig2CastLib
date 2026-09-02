@@ -19,7 +19,25 @@ containing plugin ID and SHA-256 binary hash; development mode may opt out. The 
 verifies that the loaded factory describes exactly the same models, transports, baud
 rates, and defaults. See [plugin-host.md](plugin-host.md).
 
-Drivers compose transport, framing/codec, manufacturer or protocol-family behavior, and model-specific capability/quirk declarations. Declarative descriptions are encouraged for regular commands, while exceptional behavior remains expressible in C#.
+The external driver API version is a canonical `major.minor` value. The initial SDK
+uses exact matching: manifest API, factory API, and host API must all be `1.0`.
+Neither forward nor backward compatibility is implied, and build/revision forms such
+as `1.0.0` are not aliases. Use `RadioDriverApiCompatibility.CurrentVersion` when
+host code needs the current contract value; external factory metadata must declare
+the literal API version against which it was built.
+
+Drivers compose transport, framing/codec, manufacturer or protocol-family behavior, and model-specific capability/quirk declarations. Declarative descriptions are encouraged for regular commands, while exceptional behavior remains expressible in C#. See [declarative-engine.md](declarative-engine.md) for the validated descriptor boundary and incremental roadmap.
+
+The independent [example plugin](../samples/Rig2Cast.ExamplePlugin/README.md)
+demonstrates the minimum external SDK and manifest workflow. It is intentionally a
+read-only virtual device and is not a protocol implementation. Driver projects may
+reference abstractions, protocols, and transports as needed, but not runtime, plugin
+host, adapters, servers, or user-interface projects.
+
+The separate
+[declarative example plugin](../samples/Rig2Cast.DeclarativeExamplePlugin/README.md)
+demonstrates all frozen version-1 typed descriptors, capability generation, and the
+boundary between declarative data and driver/protocol behavior.
 
 The first physical target is Yaesu FTDX10. A deterministic simulator precedes hardware integration so scheduling, leases, parsing, timeouts, disconnections, and unsolicited events can be tested repeatably.
 

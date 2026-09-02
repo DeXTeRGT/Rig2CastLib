@@ -671,6 +671,10 @@ public sealed class Ftdx10DriverTests
         RadioChoiceOption option = driver.Capabilities.Choices[RadioChoiceId.TuningStep].Options["1khz"];
         Assert.Contains(RadioMode.Fm, option.ApplicableModes!);
         Assert.DoesNotContain(RadioMode.Usb, option.ApplicableModes!);
+        IReadOnlyDictionary<string, RadioChoiceOption> options =
+            driver.Capabilities.Choices[RadioChoiceId.TuningStep].Options;
+        foreach (RadioMode mode in Ftdx10CatProfile.Modes.Values.Distinct())
+            Assert.Equal(2, options.Values.Count(candidate => candidate.ApplicableModes!.Contains(mode)));
         transport.AssertComplete();
     }
 }
