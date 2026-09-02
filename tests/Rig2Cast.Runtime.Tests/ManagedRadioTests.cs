@@ -182,6 +182,22 @@ public sealed class ManagedRadioTests
     }
 
     [Fact]
+    public async Task UnsupportedPttIsRejectedBeforeCallingDriver()
+    {
+        var driver = new UnsupportedTransmitDriver();
+        await using ManagedRadio radio = await ManagedRadio.CreateAsync("unsupported-transmit", driver);
+        await using IRadioSession session = radio.OpenSession(
+            new ClientIdentity("operator"), ClientRole.Operator);
+        LeaseToken lease = await session.AcquireLeaseAsync(LeaseKinds.Transmit, TimeSpan.FromSeconds(5));
+
+        NotSupportedException exception = await Assert.ThrowsAsync<NotSupportedException>(
+            () => session.SetPttAsync(true, lease).AsTask());
+
+        Assert.Equal("Transmit is not writable on this radio.", exception.Message);
+        Assert.Equal(0, driver.SetPttCallCount);
+    }
+
+    [Fact]
     public async Task CompetingTransmitLeaseIsRejected()
     {
         await using TestContext context = await TestContext.CreateAsync();
@@ -1015,5 +1031,41 @@ public sealed class ManagedRadioTests
             _disposed.TrySetResult();
             await _inner.DisposeAsync();
         }
+    }
+
+    private sealed class UnsupportedTransmitDriver : IRadioDriver
+    {
+        private readonly SimulatedFtdx10Driver _inner = new();
+
+        public int SetPttCallCount { get; private set; }
+
+        public RadioCapabilities Capabilities => _inner.Capabilities with
+        {
+            Transmit = new FeatureDescriptor(CapabilitySupport.Unsupported, FeatureAccess.None)
+        };
+
+        public ValueTask<RadioState> ReadStateAsync(CancellationToken cancellationToken = default) =>
+            _inner.ReadStateAsync(cancellationToken);
+
+        public ValueTask SetFrequencyAsync(
+            VfoId target, long frequencyHz, CancellationToken cancellationToken = default) =>
+            _inner.SetFrequencyAsync(target, frequencyHz, cancellationToken);
+
+        public ValueTask SetActiveVfoAsync(VfoId vfo, CancellationToken cancellationToken = default) =>
+            _inner.SetActiveVfoAsync(vfo, cancellationToken);
+
+        public ValueTask SetModeAsync(RadioMode mode, CancellationToken cancellationToken = default) =>
+            _inner.SetModeAsync(mode, cancellationToken);
+
+        public ValueTask SetSplitAsync(bool enabled, CancellationToken cancellationToken = default) =>
+            _inner.SetSplitAsync(enabled, cancellationToken);
+
+        public ValueTask SetPttAsync(bool enabled, CancellationToken cancellationToken = default)
+        {
+            SetPttCallCount++;
+            return _inner.SetPttAsync(enabled, cancellationToken);
+        }
+
+        public ValueTask DisposeAsync() => _inner.DisposeAsync();
     }
 }

@@ -216,11 +216,17 @@ dotnet build Rig2Cast.sln
 dotnet test tests\Rig2Cast.Runtime.Tests\Rig2Cast.Runtime.Tests.csproj
 ```
 
-The current suite contains **170 automated tests** covering CAT framing and
+The current suite contains **192 automated tests** covering CAT framing and
 parsing, runtime serialization, concurrent clients, roles and leases, capability
 and model discovery, trusted plugin loading, TCP behavior, disconnect/reconnect behavior, unsolicited
 reporting, shutdown cleanup, FTDX10 controls, and the initial Elecraft K3-family
 protocol slice.
+
+The diagnostic Console can add trusted external driver assemblies to the same model
+catalog used by built-in drivers. Use `--plugin-config <file>` and then
+`--list-models`; see the [plugin host guide](docs/plugin-host.md) for the strict JSON
+schema and SHA-256 trust workflow. `--plugin-development-mode` is only for trusted
+local development and bypasses binary-hash verification.
 
 ### Run the simulator demo
 

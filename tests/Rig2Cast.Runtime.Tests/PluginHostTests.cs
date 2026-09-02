@@ -1,6 +1,8 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using Rig2Cast.Abstractions.Drivers;
 using Rig2Cast.Drivers.Yaesu.Ftdx10;
+using Rig2Cast.Core.Drivers;
 using Rig2Cast.PluginHost;
 
 namespace Rig2Cast.Runtime.Tests;
@@ -72,6 +74,36 @@ public sealed class PluginHostTests
             () => loader.ReadManifestAsync(fixture.ManifestPath).AsTask());
 
         Assert.Equal(PluginLoadStatus.Incompatible, failure.Status);
+        Assert.Contains("exact canonical major.minor match", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("Plugin driver API '2.0'", failure.Message, StringComparison.Ordinal);
+        Assert.Contains("host API '1.0'", failure.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ApiCompatibilityRequiresExactCanonicalMajorMinorVersion()
+    {
+        Version host = RadioDriverApiCompatibility.CurrentVersion;
+
+        Assert.True(RadioDriverApiCompatibility.IsCompatible(host, new Version(1, 0)));
+        Assert.False(RadioDriverApiCompatibility.IsCompatible(host, new Version(0, 9)));
+        Assert.False(RadioDriverApiCompatibility.IsCompatible(host, new Version(1, 1)));
+        Assert.False(RadioDriverApiCompatibility.IsCompatible(host, new Version(2, 0)));
+        Assert.False(RadioDriverApiCompatibility.IsCompatible(host, new Version(1, 0, 0)));
+        Assert.False(RadioDriverApiCompatibility.IsCompatible(host, new Version(1, 0, 0, 0)));
+    }
+
+    [Fact]
+    public async Task MalformedApiVersionIsAnInvalidManifest()
+    {
+        using var fixture = PluginFixture.Create();
+        fixture.WriteManifest(fixture.Manifest with { ApiVersion = "current" });
+        var loader = new RadioPluginLoader();
+
+        PluginLoadException failure = await Assert.ThrowsAsync<PluginLoadException>(
+            () => loader.ReadManifestAsync(fixture.ManifestPath).AsTask());
+
+        Assert.Equal(PluginLoadStatus.InvalidManifest, failure.Status);
+        Assert.Contains("valid System.Version", failure.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -157,6 +189,154 @@ public sealed class PluginHostTests
         {
             foreach (LoadedRadioPlugin plugin in plugins) plugin.Dispose();
         }
+    }
+
+    [Fact]
+    public async Task HostConfigurationIsStrictAndResolvesRelativeDirectories()
+    {
+        using var fixture = PluginFixture.Create();
+        string configurationPath = Path.Combine(fixture.DirectoryPath, "plugin-host.json");
+        File.WriteAllText(configurationPath, """
+            {
+              "pluginDirectories": ["plugins"],
+              "trustRecords": [],
+              "developmentMode": false
+            }
+            """);
+
+        RadioPluginHostConfiguration configuration =
+            await RadioPluginHostConfiguration.ReadAsync(configurationPath);
+
+        Assert.Equal(
+            Path.Combine(fixture.DirectoryPath, "plugins"),
+            Assert.Single(configuration.PluginDirectories));
+
+        File.WriteAllText(configurationPath, """
+            {
+              "pluginDirectories": [],
+              "trustRecords": [],
+              "unknown": true
+            }
+            """);
+        PluginLoadException failure = await Assert.ThrowsAsync<PluginLoadException>(
+            () => RadioPluginHostConfiguration.ReadAsync(configurationPath).AsTask());
+        Assert.Equal(PluginLoadStatus.InvalidManifest, failure.Status);
+    }
+
+    [Fact]
+    public void HostConfigurationRejectsDuplicateTrustIdentities()
+    {
+        const string hash = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+        PluginLoadException failure = Assert.Throws<PluginLoadException>(() =>
+            RadioPluginHostConfiguration.Create(
+                [],
+                [new("plugin.one", hash), new("PLUGIN.ONE", hash)]));
+
+        Assert.Equal(PluginLoadStatus.InvalidManifest, failure.Status);
+    }
+
+    [Fact]
+    public async Task CatalogCompositionRegistersTrustedPluginAndOwnsItsLifetime()
+    {
+        using var fixture = PluginFixture.Create();
+        var catalog = new RadioDriverCatalog();
+        RadioPluginHostConfiguration configuration = RadioPluginHostConfiguration.Create(
+            [fixture.DirectoryPath],
+            [new(fixture.Manifest.Id, fixture.ComputeAssemblyHash())]);
+
+        using RadioPluginCatalogComposition composition =
+            await RadioPluginCatalogComposition.LoadAsync(catalog, configuration);
+
+        Assert.True(catalog.TryFind(Ftdx10CatProfile.ModelId, out RadioModelRegistration? registration));
+        Assert.NotNull(registration);
+        Assert.Contains(composition.Diagnostics, item => item.Status == PluginLoadStatus.Loaded);
+
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        await using IRadioDriver driver = await registration!.Factory.OpenAsync(
+            new RadioConnectionOptions(
+                "plugin-radio", Ftdx10CatProfile.ModelId,
+                new Dictionary<string, string>()),
+            transport);
+        Assert.Equal("FTDX10", driver.Capabilities.Model);
+    }
+
+    [Fact]
+    public async Task CatalogCompositionIsolatesBuiltInConflictAndMissingDirectory()
+    {
+        using var fixture = PluginFixture.Create();
+        var catalog = new RadioDriverCatalog();
+        catalog.Register(new Ftdx10DriverFactory());
+        string missingDirectory = Path.Combine(fixture.DirectoryPath, "missing");
+        RadioPluginHostConfiguration configuration = RadioPluginHostConfiguration.Create(
+            [fixture.DirectoryPath, missingDirectory],
+            [new(fixture.Manifest.Id, fixture.ComputeAssemblyHash())]);
+
+        using RadioPluginCatalogComposition composition =
+            await RadioPluginCatalogComposition.LoadAsync(catalog, configuration);
+
+        Assert.Single(catalog.Models);
+        Assert.Contains(composition.Diagnostics, item => item.Status == PluginLoadStatus.Duplicate);
+        Assert.Contains(composition.Diagnostics, item =>
+            item.Status == PluginLoadStatus.InvalidManifest && item.ManifestPath == missingDirectory);
+    }
+
+    [Fact]
+    public async Task DisposedCompositionRejectsNewDriversWithoutInterruptingActiveDriver()
+    {
+        using var fixture = PluginFixture.Create();
+        var catalog = new RadioDriverCatalog();
+        RadioPluginHostConfiguration configuration = RadioPluginHostConfiguration.Create(
+            [fixture.DirectoryPath],
+            [new(fixture.Manifest.Id, fixture.ComputeAssemblyHash())]);
+        RadioPluginCatalogComposition composition =
+            await RadioPluginCatalogComposition.LoadAsync(catalog, configuration);
+        RadioModelRegistration registration = catalog.Find(Ftdx10CatProfile.ModelId);
+        var activeTransport = new ScriptedRadioTransport();
+        activeTransport.Add("ID;", "ID0761;");
+        IRadioDriver activeDriver = await registration.Factory.OpenAsync(
+            new RadioConnectionOptions("active", Ftdx10CatProfile.ModelId, new Dictionary<string, string>()),
+            activeTransport);
+
+        composition.Dispose();
+
+        Assert.Equal("FTDX10", activeDriver.Capabilities.Model);
+        var rejectedTransport = new ScriptedRadioTransport();
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => registration.Factory.OpenAsync(
+            new RadioConnectionOptions("rejected", Ftdx10CatProfile.ModelId, new Dictionary<string, string>()),
+            rejectedTransport).AsTask());
+        Assert.Equal(1, rejectedTransport.DisposeCount);
+
+        await activeDriver.DisposeAsync();
+        Assert.Equal(1, activeTransport.DisposeCount);
+    }
+
+    [Fact]
+    public async Task DuplicatePluginLoadLeavesExistingRegistrationAvailable()
+    {
+        using var fixture = PluginFixture.Create();
+        var catalog = new RadioDriverCatalog();
+        RadioPluginHostConfiguration configuration = RadioPluginHostConfiguration.Create(
+            [fixture.DirectoryPath],
+            [new(fixture.Manifest.Id, fixture.ComputeAssemblyHash())]);
+        using RadioPluginCatalogComposition original =
+            await RadioPluginCatalogComposition.LoadAsync(catalog, configuration);
+        RadioModelRegistration existing = catalog.Find(Ftdx10CatProfile.ModelId);
+
+        using RadioPluginCatalogComposition replacement =
+            await RadioPluginCatalogComposition.LoadAsync(catalog, configuration);
+
+        Assert.Same(existing.Factory, catalog.Find(Ftdx10CatProfile.ModelId).Factory);
+        Assert.Contains(replacement.Diagnostics, diagnostic =>
+            diagnostic.Status == PluginLoadStatus.Duplicate &&
+            diagnostic.Message.Contains("existing registration remains active", StringComparison.Ordinal));
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        await using IRadioDriver driver = await existing.Factory.OpenAsync(
+            new RadioConnectionOptions("original", Ftdx10CatProfile.ModelId, new Dictionary<string, string>()),
+            transport);
+        Assert.Equal("FTDX10", driver.Capabilities.Model);
     }
 
     private sealed class PluginFixture : IDisposable

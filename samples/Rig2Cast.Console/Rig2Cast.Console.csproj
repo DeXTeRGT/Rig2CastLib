@@ -10,6 +10,7 @@
     <ProjectReference Include="..\..\src\Rig2Cast.Core\Rig2Cast.Core.csproj" />
     <ProjectReference Include="..\..\src\Rig2Cast.Drivers.Elecraft\Rig2Cast.Drivers.Elecraft.csproj" />
     <ProjectReference Include="..\..\src\Rig2Cast.Drivers.Yaesu\Rig2Cast.Drivers.Yaesu.csproj" />
+    <ProjectReference Include="..\..\src\Rig2Cast.PluginHost\Rig2Cast.PluginHost.csproj" />
     <ProjectReference Include="..\..\src\Rig2Cast.Runtime\Rig2Cast.Runtime.csproj" />
     <ProjectReference Include="..\..\src\Rig2Cast.Simulator\Rig2Cast.Simulator.csproj" />
     <ProjectReference Include="..\..\src\Rig2Cast.Transports\Rig2Cast.Transports.csproj" />

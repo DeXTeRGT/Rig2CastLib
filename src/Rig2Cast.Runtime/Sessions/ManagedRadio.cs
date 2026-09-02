@@ -847,6 +847,7 @@ public sealed class ManagedRadio : IAsyncDisposable
         {
             EnsureConnected();
             _leases.Validate(transmitLease, authorization.Client, LeaseKinds.Transmit);
+            EnsureWritable(_driver.Capabilities.Transmit, "Transmit");
             await _driver.SetPttAsync(enabled, token).ConfigureAwait(false);
             await VerifyPttStateAsync(enabled, token).ConfigureAwait(false);
         }, enabled ? RadioCommandPriority.Normal : RadioCommandPriority.Safety, cancellationToken).ConfigureAwait(false);

@@ -9,6 +9,7 @@ using Rig2Cast.Abstractions.Sessions;
 using Rig2Cast.Core.Drivers;
 using Rig2Cast.Drivers.Elecraft.K3Family;
 using Rig2Cast.Drivers.Yaesu.Ftdx10;
+using Rig2Cast.PluginHost;
 using Rig2Cast.Runtime.Sessions;
 using Rig2Cast.Simulator;
 using Rig2Cast.Transports.Serial;
@@ -23,18 +24,62 @@ int automaticInformationMode = int.TryParse(configuredAutoInformationMode, out i
 var catalog = new RadioDriverCatalog();
 catalog.Register(new Ftdx10DriverFactory());
 catalog.Register(new ElecraftK3DriverFactory());
+string? pluginConfigurationPath = GetOption(args, "--plugin-config");
+string[] additionalPluginDirectories = GetOptions(args, "--plugin-directory");
+bool pluginDevelopmentMode = HasFlag(args, "--plugin-development-mode");
+RadioPluginCatalogComposition? pluginComposition = null;
+if (pluginConfigurationPath is not null || additionalPluginDirectories.Length > 0)
+{
+    RadioPluginHostConfiguration pluginConfiguration = pluginConfigurationPath is null
+        ? RadioPluginHostConfiguration.Create(
+            additionalPluginDirectories,
+            developmentMode: pluginDevelopmentMode)
+        : await RadioPluginHostConfiguration.ReadAsync(pluginConfigurationPath);
+    if (pluginConfigurationPath is not null &&
+        (additionalPluginDirectories.Length > 0 || pluginDevelopmentMode))
+    {
+        pluginConfiguration = RadioPluginHostConfiguration.Create(
+            pluginConfiguration.PluginDirectories.Concat(additionalPluginDirectories),
+            pluginConfiguration.TrustRecords,
+            pluginConfiguration.DevelopmentMode || pluginDevelopmentMode);
+    }
+    if (pluginConfiguration.DevelopmentMode)
+        Console.Error.WriteLine("WARNING: Plugin development mode bypasses SHA-256 trust verification.");
+    pluginComposition = await RadioPluginCatalogComposition.LoadAsync(catalog, pluginConfiguration);
+    PrintPluginDiagnostics(pluginComposition.Diagnostics);
+}
+using (pluginComposition)
+{
 if (HasFlag(args, "--list-models"))
 {
     foreach (RadioModelRegistration item in catalog.Models)
-        Console.WriteLine($"{item.Model.Id,-18} {item.Model.Manufacturer} {item.Model.Model} (default {item.Model.DefaultBaudRate} baud)");
+    {
+        string connection = item.Model.DefaultBaudRate is int defaultBaud
+            ? $"default {defaultBaud} baud"
+            : $"transports: {string.Join(", ", item.Model.SupportedTransports)}";
+        Console.WriteLine($"{item.Model.Id,-18} {item.Model.Manufacturer} {item.Model.Model} ({connection})");
+    }
     return;
 }
 string modelId = GetOption(args, "--model") ?? Ftdx10CatProfile.ModelId;
 RadioModelRegistration selectedModel = catalog.Find(modelId);
 string port = GetOption(args, "--port") ?? "COM11";
-int baud = int.TryParse(GetOption(args, "--baud"), out int parsedBaud)
-    ? parsedBaud
-    : selectedModel.Model.DefaultBaudRate ?? 38_400;
+int baud = 0;
+if (!simulator)
+{
+    if (!selectedModel.Model.SupportedTransports.Contains(RadioTransportKind.Serial))
+    {
+        string suggestion = selectedModel.Model.SupportedTransports.Contains(RadioTransportKind.Simulator)
+            ? " Restart with --simulator."
+            : string.Empty;
+        throw new ArgumentException(
+            $"Model '{modelId}' does not support a serial connection.{suggestion}");
+    }
+    baud = int.TryParse(GetOption(args, "--baud"), out int parsedBaud)
+        ? parsedBaud
+        : selectedModel.Model.DefaultBaudRate ??
+            throw new ArgumentException($"Model '{modelId}' has no default baud rate; specify --baud.");
+}
 
 using var stopping = new CancellationTokenSource();
 Console.CancelKeyPress += (_, eventArgs) =>
@@ -46,9 +91,21 @@ Console.CancelKeyPress += (_, eventArgs) =>
 ManagedRadio managedRadio;
 if (simulator)
 {
-    IRadioDriver driver = selectedModel.Model.Id.Equals(Ftdx10CatProfile.ModelId, StringComparison.OrdinalIgnoreCase)
-        ? new SimulatedFtdx10Driver()
-        : throw new NotSupportedException($"No sample simulator is registered for '{selectedModel.Model.Id}'.");
+    if (!selectedModel.Model.SupportedTransports.Contains(RadioTransportKind.Simulator))
+        throw new NotSupportedException($"Model '{selectedModel.Model.Id}' does not advertise simulator support.");
+    IRadioDriver driver;
+    if (selectedModel.Model.Id.Equals(Ftdx10CatProfile.ModelId, StringComparison.OrdinalIgnoreCase))
+    {
+        driver = new SimulatedFtdx10Driver();
+    }
+    else
+    {
+        driver = await selectedModel.Factory.OpenAsync(
+            new RadioConnectionOptions(
+                "radio-1", modelId, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)),
+            new InMemoryRadioTransport($"simulator:{modelId}"),
+            stopping.Token);
+    }
     Console.WriteLine($"Opening {selectedModel.Model.Model} simulator...");
     managedRadio = await ManagedRadio.CreateAsync("radio-1", driver, cancellationToken: stopping.Token);
 }
@@ -183,6 +240,7 @@ if (pollStopping is not null)
     await pollStopping.CancelAsync();
     if (pollTask is not null) await IgnoreCancellationAsync(pollTask);
     pollStopping.Dispose();
+}
 }
 static async Task ExecutePttAsync(
     RenewingTransmitController controller,
@@ -630,6 +688,29 @@ static string? GetOption(string[] arguments, string option)
 {
     int index = Array.FindIndex(arguments, value => StringComparer.OrdinalIgnoreCase.Equals(value, option));
     return index >= 0 && index + 1 < arguments.Length ? arguments[index + 1] : null;
+}
+
+static string[] GetOptions(string[] arguments, string option)
+{
+    var values = new List<string>();
+    for (int index = 0; index < arguments.Length; index++)
+    {
+        if (!StringComparer.OrdinalIgnoreCase.Equals(arguments[index], option)) continue;
+        if (index + 1 >= arguments.Length || arguments[index + 1].StartsWith("--", StringComparison.Ordinal))
+            throw new ArgumentException($"Option '{option}' requires a value.");
+        values.Add(arguments[++index]);
+    }
+    return values.ToArray();
+}
+
+static void PrintPluginDiagnostics(IEnumerable<PluginLoadDiagnostic> diagnostics)
+{
+    foreach (PluginLoadDiagnostic diagnostic in diagnostics)
+    {
+        TextWriter writer = diagnostic.Status == PluginLoadStatus.Loaded ? Console.Out : Console.Error;
+        writer.WriteLine(
+            $"PLUGIN {diagnostic.Status}: {diagnostic.PluginId ?? "unknown"} ({diagnostic.ManifestPath}): {diagnostic.Message}");
+    }
 }
 
 static async Task IgnoreCancellationAsync(Task task)

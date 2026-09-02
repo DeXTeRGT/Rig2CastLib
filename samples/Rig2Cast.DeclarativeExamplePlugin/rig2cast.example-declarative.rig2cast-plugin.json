@@ -1,0 +1,20 @@
+{
+  "id": "rig2cast.example.declarative-driver",
+  "version": "1.0.0",
+  "apiVersion": "1.0",
+  "entryAssembly": "Rig2Cast.DeclarativeExamplePlugin.dll",
+  "factoryType": "Rig2Cast.DeclarativeExamplePlugin.DeclarativeExampleDriverFactory",
+  "models": [
+    {
+      "id": "rig2cast.example.declarative-radio",
+      "manufacturer": "Rig2Cast",
+      "model": "Declarative virtual radio",
+      "supportedTransports": ["Simulator"],
+      "supportedBaudRates": [],
+      "defaultBaudRate": null,
+      "defaultConnectionSettings": {
+        "secondPreamp": "false"
+      }
+    }
+  ]
+}

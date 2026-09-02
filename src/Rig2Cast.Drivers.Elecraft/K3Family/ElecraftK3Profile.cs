@@ -1,4 +1,5 @@
 using Rig2Cast.Abstractions.Radios;
+using Rig2Cast.Protocols.Declarative;
 
 namespace Rig2Cast.Drivers.Elecraft.K3Family;
 
@@ -24,7 +25,9 @@ public sealed record ElecraftK3Profile(string ModelId, string Model, bool Suppor
             [KX2ModelId] = new(KX2ModelId, "KX2", false)
         };
 
-    public static readonly IReadOnlyDictionary<char, RadioMode> Modes = new Dictionary<char, RadioMode>
+    public static readonly ValueMapDescriptor<char, RadioMode> ModeMap = new(
+        "Elecraft K3-family operating modes",
+        new Dictionary<char, RadioMode>
     {
         ['1'] = RadioMode.Lsb,
         ['2'] = RadioMode.Usb,
@@ -34,12 +37,9 @@ public sealed record ElecraftK3Profile(string ModelId, string Model, bool Suppor
         ['6'] = RadioMode.DataUsb,
         ['7'] = RadioMode.CwReverse,
         ['9'] = RadioMode.DataLsb
-    };
+    });
 
-    // Modes must be a bijection: ToDictionary throws at class load if two wire codes ever
-    // mapped to the same RadioMode, instead of EncodeMode failing ambiguously mid-command.
-    private static readonly Dictionary<RadioMode, char> ReverseModes =
-        Modes.ToDictionary(pair => pair.Value, pair => pair.Key);
+    public static readonly IReadOnlyDictionary<char, RadioMode> Modes = ModeMap.WireToValue;
 
     public IReadOnlySet<RadioMode> SupportedModes => SupportsFm
         ? Modes.Values.ToHashSet()
@@ -49,7 +49,7 @@ public sealed record ElecraftK3Profile(string ModelId, string Model, bool Suppor
     {
         if (!SupportedModes.Contains(mode))
             throw new NotSupportedException($"Operating mode '{mode}' is not supported by the {Model} profile.");
-        return ReverseModes[mode];
+        return ModeMap.ValueToWire[mode];
     }
 
     public bool MatchesOptionResponse(string response)

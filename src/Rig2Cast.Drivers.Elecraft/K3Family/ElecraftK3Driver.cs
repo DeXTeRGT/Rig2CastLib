@@ -8,6 +8,7 @@ using Rig2Cast.Abstractions.Radios;
 using Rig2Cast.Abstractions.Security;
 using Rig2Cast.Abstractions.Transports;
 using Rig2Cast.Drivers.Elecraft.Protocol;
+using Rig2Cast.Protocols.Declarative;
 
 namespace Rig2Cast.Drivers.Elecraft.K3Family;
 
@@ -20,6 +21,18 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
     IRadioReceiverModeDriver
 {
     private static readonly Version MinimumSwrFirmware = new(5, 66);
+    private static readonly AsciiQueryDescriptor KeyerSpeedQuery = new(
+        "Keyer speed", "KS", "KS", 6,
+        new NumericFieldDescriptor("Keyer speed WPM", 3, 8, 50),
+        StringComparison.OrdinalIgnoreCase);
+    private static readonly ConditionalValueSetDescriptor<PreampContext, string, char> PreampOptions = new(
+        "Elecraft K3-family main preamp",
+        [
+            new("off", '0', "Off", _ => true),
+            new("preamp1", '1', "Preamp 1", _ => true),
+            new("preamp2", '2', "Preamp 2", context => SupportsPreamp2(context.Profile, context.OptionResponse))
+        ],
+        valueComparer: StringComparer.OrdinalIgnoreCase);
     private readonly IRadioTransport _transport;
     private readonly ElecraftAsciiProtocol _protocol;
     private readonly ElecraftK3Profile _profile;
@@ -249,10 +262,18 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
             RadioControlId.KeyerSpeedWpm => "KS",
             _ => throw new NotSupportedException($"Control '{control}' is not supported by the Elecraft K3-family driver.")
         };
-        string response = await _protocol.QueryAsync(command, command, cancellationToken).ConfigureAwait(false);
-        int value = control == RadioControlId.ClarifierOffsetHz
-            ? ParseSignedControl(response, command, 4, 9_999)
-            : ParseUnsignedControl(response, command, 3, GetControlMaximum(control));
+        AsciiQueryDescriptor? descriptor = control == RadioControlId.KeyerSpeedWpm
+            ? KeyerSpeedQuery
+            : null;
+        string response = await _protocol.QueryAsync(
+            descriptor?.Query ?? command,
+            descriptor?.ResponsePrefix ?? command,
+            cancellationToken).ConfigureAwait(false);
+        int value = descriptor is not null
+            ? ParseUnsignedQuery(response, descriptor)
+            : control == RadioControlId.ClarifierOffsetHz
+                ? ParseSignedControl(response, command, 4, 9_999)
+                : ParseUnsignedControl(response, command, 3, GetControlMaximum(control));
         return new RadioControlValue(control, value, _timeProvider.GetUtcNow());
     }
 
@@ -412,13 +433,7 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
                 _ => throw new ElecraftProtocolException($"Invalid AGC response '{response}'.")
             },
             RadioChoiceId.Attenuator => DecodeAttenuator(response),
-            RadioChoiceId.Preamp => response switch
-            {
-                "PA0;" => "off",
-                "PA1;" => "preamp1",
-                "PA2;" => "preamp2",
-                _ => throw new ElecraftProtocolException($"Invalid preamp response '{response}'.")
-            },
+            RadioChoiceId.Preamp => DecodePreamp(response),
             _ => throw new UnreachableException()
         };
         return new RadioChoiceValue(control, value, _timeProvider.GetUtcNow());
@@ -439,13 +454,9 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
                 _ => throw new ArgumentOutOfRangeException(nameof(value))
             },
             RadioChoiceId.Attenuator => EncodeAttenuator(value),
-            RadioChoiceId.Preamp => value.ToLowerInvariant() switch
-            {
-                "off" => "PA0",
-                "preamp1" => "PA1",
-                "preamp2" when SupportsPreamp2 => "PA2",
-                _ => throw new ArgumentOutOfRangeException(nameof(value))
-            },
+            RadioChoiceId.Preamp => PreampOptions.TryEncode(CurrentPreampContext, value, out char preampCode)
+                ? $"PA{preampCode}"
+                : throw new ArgumentOutOfRangeException(nameof(value)),
             _ => throw new NotSupportedException($"Choice '{control}' is not supported by the Elecraft K3-family driver.")
         };
         return _protocol.SendAsync(command, cancellationToken);
@@ -749,12 +760,7 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
             }
             if (frame.StartsWith("PA", StringComparison.OrdinalIgnoreCase))
             {
-                string value = frame switch
-                {
-                    "PA0;" => "off", "PA1;" => "preamp1", "PA2;" => "preamp2",
-                    _ => throw new ElecraftProtocolException($"Invalid preamp response '{frame}'.")
-                };
-                return ChoiceObservation(frame, RadioChoiceId.Preamp, value, observedAt);
+                return ChoiceObservation(frame, RadioChoiceId.Preamp, DecodePreamp(frame), observedAt);
             }
             if (frame.StartsWith("BW$", StringComparison.OrdinalIgnoreCase))
                 return new PassbandChangedObservation(observedAt, frame,
@@ -957,7 +963,7 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
         RadioControlId.AfGain => 255,
         RadioControlId.RfGain => 250,
         RadioControlId.TransmitPower => GetPowerMaximum(_profile, _optionResponse),
-        RadioControlId.KeyerSpeedWpm => 50,
+        RadioControlId.KeyerSpeedWpm => KeyerSpeedQuery.ValueField.Maximum,
         _ => throw new NotSupportedException($"Control '{control}' is not supported by the Elecraft K3-family driver.")
     };
 
@@ -993,9 +999,7 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
         };
     }
 
-    private bool SupportsPreamp2 =>
-        (_profile.ModelId is ElecraftK3Profile.K3SModelId or ElecraftK3Profile.K3ModelId) &&
-        _optionResponse.AsSpan(2, _optionResponse.Length - 3).Contains('L');
+    private PreampContext CurrentPreampContext => new(_profile, _optionResponse);
 
     private bool IsK3Desktop =>
         _profile.ModelId is ElecraftK3Profile.K3SModelId or ElecraftK3Profile.K3ModelId;
@@ -1058,6 +1062,14 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
         return value;
     }
 
+    private static int ParseUnsignedQuery(string response, AsciiQueryDescriptor descriptor)
+    {
+        if (!descriptor.TryParseValue(response, out int value))
+            throw new ElecraftProtocolException(
+                $"Invalid {descriptor.ResponsePrefix} response '{response}'.");
+        return value;
+    }
+
     private static int ParseSignedControl(string response, string prefix, int digits, int maximum)
     {
         int signIndex = prefix.Length;
@@ -1087,7 +1099,13 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
         [RadioControlId.ClarifierOffsetHz] = new(
             RadioControlId.ClarifierOffsetHz, "RIT/XIT offset", feature, -9_999, 9_999, 1, "Hz"),
         [RadioControlId.KeyerSpeedWpm] = new(
-            RadioControlId.KeyerSpeedWpm, "Keyer speed", feature, 8, 50, 1, "WPM")
+            RadioControlId.KeyerSpeedWpm,
+            KeyerSpeedQuery.DisplayName,
+            feature,
+            KeyerSpeedQuery.ValueField.Minimum,
+            KeyerSpeedQuery.ValueField.Maximum,
+            KeyerSpeedQuery.ValueField.Step,
+            "WPM")
     };
     }
 
@@ -1245,16 +1263,22 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
 
     private static Dictionary<string, RadioChoiceOption> CreatePreampOptions(
         ElecraftK3Profile profile, string optionResponse)
+        => PreampOptions.GetAvailable(new(profile, optionResponse)).ToDictionary(
+            value => value.Value,
+            value => new RadioChoiceOption(value.Value, value.DisplayName),
+            StringComparer.OrdinalIgnoreCase);
+
+    private string DecodePreamp(string response)
     {
-        var options = new Dictionary<string, RadioChoiceOption>
-        {
-            ["off"] = new("off", "Off"), ["preamp1"] = new("preamp1", "Preamp 1")
-        };
-        if ((profile.ModelId is ElecraftK3Profile.K3SModelId or ElecraftK3Profile.K3ModelId) &&
-            optionResponse.AsSpan(2, optionResponse.Length - 3).Contains('L'))
-            options["preamp2"] = new("preamp2", "Preamp 2");
-        return options;
+        if (response.Length != 4 || !response.StartsWith("PA", StringComparison.Ordinal) ||
+            response[^1] != ';' || !PreampOptions.TryDecode(CurrentPreampContext, response[2], out string? value))
+            throw new ElecraftProtocolException($"Invalid preamp response '{response}'.");
+        return value;
     }
+
+    private static bool SupportsPreamp2(ElecraftK3Profile profile, string optionResponse) =>
+        (profile.ModelId is ElecraftK3Profile.K3SModelId or ElecraftK3Profile.K3ModelId) &&
+        optionResponse.AsSpan(2, optionResponse.Length - 3).Contains('L');
 
     private static bool HasPowerAmplifier(string optionResponse) =>
         optionResponse.Length > 3 && optionResponse[3] == 'P';
@@ -1274,4 +1298,6 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
         VfoId ActiveVfo,
         bool IsSplit,
         bool IsTransmitting);
+
+    private sealed record PreampContext(ElecraftK3Profile Profile, string OptionResponse);
 }

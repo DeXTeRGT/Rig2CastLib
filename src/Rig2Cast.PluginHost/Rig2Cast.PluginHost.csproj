@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Rig2Cast.Abstractions\Rig2Cast.Abstractions.csproj" />
+    <ProjectReference Include="..\Rig2Cast.Core\Rig2Cast.Core.csproj" />
   </ItemGroup>
 
 </Project>
