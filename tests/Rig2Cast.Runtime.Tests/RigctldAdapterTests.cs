@@ -3,6 +3,10 @@ using System.Net.Sockets;
 using System.Text;
 using Rig2Cast.Abstractions.Security;
 using Rig2Cast.Abstractions.Controls;
+using Rig2Cast.Abstractions.Capabilities;
+using Rig2Cast.Abstractions.Drivers;
+using Rig2Cast.Abstractions.Meters;
+using Rig2Cast.Abstractions.Sessions;
 using Rig2Cast.Abstractions.Radios;
 using Rig2Cast.Adapters.Rigctld;
 using Rig2Cast.Runtime.Sessions;
@@ -157,6 +161,25 @@ public sealed class RigctldAdapterTests
         Assert.Contains("SetSplit:True:B", driver.CommandLog);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task NonRepresentableReceiverTopologiesFailInsteadOfGuessingVfoA(bool multipleReceivePaths)
+    {
+        await using ManagedRadio radio = await ManagedRadio.CreateAsync(
+            "receiver-topology", new RigctldTopologyDriver(multipleReceivePaths));
+        await using IRadioSession session = radio.OpenSession(new ClientIdentity("test"), ClientRole.Observer);
+        var handler = new RigctldSessionHandler(session);
+
+        RigctldResult frequency = await handler.ExecuteAsync(RigctldProtocol.Parse("f"));
+        RigctldResult vfo = await handler.ExecuteAsync(RigctldProtocol.Parse("v"));
+        RigctldResult split = await handler.ExecuteAsync(RigctldProtocol.Parse("s"));
+
+        Assert.Equal(RigctldError.NotAvailable, frequency.ErrorCode);
+        Assert.Equal(RigctldError.NotAvailable, vfo.ErrorCode);
+        Assert.Equal(RigctldError.NotAvailable, split.ErrorCode);
+    }
+
     private static async Task<string> SendCommandAsync(int port, string command)
     {
         using var client = new TcpClient();
@@ -166,5 +189,81 @@ public sealed class RigctldAdapterTests
         var buffer = new byte[128];
         int read = await stream.ReadAsync(buffer);
         return Encoding.ASCII.GetString(buffer, 0, read);
+    }
+
+    private sealed class RigctldTopologyDriver(bool multipleReceivePaths) : IRadioDriver
+    {
+        private static readonly FeatureDescriptor Unsupported =
+            new(CapabilitySupport.Unsupported, FeatureAccess.None);
+
+        public RadioCapabilities Capabilities { get; } = new(
+            1,
+            "Synthetic",
+            "Rigctld topology",
+            "rig2cast.tests.rigctld-topology",
+            "1.0.0",
+            new VfoCapability(
+                multipleReceivePaths ? new HashSet<VfoId> { VfoId.A, VfoId.B } : new HashSet<VfoId>(),
+                Unsupported,
+                Unsupported),
+            new FrequencyCapability(
+                Unsupported,
+                multipleReceivePaths ? new HashSet<VfoId> { VfoId.A, VfoId.B } : new HashSet<VfoId>(),
+                [new FrequencyRange(100_000, 500_000_000, true, false)]),
+            new ModeCapability(Unsupported, new HashSet<RadioMode> { RadioMode.Usb }),
+            Unsupported,
+            new Dictionary<RadioControlId, NumericControlDescriptor>(),
+            new Dictionary<RadioSwitchId, SwitchControlDescriptor>(),
+            new Dictionary<RadioChoiceId, ChoiceControlDescriptor>(),
+            new Dictionary<RadioMeterId, RadioMeterDescriptor>(),
+            new Dictionary<string, object?>())
+        {
+            Receivers = new ReceiverTopologyCapability(
+                new Dictionary<ReceiverId, ReceiverCapability>
+                {
+                    [ReceiverId.Main] = new(ReceiverId.Main, "Main", new HashSet<VfoId> { VfoId.A }),
+                    [ReceiverId.Sub] = new(ReceiverId.Sub, "Sub", new HashSet<VfoId> { VfoId.B })
+                },
+                Unsupported)
+        };
+
+        public ValueTask<RadioState> ReadStateAsync(CancellationToken cancellationToken = default)
+        {
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            IReadOnlyDictionary<VfoId, long> frequencies = multipleReceivePaths
+                ? new Dictionary<VfoId, long> { [VfoId.A] = 14_200_000, [VfoId.B] = 7_100_000 }
+                : new Dictionary<VfoId, long>();
+            return ValueTask.FromResult(new RadioState(
+                1, ConnectionStatus.Connected, frequencies,
+                multipleReceivePaths ? VfoId.A : VfoId.Current,
+                RadioMode.Usb, false, false, now)
+            {
+                Receivers = new Dictionary<ReceiverId, RadioReceiverState>
+                {
+                    [ReceiverId.Main] = new(ReceiverId.Main, true,
+                        multipleReceivePaths ? VfoId.A : null, 14_200_000, RadioMode.Usb, null, now),
+                    [ReceiverId.Sub] = new(ReceiverId.Sub, true,
+                        multipleReceivePaths ? VfoId.B : null, 7_100_000, RadioMode.Lsb, null, now)
+                },
+                SelectedReceiver = ReceiverId.Main,
+                ReceivePaths = multipleReceivePaths
+                    ? [new(ReceiverId.Main, VfoId.A), new(ReceiverId.Sub, VfoId.B)]
+                    : [new(ReceiverId.Main, null)],
+                TransmitReceiver = null,
+                TransmitPath = null
+            });
+        }
+
+        public ValueTask SetFrequencyAsync(VfoId target, long frequencyHz, CancellationToken cancellationToken = default) =>
+            ValueTask.FromException(new NotSupportedException());
+        public ValueTask SetActiveVfoAsync(VfoId vfo, CancellationToken cancellationToken = default) =>
+            ValueTask.FromException(new NotSupportedException());
+        public ValueTask SetModeAsync(RadioMode mode, CancellationToken cancellationToken = default) =>
+            ValueTask.FromException(new NotSupportedException());
+        public ValueTask SetSplitAsync(bool enabled, CancellationToken cancellationToken = default) =>
+            ValueTask.FromException(new NotSupportedException());
+        public ValueTask SetPttAsync(bool enabled, CancellationToken cancellationToken = default) =>
+            ValueTask.FromException(new NotSupportedException());
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

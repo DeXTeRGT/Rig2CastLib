@@ -18,11 +18,17 @@ public sealed class ManagedRadio : IAsyncDisposable
     private IRadioDriver _driver;
     private readonly RadioCommandScheduler _scheduler;
     private readonly RadioLeaseManager _leases;
-    private readonly RadioEventHub _events = new();
+    private readonly RadioEventHub _events;
     private readonly TimeProvider _timeProvider;
     private readonly object _refreshGate = new();
     private readonly Dictionary<VfoId, DateTimeOffset> _frequencyFreshAt = [];
     private readonly Dictionary<VfoId, DateTimeOffset> _frequencyAppliedAt = [];
+    private readonly Dictionary<ReceiverId, DateTimeOffset> _receiverFrequencyFreshAt = [];
+    private readonly Dictionary<ReceiverId, DateTimeOffset> _receiverFrequencyAppliedAt = [];
+    private readonly Dictionary<ReceiverId, DateTimeOffset> _receiverModeFreshAt = [];
+    private readonly Dictionary<ReceiverId, DateTimeOffset> _receiverModeAppliedAt = [];
+    private readonly Dictionary<ReceiverId, DateTimeOffset> _receiverVfoFreshAt = [];
+    private readonly Dictionary<ReceiverId, DateTimeOffset> _receiverVfoAppliedAt = [];
     private readonly CancellationTokenSource _stopping = new();
     private readonly Task _leaseMonitor;
     private readonly RadioDriverConnector? _connector;
@@ -43,11 +49,17 @@ public sealed class ManagedRadio : IAsyncDisposable
     private DateTimeOffset _modeAppliedAt;
     private DateTimeOffset _splitAppliedAt;
     private DateTimeOffset _transmitAppliedAt;
+    private DateTimeOffset _receivePathsFreshAt;
+    private DateTimeOffset _receivePathsAppliedAt;
+    private DateTimeOffset _transmitPathFreshAt;
+    private DateTimeOffset _transmitPathAppliedAt;
     private bool _stateCacheValid;
     private RadioState _state;
     private long _connectionGeneration = 1;
     private long _availabilityRevision = 1;
     private int _disposed;
+    private readonly TaskCompletionSource _disposeCompletion =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     private ManagedRadio(
         string radioId,
@@ -65,6 +77,7 @@ public sealed class ManagedRadio : IAsyncDisposable
         _leases = leases;
         _state = SynchronizeSignalPaths(initialState);
         _timeProvider = timeProvider;
+        _events = new RadioEventHub(timeProvider);
         MarkFullStateFresh(timeProvider.GetUtcNow());
         _connector = connector;
         _connectionOptions = connectionOptions;
@@ -203,11 +216,23 @@ public sealed class ManagedRadio : IAsyncDisposable
         ClientAuthorization authorization,
         VfoId target,
         long frequencyHz,
-        CancellationToken cancellationToken) =>
-        ExecuteMutationAsync(
+        CancellationToken cancellationToken)
+    {
+        EnsureCanControl(authorization);
+        return ExecuteMutationAsync(
             authorization,
-            token => _driver.SetFrequencyAsync(target, frequencyHz, token),
+            token =>
+            {
+                FrequencyCapability capability = _driver.Capabilities.Frequency;
+                EnsureWritable(capability.Feature, "Frequency");
+                ValidateTarget(capability.Targets, target, "Frequency");
+                if (!capability.Ranges.Any(range =>
+                        range.Receive && frequencyHz >= range.MinimumHz && frequencyHz <= range.MaximumHz))
+                    throw new ArgumentOutOfRangeException(nameof(frequencyHz));
+                return _driver.SetFrequencyAsync(target, frequencyHz, token);
+            },
             cancellationToken);
+    }
 
     internal ValueTask SetFrequencyAsync(
         ClientAuthorization authorization,
@@ -215,29 +240,54 @@ public sealed class ManagedRadio : IAsyncDisposable
         long frequencyHz,
         CancellationToken cancellationToken)
     {
-        ValidateTarget(_driver.Capabilities.Frequency.ReceiverTargets, receiver, "Frequency");
-        IReadOnlyList<FrequencyRange> ranges =
-            _driver.Capabilities.Frequency.RangesByReceiver?.GetValueOrDefault(receiver) ??
-            _driver.Capabilities.Frequency.Ranges;
-        if (!ranges.Any(range => range.Receive && frequencyHz >= range.MinimumHz && frequencyHz <= range.MaximumHz))
-            throw new ArgumentOutOfRangeException(nameof(frequencyHz));
+        EnsureCanControl(authorization);
         return ExecuteMutationAsync(
             authorization,
-            token => GetReceiverFrequencyDriver().SetFrequencyAsync(receiver, frequencyHz, token),
+            token =>
+            {
+                FrequencyCapability capability = _driver.Capabilities.Frequency;
+                EnsureWritable(capability.Feature, "Frequency");
+                ValidateTarget(capability.ReceiverTargets, receiver, "Frequency");
+                IReadOnlyList<FrequencyRange> ranges =
+                    capability.RangesByReceiver?.GetValueOrDefault(receiver) ?? capability.Ranges;
+                if (!ranges.Any(range =>
+                        range.Receive && frequencyHz >= range.MinimumHz && frequencyHz <= range.MaximumHz))
+                    throw new ArgumentOutOfRangeException(nameof(frequencyHz));
+                return GetReceiverFrequencyDriver().SetFrequencyAsync(receiver, frequencyHz, token);
+            },
             cancellationToken);
     }
 
     internal ValueTask SetActiveVfoAsync(
         ClientAuthorization authorization,
         VfoId vfo,
-        CancellationToken cancellationToken) =>
-        ExecuteMutationAsync(authorization, token => _driver.SetActiveVfoAsync(vfo, token), cancellationToken);
+        CancellationToken cancellationToken)
+    {
+        EnsureCanControl(authorization);
+        return ExecuteMutationAsync(authorization, token =>
+        {
+            VfoCapability capability = _driver.Capabilities.Vfos;
+            EnsureWritable(capability.Selection, "VFO selection");
+            ValidateTarget(capability.Available, vfo, "VFO selection");
+            return _driver.SetActiveVfoAsync(vfo, token);
+        }, cancellationToken);
+    }
 
     internal ValueTask SetModeAsync(
         ClientAuthorization authorization,
         RadioMode mode,
-        CancellationToken cancellationToken) =>
-        ExecuteMutationAsync(authorization, token => _driver.SetModeAsync(mode, token), cancellationToken);
+        CancellationToken cancellationToken)
+    {
+        EnsureCanControl(authorization);
+        return ExecuteMutationAsync(authorization, token =>
+        {
+            ModeCapability capability = _driver.Capabilities.Modes;
+            EnsureWritable(capability.Feature, "Mode");
+            if (!capability.Values.Contains(mode))
+                throw new NotSupportedException($"Mode '{mode}' is not supported by this radio.");
+            return _driver.SetModeAsync(mode, token);
+        }, cancellationToken);
+    }
 
     internal ValueTask SetModeAsync(
         ClientAuthorization authorization,
@@ -245,33 +295,54 @@ public sealed class ManagedRadio : IAsyncDisposable
         RadioMode mode,
         CancellationToken cancellationToken)
     {
-        ValidateTarget(_driver.Capabilities.Modes.ReceiverTargets, receiver, "Mode");
-        IReadOnlySet<RadioMode> modes =
-            _driver.Capabilities.Modes.ValuesByReceiver?.GetValueOrDefault(receiver) ??
-            _driver.Capabilities.Modes.Values;
-        if (!modes.Contains(mode))
-            throw new NotSupportedException($"Mode '{mode}' is not supported by receiver '{receiver}'.");
+        EnsureCanControl(authorization);
         return ExecuteMutationAsync(
             authorization,
-            token => GetReceiverModeDriver().SetModeAsync(receiver, mode, token),
+            token =>
+            {
+                ModeCapability capability = _driver.Capabilities.Modes;
+                EnsureWritable(capability.Feature, "Mode");
+                ValidateTarget(capability.ReceiverTargets, receiver, "Mode");
+                IReadOnlySet<RadioMode> modes =
+                    capability.ValuesByReceiver?.GetValueOrDefault(receiver) ?? capability.Values;
+                if (!modes.Contains(mode))
+                    throw new NotSupportedException($"Mode '{mode}' is not supported by receiver '{receiver}'.");
+                return GetReceiverModeDriver().SetModeAsync(receiver, mode, token);
+            },
             cancellationToken);
     }
 
     internal ValueTask SetSplitAsync(
         ClientAuthorization authorization,
         bool enabled,
-        CancellationToken cancellationToken) =>
-        ExecuteMutationAsync(authorization, token => _driver.SetSplitAsync(enabled, token), cancellationToken);
+        CancellationToken cancellationToken)
+    {
+        EnsureCanControl(authorization);
+        return ExecuteMutationAsync(authorization, token =>
+        {
+            EnsureWritable(_driver.Capabilities.Vfos.Split, "Split");
+            return _driver.SetSplitAsync(enabled, token);
+        }, cancellationToken);
+    }
 
     internal ValueTask SetSplitAsync(
         ClientAuthorization authorization,
         bool enabled,
         VfoId transmitVfo,
-        CancellationToken cancellationToken) =>
-        ExecuteMutationAsync(
+        CancellationToken cancellationToken)
+    {
+        EnsureCanControl(authorization);
+        return ExecuteMutationAsync(
             authorization,
-            token => _driver.SetSplitAsync(enabled, transmitVfo, token),
+            token =>
+            {
+                VfoCapability capability = _driver.Capabilities.Vfos;
+                EnsureWritable(capability.Split, "Split");
+                ValidateTarget(capability.Available, transmitVfo, "Split transmit VFO");
+                return _driver.SetSplitAsync(enabled, transmitVfo, token);
+            },
             cancellationToken);
+    }
 
     internal ValueTask<RadioControlValue> ReadControlAsync(
         RadioControlId control,
@@ -480,8 +551,9 @@ public sealed class ManagedRadio : IAsyncDisposable
                 descriptor.OptionsByTarget?.GetValueOrDefault(target) ?? descriptor.Options;
             if (!options.TryGetValue(value, out RadioChoiceOption? option) || !option.Writable)
                 throw new ArgumentOutOfRangeException(nameof(value));
-            if (option.ApplicableModes is not null && !option.ApplicableModes.Contains(_state.Mode))
-                throw new InvalidOperationException($"Choice '{value}' is not applicable in {_state.Mode} mode.");
+            RadioMode targetMode = ResolveMode(target);
+            if (option.ApplicableModes is not null && !option.ApplicableModes.Contains(targetMode))
+                throw new InvalidOperationException($"Choice '{value}' is not applicable in {targetMode} mode.");
             IRadioTargetedChoiceDriver driver = GetTargetedChoiceDriver(control);
             await driver.WriteChoiceAsync(control, target, value, token).ConfigureAwait(false);
             _events.Publish(RadioEventKind.ControlChanged,
@@ -510,6 +582,9 @@ public sealed class ManagedRadio : IAsyncDisposable
                 descriptor.OptionsByReceiver?.GetValueOrDefault(receiver) ?? descriptor.Options;
             if (!options.TryGetValue(value, out RadioChoiceOption? option) || !option.Writable)
                 throw new ArgumentOutOfRangeException(nameof(value));
+            RadioMode receiverMode = ResolveMode(receiver);
+            if (option.ApplicableModes is not null && !option.ApplicableModes.Contains(receiverMode))
+                throw new InvalidOperationException($"Choice '{value}' is not applicable in {receiverMode} mode.");
             IRadioReceiverChoiceDriver driver = GetReceiverChoiceDriver(control);
             await driver.WriteChoiceAsync(control, receiver, value, token).ConfigureAwait(false);
             _events.Publish(RadioEventKind.ControlChanged,
@@ -553,7 +628,7 @@ public sealed class ManagedRadio : IAsyncDisposable
         await ExecuteHardwareAsync(async token =>
         {
             ValidateTarget(_driver.Capabilities.Passband.Targets, target, "Passband");
-            ValidatePassband(widthHz, _state.Mode);
+            ValidatePassband(widthHz, ResolveMode(target));
             IRadioTargetedPassbandDriver driver = GetTargetedPassbandDriver();
             await driver.SetPassbandAsync(target, widthHz, token).ConfigureAwait(false);
             _events.Publish(RadioEventKind.ControlChanged,
@@ -576,7 +651,7 @@ public sealed class ManagedRadio : IAsyncDisposable
         await ExecuteHardwareAsync(async token =>
         {
             ValidateTarget(_driver.Capabilities.Passband.ReceiverTargets, receiver, "Passband");
-            ValidatePassband(widthHz, _state.Mode);
+            ValidatePassband(widthHz, ResolveMode(receiver));
             IRadioReceiverPassbandDriver driver = GetReceiverPassbandDriver();
             await driver.SetPassbandAsync(receiver, widthHz, token).ConfigureAwait(false);
             _events.Publish(RadioEventKind.ControlChanged,
@@ -672,6 +747,35 @@ public sealed class ManagedRadio : IAsyncDisposable
             throw new ArgumentOutOfRangeException(nameof(widthHz));
     }
 
+    private RadioMode ResolveMode(VfoId target)
+    {
+        if (target == VfoId.Current)
+            return ResolveMode(_state.SelectedReceiver);
+        if (target == VfoId.Main)
+            return ResolveMode(ReceiverId.Main);
+        if (target == VfoId.Sub)
+            return ResolveMode(ReceiverId.Sub);
+        if (_state.Vfos.TryGetValue(target, out RadioVfoState? state) && state.Mode is RadioMode mode)
+            return mode;
+        if (_state.ActiveVfo == target)
+            return ResolveMode(_state.SelectedReceiver);
+        throw new InvalidOperationException($"The current mode for VFO '{target}' is unavailable.");
+    }
+
+    private RadioMode ResolveMode(ReceiverId receiver) =>
+        _state.Receivers.TryGetValue(receiver, out RadioReceiverState? state) && state.Mode is RadioMode mode
+            ? mode
+            : throw new InvalidOperationException($"The current mode for receiver '{receiver}' is unavailable.");
+
+    private static void EnsureWritable(FeatureDescriptor feature, string name)
+    {
+        if (feature.Support is not CapabilitySupport.Supported and not CapabilitySupport.Experimental ||
+            (feature.Access & FeatureAccess.Write) == 0)
+        {
+            throw new NotSupportedException($"{name} is not writable on this radio.");
+        }
+    }
+
     private static void ValidateTarget(IReadOnlySet<VfoId> targets, VfoId target, string feature)
     {
         if (!targets.Contains(target))
@@ -757,7 +861,7 @@ public sealed class ManagedRadio : IAsyncDisposable
             if (_state.IsTransmitting == expected)
                 return;
             if (attempt < maximumAttempts)
-                await Task.Delay(TimeSpan.FromMilliseconds(50), cancellationToken).ConfigureAwait(false);
+                await Task.Delay(TimeSpan.FromMilliseconds(50), _timeProvider, cancellationToken).ConfigureAwait(false);
         }
 
         throw new InvalidOperationException(
@@ -933,7 +1037,7 @@ public sealed class ManagedRadio : IAsyncDisposable
 
     private async Task MonitorLeasesAsync()
     {
-        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(25));
+        using var timer = new PeriodicTimer(TimeSpan.FromMilliseconds(25), _timeProvider);
         try
         {
             while (await timer.WaitForNextTickAsync(_stopping.Token).ConfigureAwait(false))
@@ -979,7 +1083,7 @@ public sealed class ManagedRadio : IAsyncDisposable
                     new TransmitSafetyFailure("lease-expiry-dekey", attempt, maximumAttempts, exception));
                 if (attempt < maximumAttempts)
                 {
-                    await Task.Delay(TimeSpan.FromMilliseconds(50 * attempt), cancellationToken)
+                    await Task.Delay(TimeSpan.FromMilliseconds(50 * attempt), _timeProvider, cancellationToken)
                         .ConfigureAwait(false);
                 }
             }
@@ -1004,7 +1108,7 @@ public sealed class ManagedRadio : IAsyncDisposable
             {
                 try
                 {
-                    await Task.Delay(Timeout.InfiniteTimeSpan, _stopping.Token).ConfigureAwait(false);
+                    await Task.Delay(Timeout.InfiniteTimeSpan, _timeProvider, _stopping.Token).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
                 {
@@ -1130,7 +1234,7 @@ public sealed class ManagedRadio : IAsyncDisposable
                         {
                             Revision = _state.Revision + 1,
                             Connection = ConnectionStatus.Connected,
-                            ObservedAt = DateTimeOffset.UtcNow
+                            ObservedAt = _timeProvider.GetUtcNow()
                         };
                         MarkFullStateFresh(_state.ObservedAt);
                         _events.Publish(RadioEventKind.ConnectionChanged, _state);
@@ -1169,7 +1273,7 @@ public sealed class ManagedRadio : IAsyncDisposable
 
             try
             {
-                await Task.Delay(delay, _stopping.Token).ConfigureAwait(false);
+                await Task.Delay(delay, _timeProvider, _stopping.Token).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
             {
@@ -1201,7 +1305,7 @@ public sealed class ManagedRadio : IAsyncDisposable
                     {
                         Revision = _state.Revision + 1,
                         Connection = status,
-                        ObservedAt = DateTimeOffset.UtcNow
+                        ObservedAt = _timeProvider.GetUtcNow()
                     };
                     _events.Publish(RadioEventKind.ConnectionChanged, _state);
                     if (diagnostic is not null)
@@ -1247,6 +1351,8 @@ public sealed class ManagedRadio : IAsyncDisposable
                     FrequenciesHz = new Dictionary<VfoId, long>(_state.FrequenciesHz)
                         { [frequency.Vfo] = frequency.FrequencyHz }
                 },
+            ReceiverFrequencyChangedObservation frequency =>
+                ApplyReceiverFrequency(_state, frequency),
             ActiveVfoChangedObservation active =>
                 _state with
                 {
@@ -1257,6 +1363,15 @@ public sealed class ManagedRadio : IAsyncDisposable
                         _state.IsSplit ? active.TransmitVfo : active.Vfo)
                 },
             ModeChangedObservation mode => _state with { Mode = mode.Mode },
+            ReceiverModeChangedObservation mode => ApplyReceiverMode(_state, mode),
+            ReceiverVfoChangedObservation receiverVfo => ApplyReceiverVfo(_state, receiverVfo),
+            ReceivePathsChangedObservation paths => _state with { ReceivePaths = [.. paths.Paths] },
+            TransmitPathChangedObservation path => _state with
+            {
+                TransmitPath = path.Path,
+                TransmitReceiver = path.Path?.Receiver,
+                TransmitVfo = path.Path?.Vfo ?? _state.TransmitVfo
+            },
             SplitChangedObservation split =>
                 _state with
                 {
@@ -1292,8 +1407,12 @@ public sealed class ManagedRadio : IAsyncDisposable
                 },
             _ => _state
         };
-        updated = SynchronizeSignalPaths(
-            SynchronizeMainReceiverState(updated, observation.ObservedAt));
+        bool receiverOrPathObservation = observation is ReceiverFrequencyChangedObservation or
+            ReceiverModeChangedObservation or ReceiverVfoChangedObservation or
+            ReceivePathsChangedObservation or TransmitPathChangedObservation;
+        updated = SynchronizeSignalPaths(receiverOrPathObservation
+            ? updated
+            : SynchronizeMainReceiverState(updated, observation.ObservedAt));
 
         if (observation is not UnknownFrameObservation && HasStateChanged(_state, updated))
         {
@@ -1332,6 +1451,65 @@ public sealed class ManagedRadio : IAsyncDisposable
                 observedAt)
         };
         return state with { Vfos = vfos, Receivers = receivers };
+    }
+
+    private static RadioState ApplyReceiverFrequency(
+        RadioState state, ReceiverFrequencyChangedObservation observation)
+    {
+        if (!state.Receivers.TryGetValue(observation.Receiver, out RadioReceiverState? receiver))
+            return state;
+        var receivers = new Dictionary<ReceiverId, RadioReceiverState>(state.Receivers)
+        {
+            [observation.Receiver] = receiver with
+            {
+                FrequencyHz = observation.FrequencyHz,
+                ObservedAt = observation.ObservedAt
+            }
+        };
+        if (observation.Receiver != state.SelectedReceiver || receiver.SelectedVfo is not VfoId vfo)
+            return state with { Receivers = receivers };
+        var frequencies = new Dictionary<VfoId, long>(state.FrequenciesHz) { [vfo] = observation.FrequencyHz };
+        var vfos = new Dictionary<VfoId, RadioVfoState>(state.Vfos)
+        {
+            [vfo] = new(vfo, observation.FrequencyHz, receiver.Mode, observation.ObservedAt)
+        };
+        return state with { Receivers = receivers, FrequenciesHz = frequencies, Vfos = vfos };
+    }
+
+    private static RadioState ApplyReceiverMode(RadioState state, ReceiverModeChangedObservation observation)
+    {
+        if (!state.Receivers.TryGetValue(observation.Receiver, out RadioReceiverState? receiver))
+            return state;
+        var receivers = new Dictionary<ReceiverId, RadioReceiverState>(state.Receivers)
+        {
+            [observation.Receiver] = receiver with { Mode = observation.Mode, ObservedAt = observation.ObservedAt }
+        };
+        var vfos = new Dictionary<VfoId, RadioVfoState>(state.Vfos);
+        if (receiver.SelectedVfo is VfoId vfo && vfos.TryGetValue(vfo, out RadioVfoState? vfoState))
+            vfos[vfo] = vfoState with { Mode = observation.Mode, ObservedAt = observation.ObservedAt };
+        return state with
+        {
+            Receivers = receivers,
+            Vfos = vfos,
+            Mode = observation.Receiver == state.SelectedReceiver ? observation.Mode : state.Mode
+        };
+    }
+
+    private static RadioState ApplyReceiverVfo(RadioState state, ReceiverVfoChangedObservation observation)
+    {
+        if (!state.Receivers.TryGetValue(observation.Receiver, out RadioReceiverState? receiver))
+            return state;
+        var receivers = new Dictionary<ReceiverId, RadioReceiverState>(state.Receivers)
+        {
+            [observation.Receiver] = receiver with { SelectedVfo = observation.Vfo, ObservedAt = observation.ObservedAt }
+        };
+        return state with
+        {
+            Receivers = receivers,
+            ActiveVfo = observation.Receiver == state.SelectedReceiver && observation.Vfo is VfoId vfo
+                ? vfo
+                : state.ActiveVfo
+        };
     }
 
     private static RadioState SynchronizeSignalPaths(RadioState state)
@@ -1389,11 +1567,17 @@ public sealed class ManagedRadio : IAsyncDisposable
         DateTimeOffset threshold = _timeProvider.GetUtcNow() - maximumAge;
         return _state.FrequenciesHz.Keys.All(vfo =>
                    _frequencyFreshAt.TryGetValue(vfo, out DateTimeOffset observed) && observed >= threshold) &&
+               _state.Receivers.Keys.All(receiver =>
+                   _receiverFrequencyFreshAt.TryGetValue(receiver, out DateTimeOffset frequency) && frequency >= threshold &&
+                   _receiverModeFreshAt.TryGetValue(receiver, out DateTimeOffset mode) && mode >= threshold &&
+                   _receiverVfoFreshAt.TryGetValue(receiver, out DateTimeOffset vfo) && vfo >= threshold) &&
                _activeVfoFreshAt >= threshold &&
                _transmitVfoFreshAt >= threshold &&
                _modeFreshAt >= threshold &&
                _splitFreshAt >= threshold &&
-               _transmitFreshAt >= threshold;
+               _transmitFreshAt >= threshold &&
+               _receivePathsFreshAt >= threshold &&
+               _transmitPathFreshAt >= threshold;
     }
 
     private void MarkFullStateFresh(DateTimeOffset observedAt)
@@ -1405,6 +1589,15 @@ public sealed class ManagedRadio : IAsyncDisposable
                 _frequencyFreshAt[vfo] = observedAt;
                 _frequencyAppliedAt[vfo] = observedAt;
             }
+            foreach (ReceiverId receiver in _state.Receivers.Keys)
+            {
+                _receiverFrequencyFreshAt[receiver] = observedAt;
+                _receiverFrequencyAppliedAt[receiver] = observedAt;
+                _receiverModeFreshAt[receiver] = observedAt;
+                _receiverModeAppliedAt[receiver] = observedAt;
+                _receiverVfoFreshAt[receiver] = observedAt;
+                _receiverVfoAppliedAt[receiver] = observedAt;
+            }
             _activeVfoFreshAt = observedAt;
             _transmitVfoFreshAt = observedAt;
             _modeFreshAt = observedAt;
@@ -1415,6 +1608,10 @@ public sealed class ManagedRadio : IAsyncDisposable
             _modeAppliedAt = observedAt;
             _splitAppliedAt = observedAt;
             _transmitAppliedAt = observedAt;
+            _receivePathsFreshAt = observedAt;
+            _receivePathsAppliedAt = observedAt;
+            _transmitPathFreshAt = observedAt;
+            _transmitPathAppliedAt = observedAt;
             _stateCacheValid = true;
         }
     }
@@ -1428,9 +1625,17 @@ public sealed class ManagedRadio : IAsyncDisposable
             {
                 FrequencyChangedObservation frequency =>
                     _frequencyAppliedAt.GetValueOrDefault(frequency.Vfo) > at,
+                ReceiverFrequencyChangedObservation frequency =>
+                    _receiverFrequencyAppliedAt.GetValueOrDefault(frequency.Receiver) > at,
                 ActiveVfoChangedObservation active =>
                     _activeVfoAppliedAt > at || active.TransmitVfo is not null && _transmitVfoAppliedAt > at,
                 ModeChangedObservation => _modeAppliedAt > at,
+                ReceiverModeChangedObservation mode =>
+                    _receiverModeAppliedAt.GetValueOrDefault(mode.Receiver) > at,
+                ReceiverVfoChangedObservation receiverVfo =>
+                    _receiverVfoAppliedAt.GetValueOrDefault(receiverVfo.Receiver) > at,
+                ReceivePathsChangedObservation => _receivePathsAppliedAt > at,
+                TransmitPathChangedObservation => _transmitPathAppliedAt > at,
                 SplitChangedObservation split =>
                     _splitAppliedAt > at || split.TransmitVfo is not null && _transmitVfoAppliedAt > at,
                 TransmitVfoChangedObservation => _transmitVfoAppliedAt > at,
@@ -1451,12 +1656,27 @@ public sealed class ManagedRadio : IAsyncDisposable
                 case FrequencyChangedObservation frequency:
                     _frequencyAppliedAt[frequency.Vfo] = at;
                     break;
+                case ReceiverFrequencyChangedObservation frequency:
+                    _receiverFrequencyAppliedAt[frequency.Receiver] = at;
+                    break;
                 case ActiveVfoChangedObservation active:
                     _activeVfoAppliedAt = at;
                     if (active.TransmitVfo is not null) _transmitVfoAppliedAt = at;
                     break;
                 case ModeChangedObservation:
                     _modeAppliedAt = at;
+                    break;
+                case ReceiverModeChangedObservation mode:
+                    _receiverModeAppliedAt[mode.Receiver] = at;
+                    break;
+                case ReceiverVfoChangedObservation receiverVfo:
+                    _receiverVfoAppliedAt[receiverVfo.Receiver] = at;
+                    break;
+                case ReceivePathsChangedObservation:
+                    _receivePathsAppliedAt = at;
+                    break;
+                case TransmitPathChangedObservation:
+                    _transmitPathAppliedAt = at;
                     break;
                 case SplitChangedObservation split:
                     _splitAppliedAt = at;
@@ -1490,6 +1710,9 @@ public sealed class ManagedRadio : IAsyncDisposable
                 case FrequencyChangedObservation frequency:
                     _frequencyFreshAt[frequency.Vfo] = observedAt;
                     break;
+                case ReceiverFrequencyChangedObservation frequency:
+                    _receiverFrequencyFreshAt[frequency.Receiver] = observedAt;
+                    break;
                 case ActiveVfoChangedObservation active:
                     _activeVfoFreshAt = observedAt;
                     if (active.TransmitVfo is not null)
@@ -1497,6 +1720,18 @@ public sealed class ManagedRadio : IAsyncDisposable
                     break;
                 case ModeChangedObservation:
                     _modeFreshAt = observedAt;
+                    break;
+                case ReceiverModeChangedObservation mode:
+                    _receiverModeFreshAt[mode.Receiver] = observedAt;
+                    break;
+                case ReceiverVfoChangedObservation receiverVfo:
+                    _receiverVfoFreshAt[receiverVfo.Receiver] = observedAt;
+                    break;
+                case ReceivePathsChangedObservation:
+                    _receivePathsFreshAt = observedAt;
+                    break;
+                case TransmitPathChangedObservation:
+                    _transmitPathFreshAt = observedAt;
                     break;
                 case SplitChangedObservation split:
                     _splitFreshAt = observedAt;
@@ -1571,13 +1806,28 @@ public sealed class ManagedRadio : IAsyncDisposable
         }
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
-        {
-            return;
-        }
+        if (Interlocked.CompareExchange(ref _disposed, 1, 0) == 0)
+            _ = CompleteDisposalAsync();
+        return new ValueTask(_disposeCompletion.Task);
+    }
 
+    private async Task CompleteDisposalAsync()
+    {
+        try
+        {
+            await DisposeCoreAsync().ConfigureAwait(false);
+            _disposeCompletion.TrySetResult();
+        }
+        catch (Exception exception)
+        {
+            _disposeCompletion.TrySetException(exception);
+        }
+    }
+
+    private async Task DisposeCoreAsync()
+    {
         var failures = new List<Exception>();
         try
         {

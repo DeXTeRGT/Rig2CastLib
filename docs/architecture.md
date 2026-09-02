@@ -40,12 +40,24 @@ families can reuse the ASCII engine when their wire behavior fits its contract.
 Binary protocols such as Icom CI-V, and network-native radio APIs, should use separate
 engines while continuing to implement the same radio-driver abstractions.
 
+## Driver plugins
+
+External drivers use the same `IRadioDriverFactory` contract and catalog as built-in
+drivers. The host owns sidecar-manifest discovery, exact driver-API compatibility,
+SHA-256 trust decisions, safe entry paths, duplicate detection, diagnostics, and
+collectible assembly-load contexts. Manifest model metadata is checked against the
+factory descriptor after loading. Load contexts isolate dependencies but do not
+sandbox trusted code. See [plugin-host.md](plugin-host.md).
+
 ## Typed driver observations
 
 Drivers publish a closed family of immutable `RadioDriverObservation` records rather
 than a discriminator accompanied by unrelated nullable payload fields. Frequency,
 mode, VFO, split, transmit, complete-state, control, delivery-gap, ignored-frame, and
 unknown-frame observations each carry only the data valid for that event.
+Receiver-specific frequency, mode, selected-VFO, receive-path, and transmit-path
+observations allow multi-receiver drivers to update only the addressed state and
+freshness component without manufacturing a full-state report.
 
 `ManagedRadio` processes these variants through type patterns and updates freshness
 only for the state components described by the concrete observation. Driver authors

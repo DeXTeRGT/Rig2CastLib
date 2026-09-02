@@ -13,7 +13,11 @@ factory. Static catalog metadata describes transports and connection defaults;
 after connection, the driver's `RadioCapabilities` remain authoritative for the
 features available from that particular radio instance.
 
-A plugin exposes metadata through a sidecar manifest so it can be discovered without loading its assembly. Loading requires an explicit trust record containing at least plugin ID and SHA-256 binary hash; development mode may opt out.
+A plugin exposes complete static model metadata through a sidecar manifest so it can
+be discovered without loading its assembly. Loading requires an explicit trust record
+containing plugin ID and SHA-256 binary hash; development mode may opt out. The host
+verifies that the loaded factory describes exactly the same models, transports, baud
+rates, and defaults. See [plugin-host.md](plugin-host.md).
 
 Drivers compose transport, framing/codec, manufacturer or protocol-family behavior, and model-specific capability/quirk declarations. Declarative descriptions are encouraged for regular commands, while exceptional behavior remains expressible in C#.
 

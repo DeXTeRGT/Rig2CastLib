@@ -23,6 +23,7 @@
     <ProjectReference Include="..\..\src\Rig2Cast.Drivers.Elecraft\Rig2Cast.Drivers.Elecraft.csproj" />
     <ProjectReference Include="..\..\src\Rig2Cast.Transports\Rig2Cast.Transports.csproj" />
     <ProjectReference Include="..\..\src\Rig2Cast.Adapters.Rigctld\Rig2Cast.Adapters.Rigctld.csproj" />
+    <ProjectReference Include="..\..\src\Rig2Cast.PluginHost\Rig2Cast.PluginHost.csproj" />
   </ItemGroup>
 
   <ItemGroup>

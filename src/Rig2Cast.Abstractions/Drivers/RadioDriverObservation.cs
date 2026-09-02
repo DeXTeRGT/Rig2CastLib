@@ -16,7 +16,12 @@ public enum RadioDriverObservationKind
     ControlChanged,
     DeliveryGap,
     Ignored,
-    Unknown
+    Unknown,
+    ReceiverFrequencyChanged,
+    ReceiverModeChanged,
+    ReceiverVfoChanged,
+    ReceivePathsChanged,
+    TransmitPathChanged
 }
 
 public abstract record RadioDriverObservation(DateTimeOffset ObservedAt, string RawFrame)
@@ -31,6 +36,15 @@ public sealed record FrequencyChangedObservation(
     long FrequencyHz) : RadioDriverObservation(ObservedAt, RawFrame)
 {
     public override RadioDriverObservationKind Kind => RadioDriverObservationKind.FrequencyChanged;
+}
+
+public sealed record ReceiverFrequencyChangedObservation(
+    DateTimeOffset ObservedAt,
+    string RawFrame,
+    ReceiverId Receiver,
+    long FrequencyHz) : RadioDriverObservation(ObservedAt, RawFrame)
+{
+    public override RadioDriverObservationKind Kind => RadioDriverObservationKind.ReceiverFrequencyChanged;
 }
 
 public sealed record ActiveVfoChangedObservation(
@@ -48,6 +62,40 @@ public sealed record ModeChangedObservation(
     RadioMode Mode) : RadioDriverObservation(ObservedAt, RawFrame)
 {
     public override RadioDriverObservationKind Kind => RadioDriverObservationKind.ModeChanged;
+}
+
+public sealed record ReceiverModeChangedObservation(
+    DateTimeOffset ObservedAt,
+    string RawFrame,
+    ReceiverId Receiver,
+    RadioMode Mode) : RadioDriverObservation(ObservedAt, RawFrame)
+{
+    public override RadioDriverObservationKind Kind => RadioDriverObservationKind.ReceiverModeChanged;
+}
+
+public sealed record ReceiverVfoChangedObservation(
+    DateTimeOffset ObservedAt,
+    string RawFrame,
+    ReceiverId Receiver,
+    VfoId? Vfo) : RadioDriverObservation(ObservedAt, RawFrame)
+{
+    public override RadioDriverObservationKind Kind => RadioDriverObservationKind.ReceiverVfoChanged;
+}
+
+public sealed record ReceivePathsChangedObservation(
+    DateTimeOffset ObservedAt,
+    string RawFrame,
+    IReadOnlyList<RadioSignalPath> Paths) : RadioDriverObservation(ObservedAt, RawFrame)
+{
+    public override RadioDriverObservationKind Kind => RadioDriverObservationKind.ReceivePathsChanged;
+}
+
+public sealed record TransmitPathChangedObservation(
+    DateTimeOffset ObservedAt,
+    string RawFrame,
+    RadioSignalPath? Path) : RadioDriverObservation(ObservedAt, RawFrame)
+{
+    public override RadioDriverObservationKind Kind => RadioDriverObservationKind.TransmitPathChanged;
 }
 
 public sealed record SplitChangedObservation(

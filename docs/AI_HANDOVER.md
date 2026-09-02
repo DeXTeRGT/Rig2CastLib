@@ -1,6 +1,6 @@
 # Rig2Cast AI development handover
 
-Last updated: 2026-09-01 (Europe/Bucharest)
+Last updated: 2026-09-02 (Europe/Bucharest)
 
 This document is the continuity source for an AI agent resuming development of
 Rig2Cast. Read it before modifying code. Then read the architecture and decision
@@ -48,8 +48,8 @@ categories later, but do not generalize prematurely.
 - Solution: `Rig2Cast\Rig2Cast.sln`
 - Target framework: .NET 8
 - Shell: PowerShell
-- Current baseline commit when this handover was written: `c73d761`
-- Current automated suite: **144 passing tests**.
+- Current baseline commit when this handover was written: `49eed20`
+- Current automated suite: **163 passing tests**.
 
 Git may report dubious ownership because Codex and the interactive Windows user
 have different SIDs. Do not modify the user's global Git configuration. For
@@ -68,6 +68,10 @@ time of writing, the principal uncommitted changes include:
 - Renewable and bounded transmit control.
 - Firmware-aware Elecraft SWR capability handling.
 - Console receiver syntax and safe PTT commands.
+- Uniform runtime validation for legacy and receiver-targeted mutations.
+- Receiver-specific typed observations and component freshness tracking.
+- `TimeProvider`-based runtime timing and concurrent shutdown hardening.
+- Plugin manifests, trusted discovery, isolated loading, diagnostics, and tests.
 - New runtime, simulator, driver, and topology tests.
 - Documentation and contribution-rule updates.
 
@@ -103,8 +107,10 @@ after this document was written.
   adapter/project; do not place radio-specific features in it.
 - `samples/Rig2Cast.Console`: primary interactive hardware diagnostic surface.
 - `samples/Rig2Cast.Ftdx10Smoke`: earlier FTDX10 hardware smoke tool.
-- `src/Rig2Cast.PluginHost` and `src/Rig2Cast.Server`: scaffolding/future work;
-  verify their current completeness before relying on them.
+- `src/Rig2Cast.PluginHost`: manifest validation, trusted assembly discovery,
+  descriptor verification, duplicate isolation, and diagnostics. It is not yet
+  wired into an application composition root.
+- `src/Rig2Cast.Server`: scaffolding/future work.
 
 ### Tests
 
@@ -118,6 +124,48 @@ after this document was written.
 - `Ftdx10DriverTests.cs`: FTDX10 command and capability fixtures.
 - `YaesuAsciiProtocolTests.cs`: shared scripted transport and ASCII reliability
   tests despite the historical filename.
+- `PluginHostTests.cs`: manifest, trust, metadata, compatibility, duplicate,
+  failure-isolation, and assembly-loading fixtures.
+
+## 4.1 Completion snapshot
+
+Implemented and covered by automated tests:
+
+- Shared ASCII CAT session reliability, including post-write cancellation and
+  late-response correlation safety.
+- Managed reconnect generations, stale queued-operation rejection, bounded event
+  delivery, lease-expiry retry/diagnostics, reconnect de-keying, and cleanup that
+  continues after failures.
+- Concurrent `ManagedRadio.DisposeAsync` callers share the same completion and
+  cleanup result. Observation streams that ignore cancellation cannot prevent the
+  driver/transport from being disposed first.
+- Runtime capability validation for receiver and legacy VFO frequency, active VFO,
+  mode, passband, choices, and split mutations. Target-specific mode context is used
+  when validating passband and choice values.
+- Extensible receiver IDs, explicit receive/transmit signal paths, receiver-specific
+  typed observations, component freshness, and rigctld ambiguity rejection.
+- One injected `TimeProvider` for runtime delays, timers, lease expiry, reconnect and
+  state timestamps, and event timestamps.
+- Built-in Yaesu FTDX10 and Elecraft K3-family factories and drivers.
+- Plugin-host library foundation: strict manifests, exact API compatibility,
+  SHA-256 trust, safe entry paths, descriptor matching, duplicate handling,
+  collectible load contexts, and per-manifest diagnostics.
+- Diagnostic Console support for built-in model selection, receiver/VFO-targeted
+  reads and writes, signal-path display, capability inspection, polling/watch,
+  bounded PTT, and continuously renewed PTT.
+
+Not implemented or not integrated yet:
+
+- The Console and rigctld host do not reference `Rig2Cast.PluginHost`; they register
+  built-in factories directly. There are no `--plugin-directory` or trust-store
+  options and no user-facing plugin diagnostics yet.
+- No persisted plugin trust-store/configuration format has been selected.
+- `Rig2Cast.Server`, REST, gRPC, WebSocket, desktop, and web hosts remain future work.
+- Icom CI-V and legacy Yaesu binary CAT protocol engines/drivers are not implemented.
+- A general declarative command engine is not implemented. Existing family/model
+  profiles are only partially declarative.
+- The latest renewable-PTT and receiver-targeted physical checks listed in section 7
+  still require explicit user confirmation.
 
 ## 5. Architectural invariants
 
@@ -207,6 +255,21 @@ Read `docs/architecture/receiver-vfo-model.md` before receiver work.
 - Do not terminate a user's running Console or rigctld process without explicit
   permission. A running process may lock output DLLs; build to a temporary output
   for validation or ask the user to exit it.
+
+### 5.7 Plugin loading and lifetime
+
+- Manifests are discovery metadata, not a trust mechanism. Production loading
+  requires exactly one matching plugin ID and SHA-256 trust record.
+- Development trust bypass must be explicit and must never become a production
+  default.
+- Reject unsafe paths, unknown manifest fields, incompatible API versions, duplicate
+  plugin/model IDs, and any mismatch between sidecar and factory metadata.
+- Isolate one plugin failure and report it without hiding or disabling valid plugins.
+- Keep the `LoadedRadioPlugin` owner alive while its factory or drivers are in use.
+  Collectible context unload is cooperative and mapped files may remain locked until
+  all plugin references are unreachable.
+- In-process plugins are trusted code with host permissions. Load contexts are not a
+  hostile-code security boundary.
 
 ## 6. Supported hardware and local test environment
 
@@ -361,13 +424,21 @@ For runtime features test, as applicable:
 - Session and shutdown cleanup.
 - State/readback latency and stale-observation behaviour.
 
+For plugin features test, as applicable:
+
+- Strict manifest parsing and path containment.
+- API and static descriptor compatibility.
+- Trust hash, missing trust, duplicate trust, and explicit development bypass.
+- Duplicate plugin/model IDs and deterministic discovery order.
+- Failure isolation, diagnostics, dependency resolution, lifetime, and disposal.
+
 Standard test command:
 
 ```powershell
 dotnet test .\tests\Rig2Cast.Runtime.Tests\Rig2Cast.Runtime.Tests.csproj --no-restore
 ```
 
-Expected after the high-priority reliability hardening milestone: 144 passed, 0 failed.
+Expected after plugin-host groundwork: 163 passed, 0 failed.
 
 Console build:
 
@@ -423,6 +494,14 @@ Do not kill the process automatically.
 - Receiver-targeted mode follows the same distinction; Elecraft sub uses `MD$`.
 - Runtime checks receiver capabilities and per-receiver limits before calling a
   receiver driver interface.
+- Legacy VFO frequency, active-VFO, mode, and split mutations are also validated
+  against writable capability support, advertised targets, ranges, and choices
+  inside the serialized connection-generation boundary before driver invocation.
+- Targeted choice and passband validation resolves the mode of the addressed
+  receiver or persistent VFO instead of borrowing the selected receiver's mode.
+- Managed runtime timers, delays, reconnect/state timestamps, event timestamps,
+  and renewable transmit expiry decisions use an injected `TimeProvider` (or
+  `TimeProvider.System` by default).
 
 ### JSON identity
 
@@ -447,59 +526,147 @@ Read `docs/rigctld-adapter.md` before adapter changes.
 
 ## 12. Next milestones in recommended order
 
-### Immediate checkpoint: physical validation
+### Milestone 1: checkpoint and preserve the current baseline
 
-Ask the user to validate the just-built features before deeper changes:
+Before another structural milestone:
 
-1. On each radio, run bare `ptt on`, wait at least 15-20 seconds (past an original
-   10-second lease), confirm `ptt status` remains on, then `ptt off` and confirm RX.
-2. Test `set frequency main ...` and `set mode main ...` on K3S and FTDX10.
-3. On the user's K3S, confirm `set frequency sub ...` and `set mode sub ...` reject
-   cleanly without sending commands or disconnecting.
+1. Run all 163 tests, build the Console, and run `git diff --check`.
+2. Review the intentionally dirty worktree as one coherent change set. Do not
+   discard or rewrite earlier user work and do not commit without explicit approval.
+3. Ask the user for the outstanding physical confirmation:
+   - On each radio, run bare `ptt on`, wait 15-20 seconds, confirm it remains on,
+     then run `ptt off` and confirm RX.
+   - Test receiver-targeted main frequency/mode on FTDX10 and K3S.
+   - Confirm unsupported K3S sub frequency/mode rejects without disconnecting.
 
-### Finish receiver/signal-path stabilization
+Automated evidence is already sufficient to continue non-hardware work; physical
+validation is a release-confidence checkpoint, not permission to weaken safety.
 
-The receiver-targeted frequency/mode layer, synthetic three-receiver test,
-ReceiverId JSON round trip, and additive `ReceivePaths`/`TransmitPath` state are
-complete. FTDX10, Elecraft, simulator, observation reconciliation, state-change
-comparison, Console output, and JSON tests populate or preserve the new model.
-Legacy state fields remain intact for compatibility. Remaining work:
+### Milestone 2: integrate plugins into a composition host
 
-1. Add further legacy adapter success and ambiguity-failure tests as new non-A/B
-   topologies are introduced; receiver-only VFO-operation rejection is already
-   covered.
-2. Define driver observations for future radios that can independently change
-   several receive paths without a full state refresh.
-3. Only then consider marking `VfoId.Main`/`Sub` obsolete for a future major API.
+The plugin library foundation is complete; user-facing discovery is not. Implement
+integration additively without moving discovery into drivers or runtime:
 
-### Pluggable driver SDK
+1. Define a host-owned JSON configuration containing one or more plugin directories,
+   trust records (`pluginId` plus SHA-256), and an explicit development-mode flag.
+   Reject duplicate trust identities. Do not silently enable development mode.
+2. Add `Rig2Cast.PluginHost` to the chosen composition root, initially the diagnostic
+   Console. Discover before model selection, register each successful factory in the
+   existing `RadioDriverCatalog`, and keep `LoadedRadioPlugin` instances alive for as
+   long as any catalog registration or driver instance can reference them.
+3. Add CLI options such as `--plugin-directory <path>`, `--plugin-trust <path>`, and
+   an unmistakably unsafe development option. Preserve built-in factories and
+   existing command grammar.
+4. Print concise load diagnostics and include plugin models in `--list-models`.
+   A bad plugin must not prevent built-in radios or other valid plugins from loading.
+5. Add integration tests for mixed built-in/plugin catalogs, duplicate IDs across
+   those sources, missing directories, malformed trust stores, deterministic load
+   order, lifetime/disposal, and operation of a fixture plugin through the catalog.
+6. Only after the Console path is stable, reuse the same composition helper from the
+   rigctld host or future server rather than duplicating loading policy.
 
-The user wants independently developed drivers without making every driver a
-NuGet package. Stabilize public contracts first, then implement host-owned assembly
-discovery with:
+Trust is the security boundary. `AssemblyLoadContext` provides dependency/lifetime
+isolation, not process isolation or a sandbox. If untrusted third-party drivers must
+be supported later, use a separate process and IPC; do not imply that in-process
+loading is safe for hostile code. See `docs/plugin-host.md` and ADR 0004.
 
-- Driver API version validation.
-- Stable driver/model IDs.
-- Declared transports and defaults.
-- Capability validation before selection.
-- Clear load-isolation, duplicate-ID, diagnostics, and trust policy.
-- No references from driver assemblies to REST, gRPC, rigctld, or UI projects.
-- Automated tests for valid, incompatible, duplicate, malformed, and failing
-  plug-ins.
+### Milestone 3: stabilize the external driver SDK contract
 
-### Next protocol family
+Before inviting independent driver distribution:
 
-After stabilization and plugin groundwork, an Icom CI-V driver is the recommended
-architectural stress test because it adds binary framing, addressed devices, echo,
-transceive announcements, and different rejection semantics. The user does not
-own an Icom radio, so:
+1. Review the public abstractions and manifest schema for versioning guarantees.
+   Keep the initial compatibility rule exact until a documented minor-version policy
+   and compatibility tests exist.
+2. Provide a minimal external sample plugin and sidecar manifest that references only
+   permitted lower-level projects. Include hash-generation and local trust setup
+   instructions, but do not ship private manuals or copied vendor material.
+3. Add automated architectural dependency checks so driver assemblies cannot
+   reference adapters, hosts, UI, or server projects.
+4. Define plugin replacement/update behavior. Do not unload a context while its
+   factory, descriptor, driver, tasks, or event handlers remain reachable.
+5. Decide packaging and signing only after the contract is stable. SHA-256 trust pins
+   exact bytes; it does not establish publisher identity or provide automatic update
+   trust.
 
-- Use official Icom documentation.
-- Build a CI-V protocol engine and simulator/fixtures first.
-- Mark hardware support unvalidated.
-- Seek community hardware validation before claiming production readiness.
-- Do not let CI-V requirements contaminate generic radio contracts with
-  manufacturer-specific concepts; use namespaced extensions when appropriate.
+Instance `RadioCapabilities` remain authoritative after opening a radio. The manifest
+and factory descriptor provide static selection/connection metadata and must not
+pretend to know firmware- or option-dependent capabilities.
+
+### Milestone 4: declarative engine foundation
+
+A declarative layer is useful for regular model families and especially legacy Yaesu
+binary status blocks, but it must not become a universal protocol interpreter. Build
+it below drivers and beside protocol-specific framing engines:
+
+1. Inventory repeated declarations already present in FTDX10 and Elecraft profiles:
+   command identifiers, access, targets, mode applicability, value ranges, choice
+   mappings, encode/decode rules, firmware/option gates, and observation mappings.
+2. Define immutable, strongly typed C# descriptors first. Validate them at factory
+   construction with duplicate-command, invalid range/step, missing mapping,
+   impossible target, and ambiguous-response checks. Avoid external JSON/YAML until
+   descriptor semantics and versioning are proven.
+3. Keep framing, stream correlation, addressing, echo handling, rejection semantics,
+   pacing, and session-terminal rules inside the appropriate protocol engine. A
+   declaration may describe a payload; it must not erase protocol state machines.
+4. Provide explicit code escape hatches for conditional queries, composite operations,
+   unusual replies, installed-option discovery, firmware quirks, and safety-sensitive
+   behavior. PTT/leases stay in the managed runtime, never in data files.
+5. Pilot the descriptors on a small read-only slice with golden encoding/decoding and
+   malformed-input tests. Measure whether a new model can mostly supply data while
+   still allowing ordinary driver code.
+6. If external declarative files are later desired, add schema versions, strict
+   validation, bounded sizes, source provenance, and optionally a source generator.
+   Do not execute expressions or scripts from a declarative profile.
+
+Success means less repetitive model code and easier audited additions, not zero C#.
+CI-V should inform the abstraction but should not be forced through an ASCII-oriented
+declaration model.
+
+### Milestone 5: Icom CI-V protocol family
+
+CI-V is the recommended binary architectural stress test. Implement a separate engine
+beside `AsciiCatSession`; do not add binary switches to the ASCII engine:
+
+1. Choose one documented Icom model/CI-V address and record exact official source
+   revision and assumptions. The user does not own Icom hardware, so mark all results
+   simulated/unvalidated.
+2. Build a byte-oriented incremental frame decoder with preamble resynchronization,
+   controller/radio addressing, partial and concatenated frames, echo discrimination,
+   ACK/NAK/error handling, maximum-frame bounds, and cancellation/timeout semantics.
+3. Define query correlation for addressed binary replies and route transceive frames
+   as typed unsolicited observations. Prove late replies cannot satisfy later queries.
+4. Create deterministic scripted fixtures and a CI-V simulator before a model driver.
+   Cover noise, repeated preambles, wrong addresses, echo on/off, malformed frames,
+   timeout, cancellation after commit, disconnect, and clean shutdown.
+5. Implement the first driver as a narrow read-only slice: identify, frequency, mode,
+   state, and capabilities. Add setters only after readback and runtime validation are
+   proven. Add PTT last and retain the normal lease/safety path.
+6. Seek community hardware validation before claiming production support.
+
+### Milestone 6: legacy Yaesu binary CAT
+
+Implement this as another binary family engine, not as an FTDX10 ASCII extension:
+
+1. Select one officially documented model and capture fixed command lengths, pacing,
+   status-block layouts, BCD/endian rules, busy/rejection behavior, and model quirks.
+2. Keep generic fixed-frame I/O, pacing, timeout/cancellation, and resynchronization in
+   the protocol engine. Put command layouts, status offsets, scale factors, and model
+   capabilities in immutable profiles—the strongest initial declarative-engine use.
+3. Add golden byte-vector tests, truncated/shifted status-block tests, invalid BCD,
+   unsupported command, timing, cancellation, and disconnect cases.
+4. Start read-only, then introduce setters with verified readback. Add transmit only
+   after the same lease and forced-RX invariants are demonstrated.
+
+### Later roadmap
+
+- Reorganize tests into protocol-focused projects when CI-V or another binary family
+  makes the consolidated runtime test project unwieldy.
+- Add fuzz/property-style framing tests for binary decoders and declarative profiles.
+- Implement the standalone server and native REST/gRPC/WebSocket surfaces around the
+  existing runtime; keep adapters thin and capability-driven.
+- Consider deprecating legacy `VfoId.Main`/`Sub` aliases only in a planned major API.
+- Extend receiver-specific typed observations only when real protocol semantics need
+  additional independently fresh state components.
 
 ## 13. Relevant architecture and decision documents
 
@@ -510,13 +677,16 @@ Read these before related work:
 - `docs/architecture.md`
 - `docs/architecture/receiver-vfo-model.md`
 - `docs/concurrency-and-leases.md`
+- `docs/plugin-host.md`
+- `docs/decisions/0004-trusted-plugins.md`
 - `docs/decisions/0005-transmit-leases.md`
 - `docs/diagnostic-console.md`
 - `docs/rigctld-adapter.md`
 - `docs/protocol-sources/yaesu-ftdx10.md`
 - `docs/protocol-sources/elecraft-k3-family.md`
 - `docs/ftdx10-coverage.md`
-- `docs/code_review_01.md`, `docs/code_review_02.md`, and `docs/findings.md` for
+- `docs/code_review_01.md`, `docs/code_review_02.md`, `docs/code_review_03.md`, and
+  `docs/findings.md` for
   historical review context; do not blindly implement rejected findings.
 
 ## 14. Working rules for the next AI agent
@@ -548,6 +718,7 @@ dotnet test .\Rig2Cast\tests\Rig2Cast.Runtime.Tests\Rig2Cast.Runtime.Tests.cspro
 dotnet build .\Rig2Cast\samples\Rig2Cast.Console\Rig2Cast.Console.csproj --no-restore
 ```
 
-Then compare the result with the expected 144 tests and inspect changes made after
-this handover. Continue from the physical-validation checkpoint or the explicit
-signal-path milestone; do not restart the architecture from scratch.
+Then compare the result with the expected 163 tests and inspect changes made after
+this handover. Continue with the physical-validation checkpoint or plugin composition
+integration in section 12; receiver/signal-path stabilization and plugin-host library
+groundwork are already complete. Do not restart the architecture from scratch.

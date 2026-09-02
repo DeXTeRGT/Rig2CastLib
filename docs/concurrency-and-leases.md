@@ -13,4 +13,9 @@ caller rather than preventing later resources from being closed.
 
 An exclusive operation scope prevents commands from other clients being interleaved. It does not promise database-style rollback: radios generally cannot provide it. Multi-command failures report completed, failed, and unattempted operations, with optional compensating actions when a driver declares them safe.
 
+Concurrent managed-runtime disposal callers share one completion and observe the
+same cleanup result. Shutdown cancels active and queued scheduler work, continues
+through driver and transport cleanup after individual failures, and disposes the
+driver before awaiting an observation stream that may ignore cancellation.
+
 Queue priorities must include fairness. Safety operations outrank normal traffic and cannot wait behind an unbounded queue.

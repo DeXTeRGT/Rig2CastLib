@@ -127,6 +127,28 @@ public sealed class ManagedRadioTests
     }
 
     [Fact]
+    public async Task LegacyMutationsRejectCapabilityViolationsBeforeCallingDriver()
+    {
+        await using TestContext context = await TestContext.CreateAsync();
+        await using IRadioSession session = context.Radio.OpenSession(
+            new ClientIdentity("operator"), ClientRole.Operator);
+        int initialCommands = context.Driver.CommandLog.Count;
+
+        await Assert.ThrowsAsync<NotSupportedException>(
+            () => session.SetFrequencyAsync(VfoId.Memory, 14_200_000).AsTask());
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => session.SetFrequencyAsync(VfoId.A, 1).AsTask());
+        await Assert.ThrowsAsync<NotSupportedException>(
+            () => session.SetActiveVfoAsync(VfoId.Memory).AsTask());
+        await Assert.ThrowsAsync<NotSupportedException>(
+            () => session.SetModeAsync(RadioMode.Psk).AsTask());
+        await Assert.ThrowsAsync<NotSupportedException>(
+            () => session.SetSplitAsync(true, VfoId.Memory).AsTask());
+
+        Assert.Equal(initialCommands, context.Driver.CommandLog.Count);
+    }
+
+    [Fact]
     public async Task SimulatorAdvertisesEveryTypedControlCategory()
     {
         await using TestContext context = await TestContext.CreateAsync();
@@ -265,6 +287,28 @@ public sealed class ManagedRadioTests
 
         Assert.Empty((await transmitter.GetSnapshotAsync()).Leases.Active);
         Assert.Contains("SetPtt:False", context.Driver.CommandLog);
+    }
+
+    [Fact]
+    public async Task RenewingTransmitControllerUsesConfiguredTimeProviderForExpiryDecision()
+    {
+        var clock = new ManualTimeProvider(DateTimeOffset.UtcNow);
+        await using TestContext context = await TestContext.CreateAsync(timeProvider: clock);
+        await using IRadioSession transmitter = context.Radio.OpenSession(
+            new ClientIdentity("tx"), ClientRole.Operator);
+        await using var controller = new RenewingTransmitController(
+            transmitter,
+            leaseDuration: TimeSpan.FromSeconds(10),
+            renewalInterval: TimeSpan.FromSeconds(5),
+            timeProvider: clock);
+
+        Assert.True((await controller.StartForAsync(TimeSpan.FromSeconds(5))).IsTransmitting);
+        clock.Advance(TimeSpan.FromSeconds(6));
+
+        RadioState stopped = await controller.StopAsync();
+
+        Assert.False(stopped.IsTransmitting);
+        Assert.Empty((await transmitter.GetSnapshotAsync()).Leases.Active);
     }
 
     [Fact]
@@ -562,6 +606,61 @@ public sealed class ManagedRadioTests
             exception.Message.Contains("de-key", StringComparison.Ordinal));
         Assert.Contains(failure.InnerExceptions, exception =>
             exception.Message.Contains("transport close", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ConcurrentManagedRadioDisposalWaitsForSingleCleanupCompletion()
+    {
+        var driver = new SimulatedFtdx10Driver(new SimulatedRadioOptions
+        {
+            CommandDelay = TimeSpan.FromSeconds(5)
+        });
+        ManagedRadio radio = await ManagedRadio.CreateAsync("concurrent-disposal", driver);
+        IRadioSession session = radio.OpenSession(new ClientIdentity("reader"), ClientRole.Operator);
+        Task<RadioMeterReading> operation = session.ReadMeterAsync(RadioMeterId.SignalStrength).AsTask();
+        await WaitUntilAsync(
+            () => Task.FromResult(driver.CommandLog.Contains("ReadMeter:SignalStrength")),
+            TimeSpan.FromSeconds(1));
+        Task queued = session.SetFrequencyAsync(VfoId.A, 14_300_000).AsTask();
+
+        Task[] disposals = Enumerable.Range(0, 8)
+            .Select(_ => radio.DisposeAsync().AsTask())
+            .ToArray();
+        await Task.WhenAll(disposals).WaitAsync(TimeSpan.FromSeconds(2));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued);
+        Assert.DoesNotContain("SetFrequency:A:14300000", driver.CommandLog);
+        Assert.True(driver.IsDisposed);
+        await session.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task ManagedRadioDisposalReleasesCancellationInsensitiveObservationRead()
+    {
+        var driver = new CancellationInsensitiveObservationDriver();
+        ManagedRadio radio = await ManagedRadio.CreateAsync("insensitive-observation", driver);
+
+        await radio.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.True(driver.IsDisposed);
+    }
+
+    [Fact]
+    public async Task RuntimeEventsUseConfiguredTimeProvider()
+    {
+        DateTimeOffset expected = new(2035, 4, 5, 6, 7, 8, TimeSpan.Zero);
+        var clock = new ManualTimeProvider(expected);
+        await using TestContext context = await TestContext.CreateAsync(timeProvider: clock);
+        await using IRadioSession session = context.Radio.OpenSession(
+            new ClientIdentity("operator"), ClientRole.Operator);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        Task<RadioEvent> nextEvent = ReadFirstEventAsync(session, timeout.Token);
+
+        await session.SetModeAsync(RadioMode.Cw);
+        RadioEvent radioEvent = await nextEvent;
+
+        Assert.Equal(expected, radioEvent.OccurredAt);
     }
 
     [Fact]
@@ -871,5 +970,50 @@ public sealed class ManagedRadioTests
         public override DateTimeOffset GetUtcNow() => _utcNow;
 
         public void Advance(TimeSpan duration) => _utcNow += duration;
+    }
+
+    private sealed class CancellationInsensitiveObservationDriver : IRadioDriver, IRadioObservationSource
+    {
+        private readonly SimulatedFtdx10Driver _inner = new();
+        private readonly TaskCompletionSource _disposed =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public bool IsDisposed { get; private set; }
+
+        public RadioCapabilities Capabilities => _inner.Capabilities;
+
+        public ValueTask<RadioState> ReadStateAsync(CancellationToken cancellationToken = default) =>
+            _inner.ReadStateAsync(cancellationToken);
+
+        public ValueTask SetFrequencyAsync(
+            VfoId target, long frequencyHz, CancellationToken cancellationToken = default) =>
+            _inner.SetFrequencyAsync(target, frequencyHz, cancellationToken);
+
+        public ValueTask SetActiveVfoAsync(VfoId vfo, CancellationToken cancellationToken = default) =>
+            _inner.SetActiveVfoAsync(vfo, cancellationToken);
+
+        public ValueTask SetModeAsync(RadioMode mode, CancellationToken cancellationToken = default) =>
+            _inner.SetModeAsync(mode, cancellationToken);
+
+        public ValueTask SetSplitAsync(bool enabled, CancellationToken cancellationToken = default) =>
+            _inner.SetSplitAsync(enabled, cancellationToken);
+
+        public ValueTask SetPttAsync(bool enabled, CancellationToken cancellationToken = default) =>
+            _inner.SetPttAsync(enabled, cancellationToken);
+
+        public async IAsyncEnumerable<RadioDriverObservation> WatchObservationsAsync(
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            _ = cancellationToken;
+            await _disposed.Task.ConfigureAwait(false);
+            yield break;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            IsDisposed = true;
+            _disposed.TrySetResult();
+            await _inner.DisposeAsync();
+        }
     }
 }

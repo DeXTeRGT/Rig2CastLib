@@ -3,20 +3,21 @@ using Rig2Cast.Abstractions.Events;
 
 namespace Rig2Cast.Runtime.Events;
 
-internal sealed class RadioEventHub
+internal sealed class RadioEventHub(TimeProvider? timeProvider = null)
 {
     private const int DefaultSubscriberCapacity = 256;
     private readonly object _gate = new();
     private readonly HashSet<Subscriber> _subscribers = [];
     private long _sequence;
     private bool _completed;
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
 
     public RadioEvent Publish(RadioEventKind kind, object? payload = null)
     {
         RadioEvent radioEvent = new(
             Interlocked.Increment(ref _sequence),
             kind,
-            DateTimeOffset.UtcNow,
+            _timeProvider.GetUtcNow(),
             payload);
 
         lock (_gate)
@@ -50,7 +51,7 @@ internal sealed class RadioEventHub
                     yield return new RadioEvent(
                         gap.FirstDroppedSequence,
                         RadioEventKind.Diagnostic,
-                        DateTimeOffset.UtcNow,
+                        _timeProvider.GetUtcNow(),
                         gap);
                 }
 

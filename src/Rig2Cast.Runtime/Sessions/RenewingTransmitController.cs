@@ -9,6 +9,7 @@ public sealed class RenewingTransmitController : IAsyncDisposable
     private readonly IRadioSession _session;
     private readonly TimeSpan _leaseDuration;
     private readonly TimeSpan _renewalInterval;
+    private readonly TimeProvider _timeProvider;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private LeaseToken? _lease;
     private CancellationTokenSource? _renewalStopping;
@@ -19,12 +20,14 @@ public sealed class RenewingTransmitController : IAsyncDisposable
     public RenewingTransmitController(
         IRadioSession session,
         TimeSpan? leaseDuration = null,
-        TimeSpan? renewalInterval = null)
+        TimeSpan? renewalInterval = null,
+        TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(session);
         _session = session;
         _leaseDuration = leaseDuration ?? TimeSpan.FromSeconds(10);
         _renewalInterval = renewalInterval ?? TimeSpan.FromSeconds(5);
+        _timeProvider = timeProvider ?? TimeProvider.System;
         if (_leaseDuration <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(leaseDuration));
         if (_renewalInterval <= TimeSpan.Zero || _renewalInterval >= _leaseDuration)
@@ -58,7 +61,7 @@ public sealed class RenewingTransmitController : IAsyncDisposable
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            LeaseToken lease = _lease is not null && _lease.ExpiresAt > DateTimeOffset.UtcNow
+            LeaseToken lease = _lease is not null && _lease.ExpiresAt > _timeProvider.GetUtcNow()
                 ? _lease
                 : await _session.AcquireLeaseAsync(
                     LeaseKinds.Transmit, TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
@@ -81,7 +84,7 @@ public sealed class RenewingTransmitController : IAsyncDisposable
         await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
-            if (_lease is not null && _lease.ExpiresAt > DateTimeOffset.UtcNow)
+            if (_lease is not null && _lease.ExpiresAt > _timeProvider.GetUtcNow())
             {
                 try
                 {
@@ -112,7 +115,7 @@ public sealed class RenewingTransmitController : IAsyncDisposable
         await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            LeaseToken lease = _lease is not null && _lease.ExpiresAt > DateTimeOffset.UtcNow
+            LeaseToken lease = _lease is not null && _lease.ExpiresAt > _timeProvider.GetUtcNow()
                 ? await _session.RenewLeaseAsync(_lease, duration, cancellationToken).ConfigureAwait(false)
                 : await _session.AcquireLeaseAsync(LeaseKinds.Transmit, duration, cancellationToken).ConfigureAwait(false);
             try
@@ -144,7 +147,7 @@ public sealed class RenewingTransmitController : IAsyncDisposable
     {
         try
         {
-            using var timer = new PeriodicTimer(_renewalInterval);
+            using var timer = new PeriodicTimer(_renewalInterval, _timeProvider);
             while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
             {
                 await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
