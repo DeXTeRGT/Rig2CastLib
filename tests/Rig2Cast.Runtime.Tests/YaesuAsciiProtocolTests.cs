@@ -128,6 +128,38 @@ public sealed class YaesuAsciiProtocolTests
     }
 
     [Fact]
+    public async Task SessionFailureDuringQueryWriteReportsConnectionFailure()
+    {
+        var transport = new ReadFailureDuringWriteRadioTransport();
+        await transport.ConnectAsync();
+        await using var protocol = new YaesuAsciiProtocol(transport);
+        using var callerCancellation = new CancellationTokenSource();
+
+        RadioConnectionException failure = await Assert.ThrowsAsync<RadioConnectionException>(
+            () => protocol.QueryAsync("FA", "FA", callerCancellation.Token).AsTask());
+
+        Assert.False(callerCancellation.IsCancellationRequested);
+        Assert.IsType<RadioConnectionException>(failure.InnerException);
+        Assert.IsType<IOException>(failure.InnerException!.InnerException);
+    }
+
+    [Fact]
+    public async Task SessionFailureDuringSendWriteReportsConnectionFailure()
+    {
+        var transport = new ReadFailureDuringWriteRadioTransport();
+        await transport.ConnectAsync();
+        await using var protocol = new YaesuAsciiProtocol(transport);
+        using var callerCancellation = new CancellationTokenSource();
+
+        RadioConnectionException failure = await Assert.ThrowsAsync<RadioConnectionException>(
+            () => protocol.SendAsync("FA014250000", callerCancellation.Token).AsTask());
+
+        Assert.False(callerCancellation.IsCancellationRequested);
+        Assert.IsType<RadioConnectionException>(failure.InnerException);
+        Assert.IsType<IOException>(failure.InnerException!.InnerException);
+    }
+
+    [Fact]
     public async Task CancellingCommittedQueryFaultsSessionBeforeLateIdenticalResponse()
     {
         var transport = new BlockingWriteRadioTransport();
@@ -184,6 +216,37 @@ public sealed class YaesuAsciiProtocolTests
         await Task.Delay(20);
         await transport.EmitAsync("FA014250000;");
         Assert.Equal("FA014250000;", await query.WaitAsync(TimeSpan.FromSeconds(1)));
+    }
+
+    [Fact]
+    public async Task SamePrefixUnsolicitedAnnouncementAfterArmingCanSatisfyAQueryInstead()
+    {
+        // Known, accepted limitation documented in docs/architecture.md: once a query is armed
+        // (its command frame fully written), a coincidental unsolicited announcement that shares
+        // its expected prefix and satisfies its validator cannot be distinguished from the
+        // genuine reply, because Yaesu/Elecraft ASCII CAT carries no per-transaction identifier.
+        // This test pins that current behavior rather than asserting a fix. It is distinct from
+        // SamePrefixFrameDuringWriteCannotCompleteQuery above, which covers the (already handled)
+        // case of a same-prefix frame arriving before the query is armed.
+        var transport = new BlockingWriteRadioTransport();
+        await transport.ConnectAsync();
+        await using var protocol = new YaesuAsciiProtocol(transport);
+
+        Task<string> query = protocol.QueryAsync("FA", "FA").AsTask();
+        await transport.WriteStarted.WaitAsync(TimeSpan.FromSeconds(1));
+        transport.CompleteWrite();
+        await Task.Delay(20);
+
+        await transport.EmitAsync("FA007100000;");
+
+        Assert.Equal("FA007100000;", await query.WaitAsync(TimeSpan.FromSeconds(1)));
+
+        using var watchTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        await using IAsyncEnumerator<string> frames = protocol
+            .WatchUnsolicitedFramesAsync(watchTimeout.Token).GetAsyncEnumerator();
+        await transport.EmitAsync("FA014250000;");
+        Assert.True(await frames.MoveNextAsync());
+        Assert.Equal("FA014250000;", frames.Current);
     }
 
     [Fact]
@@ -350,6 +413,50 @@ internal sealed class BlockingWriteRadioTransport : IRadioTransport
     {
         IsConnected = false;
         _responses.Writer.TryComplete();
+        return ValueTask.CompletedTask;
+    }
+}
+
+internal sealed class ReadFailureDuringWriteRadioTransport : IRadioTransport
+{
+    private readonly TaskCompletionSource _writeStarted =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public string Id => "read-failure-during-write";
+    public bool IsConnected { get; private set; }
+
+    public ValueTask ConnectAsync(CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        IsConnected = true;
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask DisconnectAsync(CancellationToken cancellationToken = default)
+    {
+        IsConnected = false;
+        return ValueTask.CompletedTask;
+    }
+
+    public async ValueTask WriteAsync(
+        ReadOnlyMemory<byte> data,
+        CancellationToken cancellationToken = default)
+    {
+        _writeStarted.TrySetResult();
+        await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+    }
+
+    public async ValueTask<int> ReadAsync(
+        Memory<byte> buffer,
+        CancellationToken cancellationToken = default)
+    {
+        await _writeStarted.Task.WaitAsync(cancellationToken);
+        throw new IOException("Controlled read failure during an in-flight write.");
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        IsConnected = false;
         return ValueTask.CompletedTask;
     }
 }

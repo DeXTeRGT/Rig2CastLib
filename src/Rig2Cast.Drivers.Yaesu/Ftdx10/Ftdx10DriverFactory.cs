@@ -5,6 +5,19 @@ namespace Rig2Cast.Drivers.Yaesu.Ftdx10;
 
 public sealed class Ftdx10DriverFactory : IRadioDriverFactory
 {
+    private readonly TimeProvider _timeProvider;
+
+    public Ftdx10DriverFactory()
+        : this(TimeProvider.System)
+    {
+    }
+
+    public Ftdx10DriverFactory(TimeProvider timeProvider)
+    {
+        ArgumentNullException.ThrowIfNull(timeProvider);
+        _timeProvider = timeProvider;
+    }
+
     public RadioDriverDescriptor Descriptor { get; } = new(
         "rig2cast.drivers.yaesu.ftdx10",
         new Version(0, 1, 0),
@@ -42,6 +55,7 @@ public sealed class Ftdx10DriverFactory : IRadioDriverFactory
         return await Ftdx10Driver.OpenAsync(
             transport,
             enableAutomaticInformation: enableAutomaticInformation,
+            timeProvider: _timeProvider,
             cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 }

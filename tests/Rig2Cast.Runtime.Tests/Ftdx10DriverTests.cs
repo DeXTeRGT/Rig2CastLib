@@ -47,7 +47,8 @@ public sealed class Ftdx10DriverTests
         transport.Add("ID;", "ID0761;");
         await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
-        await using IAsyncEnumerator<RadioDriverObservation> observations = driver
+        IRadioObservationSource observationSource = Assert.IsAssignableFrom<IRadioObservationSource>(driver);
+        await using IAsyncEnumerator<RadioDriverObservation> observations = observationSource
             .WatchObservationsAsync(timeout.Token)
             .GetAsyncEnumerator();
 
@@ -57,6 +58,30 @@ public sealed class Ftdx10DriverTests
         FrequencyChangedObservation observation = Assert.IsType<FrequencyChangedObservation>(observations.Current);
         Assert.Equal(VfoId.A, observation.Vfo);
         Assert.Equal(14_300_000, observation.FrequencyHz);
+    }
+
+    [Fact]
+    public async Task FactoryTimeProviderControlsObservationTimestamp()
+    {
+        var expected = new DateTimeOffset(2042, 3, 4, 5, 6, 7, TimeSpan.Zero);
+        var clock = new FixedTimeProvider(expected);
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        var factory = new Ftdx10DriverFactory(clock);
+        await using IRadioDriver driver = await factory.OpenAsync(
+            new RadioConnectionOptions("radio-1", Ftdx10CatProfile.ModelId,
+                new Dictionary<string, string>()),
+            transport);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        IRadioObservationSource observationSource = Assert.IsAssignableFrom<IRadioObservationSource>(driver);
+        await using IAsyncEnumerator<RadioDriverObservation> observations = observationSource
+            .WatchObservationsAsync(timeout.Token)
+            .GetAsyncEnumerator();
+
+        await transport.EmitAsync("FA014300000;", timeout.Token);
+
+        Assert.True(await observations.MoveNextAsync());
+        Assert.Equal(expected, observations.Current.ObservedAt);
     }
 
     [Fact]

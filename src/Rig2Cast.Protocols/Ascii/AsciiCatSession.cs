@@ -222,6 +222,12 @@ public sealed class AsciiCatSession : IAsyncDisposable
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            if (Volatile.Read(ref _terminalFailure) is Exception terminalFailure)
+            {
+                throw new RadioConnectionException(
+                    $"The {_options.ProtocolName} CAT transport write was interrupted because the session failed.",
+                    terminalFailure);
+            }
             throw;
         }
         catch (Exception exception)

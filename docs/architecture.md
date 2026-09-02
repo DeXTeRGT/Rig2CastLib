@@ -30,6 +30,37 @@ ambiguous; the ASCII session becomes terminal and must be replaced. This uses th
 same conservative recovery policy as a response timeout and prevents a late reply
 from satisfying a later same-prefix query.
 
+If an independent terminal read failure cancels an in-flight write through the
+session shutdown token, the initiating send/query observes a connection failure,
+not a caller-cancellation exception. Ordinary caller cancellation before commitment
+and normal disposal retain their distinct semantics.
+
+**Known limitation — in-window same-prefix collision.** The protections above
+cover a query that is *abandoned* (timeout or caller cancellation after commit).
+They do not cover a query that is still legitimately in flight. `AsciiCatSession`
+matches an armed query by its expected prefix and a caller-supplied validator
+only; there is no per-transaction identifier, because Yaesu and Elecraft ASCII CAT
+carry none. If a radio in automatic-information mode spontaneously announces the
+same parameter the driver has just queried — for example, the operator moves VFO A
+on the front panel at the same instant the driver sends `FA;` to read it — and
+that announcement satisfies the query's prefix and validator, it can complete the
+query in place of the genuine reply.
+
+This is a narrow race in practice: it requires two independent events (an
+explicit query and an unrelated front-panel-driven announcement of the identical
+command) to land within the same response window, which is ordinarily tens of
+milliseconds on both supported radios, well under the default two-second timeout.
+It does not apply to any read issued while automatic information is disabled, and
+the collision requires the unsolicited frame to satisfy the same validator as the
+query, not merely its prefix, which narrows it further. It has not been observed
+on either supported radio during interactive validation. It remains open as a
+residual, accepted limitation of prefix-based ASCII correlation rather than a
+defect to be silently relied upon — see
+`tests/Rig2Cast.Runtime.Tests/YaesuAsciiProtocolTests.cs:SamePrefixUnsolicitedAnnouncementAfterArmingCanSatisfyAQueryInstead`,
+which is distinct from the adjacent, already-mitigated case covered by
+`SamePrefixFrameDuringWriteCannotCompleteQuery` (a same-prefix frame arriving
+*before* the query is armed).
+
 The engine is configured by a protocol-family policy. Yaesu and Elecraft retain thin
 family-specific facades that define command framing, valid response prefixes,
 protocol exceptions, and command-rejection behavior. Radio-model parsing remains in

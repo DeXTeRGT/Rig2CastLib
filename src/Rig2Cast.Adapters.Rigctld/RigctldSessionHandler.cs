@@ -40,6 +40,7 @@ public sealed class RigctldSessionHandler(IRadioSession session, bool writesEnab
         { return Error(request.Command, RigctldError.InvalidParameter); }
         catch (NotSupportedException) { return Error(request.Command, RigctldError.NotAvailable); }
         catch (IOException) { return Error(request.Command, RigctldError.Io); }
+        catch (TimeoutException) { return Error(request.Command, RigctldError.Timeout); }
     }
 
     private async ValueTask<RigctldResult> GetFrequencyAsync(CancellationToken token)

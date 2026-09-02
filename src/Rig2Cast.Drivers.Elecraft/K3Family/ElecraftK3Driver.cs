@@ -26,6 +26,7 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
     private readonly string _optionResponse;
     private readonly Version _firmwareVersion;
     private readonly int _automaticInformationMode;
+    private readonly TimeProvider _timeProvider;
     private int _disposed;
 
     private ElecraftK3Driver(
@@ -35,7 +36,8 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
         string optionResponse,
         string firmwareResponse,
         Version firmwareVersion,
-        int automaticInformationMode)
+        int automaticInformationMode,
+        TimeProvider timeProvider)
     {
         _transport = transport;
         _protocol = protocol;
@@ -43,6 +45,7 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
         _optionResponse = optionResponse;
         _firmwareVersion = firmwareVersion;
         _automaticInformationMode = automaticInformationMode;
+        _timeProvider = timeProvider;
         Capabilities = CreateCapabilities(profile, optionResponse, firmwareResponse, firmwareVersion);
     }
 
@@ -54,6 +57,7 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
         bool enableAutomaticInformation = false,
         int automaticInformationMode = 1,
         TimeSpan? responseTimeout = null,
+        TimeProvider? timeProvider = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(transport);
@@ -83,7 +87,7 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
             }
             return new ElecraftK3Driver(
                 transport, protocol, profile, options, firmwareResponse, firmwareVersion,
-                selectedAutoInformationMode);
+                selectedAutoInformationMode, timeProvider ?? TimeProvider.System);
         }
         catch
         {
@@ -103,7 +107,7 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
             await _protocol.QueryAsync("IF", "IF", cancellationToken).ConfigureAwait(false));
         VfoId transmitVfo = ParseVfo(await _protocol.QueryAsync("FT", "FT", cancellationToken).ConfigureAwait(false));
         bool transmitting = ParseTransmit(await _protocol.QueryAsync("TQ", "TQ", cancellationToken).ConfigureAwait(false));
-        DateTimeOffset observedAt = DateTimeOffset.UtcNow;
+        DateTimeOffset observedAt = _timeProvider.GetUtcNow();
         var receivers = new Dictionary<ReceiverId, RadioReceiverState>
         {
             [ReceiverId.Main] = new(
@@ -226,7 +230,7 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
         {
             int dropped = _protocol.ConsumeDroppedUnsolicitedFrameCount();
             if (dropped > 0)
-                yield return new DeliveryGapObservation(DateTimeOffset.UtcNow, dropped);
+                yield return new DeliveryGapObservation(_timeProvider.GetUtcNow(), dropped);
             yield return ParseObservation(frame);
         }
     }
@@ -249,7 +253,7 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
         int value = control == RadioControlId.ClarifierOffsetHz
             ? ParseSignedControl(response, command, 4, 9_999)
             : ParseUnsignedControl(response, command, 3, GetControlMaximum(control));
-        return new RadioControlValue(control, value, DateTimeOffset.UtcNow);
+        return new RadioControlValue(control, value, _timeProvider.GetUtcNow());
     }
 
     public ValueTask WriteControlAsync(
@@ -301,7 +305,7 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
         return new RadioControlValue(
             control,
             ParseUnsignedControl(response, command, 3, GetControlMaximum(control)),
-            DateTimeOffset.UtcNow,
+            _timeProvider.GetUtcNow(),
             target);
     }
 
@@ -353,7 +357,7 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
             var value when value == $"{command}1;" => true,
             _ => throw new ElecraftProtocolException($"Invalid {control} response '{response}'.")
         };
-        return new RadioSwitchValue(control, enabled, DateTimeOffset.UtcNow);
+        return new RadioSwitchValue(control, enabled, _timeProvider.GetUtcNow());
     }
 
     public ValueTask WriteSwitchAsync(
@@ -417,7 +421,7 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
             },
             _ => throw new UnreachableException()
         };
-        return new RadioChoiceValue(control, value, DateTimeOffset.UtcNow);
+        return new RadioChoiceValue(control, value, _timeProvider.GetUtcNow());
     }
 
     public ValueTask WriteChoiceAsync(
@@ -473,7 +477,7 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
             },
             _ => throw new UnreachableException()
         };
-        return new RadioChoiceValue(control, value, DateTimeOffset.UtcNow, target);
+        return new RadioChoiceValue(control, value, _timeProvider.GetUtcNow(), target);
     }
 
     public ValueTask WriteChoiceAsync(
@@ -517,7 +521,7 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
         EnsureActive();
         string response = await _protocol.QueryAsync("BW", "BW", cancellationToken).ConfigureAwait(false);
         int units = ParseUnsignedControl(response, "BW", 4, 9_999);
-        return new RadioPassbandValue(units * 10, DateTimeOffset.UtcNow);
+        return new RadioPassbandValue(units * 10, _timeProvider.GetUtcNow());
     }
 
     public ValueTask SetPassbandAsync(int widthHz, CancellationToken cancellationToken = default)
@@ -536,7 +540,7 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
         string response = await _protocol.QueryAsync(command, command, cancellationToken).ConfigureAwait(false);
         return new RadioPassbandValue(
             ParseUnsignedControl(response, command, 4, 9_999) * 10,
-            DateTimeOffset.UtcNow,
+            _timeProvider.GetUtcNow(),
             target);
     }
 
@@ -606,7 +610,7 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
             meter,
             raw,
             (raw - minimum) / (double)(maximum - minimum),
-            DateTimeOffset.UtcNow);
+            _timeProvider.GetUtcNow());
     }
 
     public async ValueTask<RadioMeterReading> ReadMeterAsync(
@@ -623,7 +627,7 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
         int raw = ParseUnsignedControl(
             await _protocol.QueryAsync("SM$", "SM$", cancellationToken).ConfigureAwait(false),
             "SM$", 4, 15);
-        return new RadioMeterReading(meter, raw, raw / 15d, DateTimeOffset.UtcNow, target);
+        return new RadioMeterReading(meter, raw, raw / 15d, _timeProvider.GetUtcNow(), target);
     }
 
     public async ValueTask<RadioMeterReading> ReadMeterAsync(
@@ -664,7 +668,7 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
 
     private RadioDriverObservation ParseObservation(string frame)
     {
-        DateTimeOffset observedAt = DateTimeOffset.UtcNow;
+        DateTimeOffset observedAt = _timeProvider.GetUtcNow();
         try
         {
             if (frame.StartsWith("FA", StringComparison.OrdinalIgnoreCase))
@@ -875,6 +879,10 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
             "rig2cast.drivers.elecraft.k3family",
             "0.1.0",
             new VfoCapability(new HashSet<VfoId> { VfoId.A, VfoId.B }, unsupported, readWrite),
+            // Transmit is deliberately false: no verified TX-legal band data exists yet for this
+            // range (see DESIGN-03 in docs/findings.md). PTT itself is unaffected — SetFrequencyAsync
+            // and the runtime only validate against Receive. Do not flip this to true without
+            // populating real transmit-legal sub-bands first.
             new FrequencyCapability(
                 readWrite,
                 new HashSet<VfoId> { VfoId.A, VfoId.B },

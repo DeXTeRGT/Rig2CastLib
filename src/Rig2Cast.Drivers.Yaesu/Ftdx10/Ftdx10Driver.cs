@@ -103,16 +103,19 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
     private readonly IRadioTransport _transport;
     private readonly YaesuAsciiProtocol _protocol;
     private readonly bool _automaticInformationEnabled;
+    private readonly TimeProvider _timeProvider;
     private int _disposed;
 
     private Ftdx10Driver(
         IRadioTransport transport,
         YaesuAsciiProtocol protocol,
-        bool automaticInformationEnabled)
+        bool automaticInformationEnabled,
+        TimeProvider timeProvider)
     {
         _transport = transport;
         _protocol = protocol;
         _automaticInformationEnabled = automaticInformationEnabled;
+        _timeProvider = timeProvider;
         Capabilities = CreateCapabilities();
     }
 
@@ -122,6 +125,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         IRadioTransport transport,
         TimeSpan? responseTimeout = null,
         bool enableAutomaticInformation = false,
+        TimeProvider? timeProvider = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(transport);
@@ -156,7 +160,8 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
                 }
             }
 
-            return new Ftdx10Driver(transport, protocol, enableAutomaticInformation);
+            return new Ftdx10Driver(
+                transport, protocol, enableAutomaticInformation, timeProvider ?? TimeProvider.System);
         }
         catch
         {
@@ -182,7 +187,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         RadioMode mode = ParseMode(await QueryParsedAsync(modeQuery, modeQuery, ParseMode, cancellationToken).ConfigureAwait(false));
         bool split = ParseBoolean(await QueryParsedAsync("ST", "ST", ParseBoolean, cancellationToken).ConfigureAwait(false));
         bool transmitting = ParseTransmit(await QueryParsedAsync("TX", "TX", ParseTransmit, cancellationToken).ConfigureAwait(false));
-        DateTimeOffset observedAt = DateTimeOffset.UtcNow;
+        DateTimeOffset observedAt = _timeProvider.GetUtcNow();
         VfoId splitTransmitVfo = OppositeVfo(activeVfo);
         VfoId activeTransmitVfo = split ? splitTransmitVfo : activeVfo;
 
@@ -295,7 +300,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         {
             int dropped = _protocol.ConsumeDroppedUnsolicitedFrameCount();
             if (dropped > 0)
-                yield return new DeliveryGapObservation(DateTimeOffset.UtcNow, dropped);
+                yield return new DeliveryGapObservation(_timeProvider.GetUtcNow(), dropped);
             yield return ParseObservation(frame);
         }
     }
@@ -319,7 +324,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             }
 
             int shift = shiftResponse[4] == '-' ? -magnitude : magnitude;
-            return new RadioControlValue(control, shift, DateTimeOffset.UtcNow);
+            return new RadioControlValue(control, shift, _timeProvider.GetUtcNow());
         }
 
         if (control == RadioControlId.ClarifierOffsetHz)
@@ -334,7 +339,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             }
 
             int offset = clarifierResponse[5] == '-' ? -magnitude : magnitude;
-            return new RadioControlValue(control, offset, DateTimeOffset.UtcNow);
+            return new RadioControlValue(control, offset, _timeProvider.GetUtcNow());
         }
 
         string response = await _protocol.QueryAsync(
@@ -350,7 +355,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             throw new YaesuProtocolException($"Invalid {control} response '{response}'.");
         }
 
-        return new RadioControlValue(control, value * command.Scale + command.ValueOffset, DateTimeOffset.UtcNow);
+        return new RadioControlValue(control, value * command.Scale + command.ValueOffset, _timeProvider.GetUtcNow());
     }
 
     public async ValueTask SetFrequencyAsync(
@@ -426,7 +431,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             throw new YaesuProtocolException($"Invalid {meter} meter response '{response}'.");
         }
 
-        return new RadioMeterReading(meter, raw, raw / 255d, DateTimeOffset.UtcNow);
+        return new RadioMeterReading(meter, raw, raw / 255d, _timeProvider.GetUtcNow());
     }
 
     public async ValueTask<RadioSwitchValue> ReadSwitchAsync(
@@ -452,7 +457,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             var value when correctlyPadded && value == command.EnabledCode => true,
             _ => throw new YaesuProtocolException($"Invalid {control} response '{response}'.")
         };
-        return new RadioSwitchValue(control, enabled, DateTimeOffset.UtcNow);
+        return new RadioSwitchValue(control, enabled, _timeProvider.GetUtcNow());
     }
 
     public ValueTask WriteSwitchAsync(
@@ -487,7 +492,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             }
 
             string value = DecodeFilterWidth(mode, widthCode);
-            return new RadioChoiceValue(control, value, DateTimeOffset.UtcNow);
+            return new RadioChoiceValue(control, value, _timeProvider.GetUtcNow());
         }
 
         ChoiceCommand command = GetChoiceCommand(control);
@@ -510,7 +515,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             throw new YaesuProtocolException($"Invalid {control} response '{response}'.");
         }
 
-        return new RadioChoiceValue(control, match.Key, DateTimeOffset.UtcNow);
+        return new RadioChoiceValue(control, match.Key, _timeProvider.GetUtcNow());
     }
 
     public ValueTask WriteChoiceAsync(
@@ -549,7 +554,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         int[] widths = GetFilterWidths(mode);
         if (code < 0 || code >= widths.Length)
             throw new YaesuProtocolException($"Filter width code '{code:D2}' is invalid in {mode} mode.");
-        return new RadioPassbandValue(widths[code], DateTimeOffset.UtcNow);
+        return new RadioPassbandValue(widths[code], _timeProvider.GetUtcNow());
     }
 
     public async ValueTask SetPassbandAsync(int widthHz, CancellationToken cancellationToken = default)
@@ -793,9 +798,9 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         _ => throw new YaesuProtocolException($"Invalid transmit response '{response}'.")
     };
 
-    private static RadioDriverObservation ParseObservation(string frame)
+    private RadioDriverObservation ParseObservation(string frame)
     {
-        DateTimeOffset observedAt = DateTimeOffset.UtcNow;
+        DateTimeOffset observedAt = _timeProvider.GetUtcNow();
         try
         {
             if (frame.StartsWith("FA", StringComparison.OrdinalIgnoreCase))
@@ -869,6 +874,10 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             "rig2cast.drivers.yaesu.ftdx10",
             "0.1.0",
             new VfoCapability(new HashSet<VfoId> { VfoId.A, VfoId.B, VfoId.Memory }, readWrite, readWrite),
+            // Transmit is deliberately false: no verified TX-legal band data exists yet for this
+            // range (see DESIGN-03 in docs/findings.md). PTT itself is unaffected — SetFrequencyAsync
+            // and the runtime only validate against Receive. Do not flip this to true without
+            // populating real transmit-legal sub-bands first.
             new FrequencyCapability(
                 readWrite,
                 new HashSet<VfoId> { VfoId.A, VfoId.B },
@@ -1075,7 +1084,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             _ => throw new YaesuProtocolException($"Invalid VOX delay code '{code:D2}'.")
         };
         return new RadioChoiceValue(RadioChoiceId.VoxDelay,
-            milliseconds == 0 ? "off" : $"{milliseconds}ms", DateTimeOffset.UtcNow);
+            milliseconds == 0 ? "off" : $"{milliseconds}ms", _timeProvider.GetUtcNow());
     }
 
     private ValueTask WriteVoxDelayAsync(string value, CancellationToken cancellationToken)
@@ -1101,7 +1110,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             throw new YaesuProtocolException($"Invalid fast-step response '{response}'.");
         (string normal, string fast) = GetTuningSteps(mode);
         return new RadioChoiceValue(RadioChoiceId.TuningStep,
-            response[2] == '1' ? fast : normal, DateTimeOffset.UtcNow);
+            response[2] == '1' ? fast : normal, _timeProvider.GetUtcNow());
     }
 
     private async ValueTask WriteTuningStepAsync(string value, CancellationToken cancellationToken)

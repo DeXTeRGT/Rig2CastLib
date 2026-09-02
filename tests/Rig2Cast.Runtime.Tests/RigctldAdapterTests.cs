@@ -180,6 +180,22 @@ public sealed class RigctldAdapterTests
         Assert.Equal(RigctldError.NotAvailable, split.ErrorCode);
     }
 
+    [Fact]
+    public async Task SchedulerTimeoutReturnsRigctldErrorInsteadOfDroppingTheClient()
+    {
+        var driver = new TimeoutAfterFirstReadDriver();
+        await using ManagedRadio radio = await ManagedRadio.CreateAsync("ftdx10", driver);
+        await using IRadioSession session = radio.OpenSession(new ClientIdentity("test"), ClientRole.Observer);
+        var handler = new RigctldSessionHandler(session);
+        // Let the 250 ms NetworkRead freshness window expire so the handler's read reaches the
+        // driver again instead of being served from the cache populated during ManagedRadio.CreateAsync.
+        await Task.Delay(300);
+
+        RigctldResult result = await handler.ExecuteAsync(RigctldProtocol.Parse("f"));
+
+        Assert.Equal(RigctldError.Timeout, result.ErrorCode);
+    }
+
     private static async Task<string> SendCommandAsync(int port, string command)
     {
         using var client = new TcpClient();
@@ -252,6 +268,68 @@ public sealed class RigctldAdapterTests
                 TransmitReceiver = null,
                 TransmitPath = null
             });
+        }
+
+        public ValueTask SetFrequencyAsync(VfoId target, long frequencyHz, CancellationToken cancellationToken = default) =>
+            ValueTask.FromException(new NotSupportedException());
+        public ValueTask SetActiveVfoAsync(VfoId vfo, CancellationToken cancellationToken = default) =>
+            ValueTask.FromException(new NotSupportedException());
+        public ValueTask SetModeAsync(RadioMode mode, CancellationToken cancellationToken = default) =>
+            ValueTask.FromException(new NotSupportedException());
+        public ValueTask SetSplitAsync(bool enabled, CancellationToken cancellationToken = default) =>
+            ValueTask.FromException(new NotSupportedException());
+        public ValueTask SetPttAsync(bool enabled, CancellationToken cancellationToken = default) =>
+            ValueTask.FromException(new NotSupportedException());
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    /// <summary>
+    /// Succeeds once (for <see cref="ManagedRadio.CreateAsync"/>'s initial read) and then throws
+    /// <see cref="TimeoutException"/> on every later read, standing in for a
+    /// <see cref="Rig2Cast.Runtime.Scheduling.RadioCommandScheduler"/> operation-deadline timeout
+    /// without waiting out the real 10-second default deadline.
+    /// </summary>
+    private sealed class TimeoutAfterFirstReadDriver : IRadioDriver
+    {
+        private static readonly FeatureDescriptor Unsupported =
+            new(CapabilitySupport.Unsupported, FeatureAccess.None);
+        private int _readCount;
+
+        public RadioCapabilities Capabilities { get; } = new(
+            1,
+            "Synthetic",
+            "Rigctld timeout",
+            "rig2cast.tests.rigctld-timeout",
+            "1.0.0",
+            new VfoCapability(new HashSet<VfoId> { VfoId.A }, Unsupported, Unsupported),
+            new FrequencyCapability(
+                Unsupported,
+                new HashSet<VfoId> { VfoId.A },
+                [new FrequencyRange(100_000, 500_000_000, true, false)]),
+            new ModeCapability(Unsupported, new HashSet<RadioMode> { RadioMode.Usb }),
+            Unsupported,
+            new Dictionary<RadioControlId, NumericControlDescriptor>(),
+            new Dictionary<RadioSwitchId, SwitchControlDescriptor>(),
+            new Dictionary<RadioChoiceId, ChoiceControlDescriptor>(),
+            new Dictionary<RadioMeterId, RadioMeterDescriptor>(),
+            new Dictionary<string, object?>());
+
+        public ValueTask<RadioState> ReadStateAsync(CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Increment(ref _readCount) > 1)
+            {
+                throw new TimeoutException("The radio operation exceeded its scheduler deadline.");
+            }
+
+            return ValueTask.FromResult(new RadioState(
+                1,
+                ConnectionStatus.Connected,
+                new Dictionary<VfoId, long> { [VfoId.A] = 14_200_000 },
+                VfoId.A,
+                RadioMode.Usb,
+                false,
+                false,
+                DateTimeOffset.UtcNow));
         }
 
         public ValueTask SetFrequencyAsync(VfoId target, long frequencyHz, CancellationToken cancellationToken = default) =>

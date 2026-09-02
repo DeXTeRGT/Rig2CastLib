@@ -5,6 +5,19 @@ namespace Rig2Cast.Drivers.Elecraft.K3Family;
 
 public sealed class ElecraftK3DriverFactory : IRadioDriverFactory
 {
+    private readonly TimeProvider _timeProvider;
+
+    public ElecraftK3DriverFactory()
+        : this(TimeProvider.System)
+    {
+    }
+
+    public ElecraftK3DriverFactory(TimeProvider timeProvider)
+    {
+        ArgumentNullException.ThrowIfNull(timeProvider);
+        _timeProvider = timeProvider;
+    }
+
     public RadioDriverDescriptor Descriptor { get; } = new(
         "rig2cast.drivers.elecraft.k3family",
         new Version(0, 1, 0),
@@ -24,6 +37,7 @@ public sealed class ElecraftK3DriverFactory : IRadioDriverFactory
             int.TryParse(configuredMode, out int parsedMode) ? parsedMode : 1;
         return await ElecraftK3Driver.OpenAsync(
             transport, profile, autoInformation, autoInformationMode,
+            timeProvider: _timeProvider,
             cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 

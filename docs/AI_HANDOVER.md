@@ -49,7 +49,7 @@ categories later, but do not generalize prematurely.
 - Target framework: .NET 8
 - Shell: PowerShell
 - Current baseline commit when this handover was written: `49eed20`
-- Current automated suite: **163 passing tests**.
+- Current automated suite: **170 passing tests**.
 
 Git may report dubious ownership because Codex and the interactive Windows user
 have different SIDs. Do not modify the user's global Git configuration. For
@@ -132,7 +132,9 @@ after this document was written.
 Implemented and covered by automated tests:
 
 - Shared ASCII CAT session reliability, including post-write cancellation and
-  late-response correlation safety.
+  late-response correlation safety. If a terminal read failure cancels an in-flight
+  write through the session token, callers receive `RadioConnectionException`
+  rather than a bare cancellation unrelated to their own token.
 - Managed reconnect generations, stale queued-operation rejection, bounded event
   delivery, lease-expiry retry/diagnostics, reconnect de-keying, and cleanup that
   continues after failures.
@@ -144,8 +146,10 @@ Implemented and covered by automated tests:
   when validating passband and choice values.
 - Extensible receiver IDs, explicit receive/transmit signal paths, receiver-specific
   typed observations, component freshness, and rigctld ambiguity rejection.
-- One injected `TimeProvider` for runtime delays, timers, lease expiry, reconnect and
-  state timestamps, and event timestamps.
+- One injectable `TimeProvider` for runtime delays, timers, lease expiry, reconnect
+  and event timestamps. The FTDX10 and Elecraft K3-family factories also accept a
+  clock and propagate it to every driver-produced timestamp while retaining
+  parameterless constructors and `TimeProvider.System` defaults.
 - Built-in Yaesu FTDX10 and Elecraft K3-family factories and drivers.
 - Plugin-host library foundation: strict manifests, exact API compatibility,
   SHA-256 trust, safe entry paths, descriptor matching, duplicate handling,
@@ -438,7 +442,7 @@ Standard test command:
 dotnet test .\tests\Rig2Cast.Runtime.Tests\Rig2Cast.Runtime.Tests.csproj --no-restore
 ```
 
-Expected after plugin-host groundwork: 163 passed, 0 failed.
+Expected after ASCII terminal-write cancellation classification: 170 passed, 0 failed.
 
 Console build:
 
@@ -530,7 +534,7 @@ Read `docs/rigctld-adapter.md` before adapter changes.
 
 Before another structural milestone:
 
-1. Run all 163 tests, build the Console, and run `git diff --check`.
+1. Run all 170 tests, build the Console, and run `git diff --check`.
 2. Review the intentionally dirty worktree as one coherent change set. Do not
    discard or rewrite earlier user work and do not commit without explicit approval.
 3. Ask the user for the outstanding physical confirmation:
@@ -718,7 +722,7 @@ dotnet test .\Rig2Cast\tests\Rig2Cast.Runtime.Tests\Rig2Cast.Runtime.Tests.cspro
 dotnet build .\Rig2Cast\samples\Rig2Cast.Console\Rig2Cast.Console.csproj --no-restore
 ```
 
-Then compare the result with the expected 163 tests and inspect changes made after
+Then compare the result with the expected 170 tests and inspect changes made after
 this handover. Continue with the physical-validation checkpoint or plugin composition
 integration in section 12; receiver/signal-path stabilization and plugin-host library
 groundwork are already complete. Do not restart the architecture from scratch.

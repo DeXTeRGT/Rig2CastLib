@@ -36,6 +36,11 @@ public sealed record ElecraftK3Profile(string ModelId, string Model, bool Suppor
         ['9'] = RadioMode.DataLsb
     };
 
+    // Modes must be a bijection: ToDictionary throws at class load if two wire codes ever
+    // mapped to the same RadioMode, instead of EncodeMode failing ambiguously mid-command.
+    private static readonly Dictionary<RadioMode, char> ReverseModes =
+        Modes.ToDictionary(pair => pair.Value, pair => pair.Key);
+
     public IReadOnlySet<RadioMode> SupportedModes => SupportsFm
         ? Modes.Values.ToHashSet()
         : Modes.Values.Where(mode => mode != RadioMode.Fm).ToHashSet();
@@ -44,7 +49,7 @@ public sealed record ElecraftK3Profile(string ModelId, string Model, bool Suppor
     {
         if (!SupportedModes.Contains(mode))
             throw new NotSupportedException($"Operating mode '{mode}' is not supported by the {Model} profile.");
-        return Modes.Single(pair => pair.Value == mode).Key;
+        return ReverseModes[mode];
     }
 
     public bool MatchesOptionResponse(string response)

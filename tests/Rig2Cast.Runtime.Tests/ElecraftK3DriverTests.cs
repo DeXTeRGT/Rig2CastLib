@@ -124,6 +124,30 @@ public sealed class ElecraftK3DriverTests
     }
 
     [Fact]
+    public async Task FactoryTimeProviderControlsObservationTimestamp()
+    {
+        var expected = new DateTimeOffset(2042, 3, 4, 5, 6, 7, TimeSpan.Zero);
+        var clock = new FixedTimeProvider(expected);
+        var transport = new ScriptedRadioTransport();
+        transport.Add("OM;", "OM-P-S----VR--;");
+        var factory = new ElecraftK3DriverFactory(clock);
+        await using IRadioDriver driver = await factory.OpenAsync(
+            new RadioConnectionOptions("radio-1", ElecraftK3Profile.K3SModelId,
+                new Dictionary<string, string>()),
+            transport);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        IRadioObservationSource observationSource = Assert.IsAssignableFrom<IRadioObservationSource>(driver);
+        await using IAsyncEnumerator<RadioDriverObservation> observations = observationSource
+            .WatchObservationsAsync(timeout.Token)
+            .GetAsyncEnumerator();
+
+        await transport.EmitAsync("FA00014300000;", timeout.Token);
+
+        Assert.True(await observations.MoveNextAsync());
+        Assert.Equal(expected, observations.Current.ObservedAt);
+    }
+
+    [Fact]
     public async Task Ai1InformationBecomesCompleteTypedObservation()
     {
         var transport = new ScriptedRadioTransport();
@@ -164,6 +188,17 @@ public sealed class ElecraftK3DriverTests
         Assert.DoesNotContain(ReceiverId.Sub, driver.Capabilities.Receivers.Available.Keys);
         Assert.Throws<NotSupportedException>(() =>
             ElecraftK3Profile.Models[ElecraftK3Profile.KX2ModelId].EncodeMode(RadioMode.Fm));
+    }
+
+    [Fact]
+    public void EncodeModeRoundTripsEveryDeclaredWireCode()
+    {
+        ElecraftK3Profile profile = ElecraftK3Profile.Models[ElecraftK3Profile.K3SModelId];
+
+        foreach ((char code, RadioMode mode) in ElecraftK3Profile.Modes)
+        {
+            Assert.Equal(code, profile.EncodeMode(mode));
+        }
     }
 
     [Fact]
