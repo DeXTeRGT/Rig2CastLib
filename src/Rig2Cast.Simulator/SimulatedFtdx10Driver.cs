@@ -80,6 +80,7 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
 
     public int MaximumConcurrentOperations => Volatile.Read(ref _maxConcurrentOperations);
     public int ReadStateCount => Volatile.Read(ref _readStateCount);
+    public bool IsDisposed => _disposed;
 
     public async IAsyncEnumerable<RadioDriverObservation> WatchObservationsAsync(
         [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -157,6 +158,8 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
             {
                 _reportedPtt = _ptt;
             }
+            VfoId splitTransmitVfo = _activeVfo == VfoId.A ? VfoId.B : VfoId.A;
+            VfoId activeTransmitVfo = _split ? splitTransmitVfo : _activeVfo;
             return new RadioState(
                 1,
                 ConnectionStatus.Connected,
@@ -167,7 +170,7 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
                 reportedPtt,
                 observedAt)
             {
-                TransmitVfo = _activeVfo == VfoId.A ? VfoId.B : VfoId.A,
+                TransmitVfo = splitTransmitVfo,
                 Vfos = _frequencies.ToDictionary(
                     pair => pair.Key,
                     pair => new RadioVfoState(
@@ -179,7 +182,9 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
                         _mode, null, observedAt)
                 },
                 SelectedReceiver = ReceiverId.Main,
-                TransmitReceiver = ReceiverId.Main
+                TransmitReceiver = ReceiverId.Main,
+                ReceivePaths = [new RadioSignalPath(ReceiverId.Main, _activeVfo)],
+                TransmitPath = new RadioSignalPath(ReceiverId.Main, activeTransmitVfo)
             };
         }
     }
@@ -465,6 +470,8 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
     {
         _disposed = true;
         _observations.Writer.TryComplete();
+        if (Options.DisposeException is Exception exception)
+            return ValueTask.FromException(exception);
         return ValueTask.CompletedTask;
     }
 
@@ -761,5 +768,7 @@ public sealed class SimulatedRadioOptions
     public int? DisconnectAfterCommandCount { get; init; }
 
     public int PttReadbackLagCount { get; init; }
+
+    public Exception? DisposeException { get; init; }
 
 }

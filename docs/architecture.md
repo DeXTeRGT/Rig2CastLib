@@ -24,6 +24,12 @@ engine owns serialized commands and queries, the continuous read loop, frame
 accumulation, response correlation, unsolicited-frame delivery, bounded overflow
 reporting, timeouts, terminal faults, cancellation, and disposal.
 
+Caller cancellation is harmless only before a query frame is committed. Once a
+complete query has been written, abandoning its response makes correlation
+ambiguous; the ASCII session becomes terminal and must be replaced. This uses the
+same conservative recovery policy as a response timeout and prevents a late reply
+from satisfying a later same-prefix query.
+
 The engine is configured by a protocol-family policy. Yaesu and Elecraft retain thin
 family-specific facades that define command framing, valid response prefixes,
 protocol exceptions, and command-rejection behavior. Radio-model parsing remains in

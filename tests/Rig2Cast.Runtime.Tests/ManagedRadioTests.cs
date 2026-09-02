@@ -120,6 +120,9 @@ public sealed class ManagedRadioTests
         await operatorSession.SetActiveVfoAsync(VfoId.B);
 
         Assert.Equal(VfoId.B, (await operatorSession.GetSnapshotAsync()).State.ActiveVfo);
+        Assert.Equal(
+            [new RadioSignalPath(ReceiverId.Main, VfoId.B)],
+            (await operatorSession.GetSnapshotAsync()).State.ReceivePaths);
         Assert.Contains("SetActiveVfo:B", context.Driver.CommandLog);
     }
 
@@ -262,6 +265,34 @@ public sealed class ManagedRadioTests
 
         Assert.Empty((await transmitter.GetSnapshotAsync()).Leases.Active);
         Assert.Contains("SetPtt:False", context.Driver.CommandLog);
+    }
+
+    [Fact]
+    public async Task LeaseMonitorRetriesFailedDekeyAndRemainsAvailableForLaterExpiry()
+    {
+        await using TestContext context = await TestContext.CreateAsync();
+        await using IRadioSession transmitter = context.Radio.OpenSession(
+            new ClientIdentity("tx"), ClientRole.Operator);
+
+        LeaseToken first = await transmitter.AcquireLeaseAsync(
+            LeaseKinds.Transmit, TimeSpan.FromMilliseconds(120));
+        await transmitter.SetPttAsync(true, first);
+        context.Driver.FailNextCommand(new InvalidOperationException("Simulated de-key failure."));
+
+        await WaitUntilAsync(
+            async () => !(await transmitter.GetSnapshotAsync()).State.IsTransmitting,
+            TimeSpan.FromSeconds(2));
+        Assert.True(context.Driver.CommandLog.Count(command => command == "SetPtt:False") >= 2);
+
+        LeaseToken second = await transmitter.AcquireLeaseAsync(
+            LeaseKinds.Transmit, TimeSpan.FromMilliseconds(120));
+        await transmitter.SetPttAsync(true, second);
+        await WaitUntilAsync(
+            async () => !(await transmitter.GetSnapshotAsync()).State.IsTransmitting,
+            TimeSpan.FromSeconds(2));
+
+        Assert.Empty((await transmitter.GetSnapshotAsync()).Leases.Active);
+        Assert.True(context.Driver.CommandLog.Count(command => command == "SetPtt:False") >= 3);
     }
 
     [Fact]
@@ -476,6 +507,61 @@ public sealed class ManagedRadioTests
         RadioState recovered = (await session.GetSnapshotAsync()).State;
         Assert.True(recovered.Revision > initialRevision);
         Assert.Equal(2, drivers.Count);
+    }
+
+    [Fact]
+    public async Task ReconnectForcesReceiveBeforePublishingUnleasedTransmittingReplacement()
+    {
+        var first = new SimulatedFtdx10Driver();
+        var replacement = new SimulatedFtdx10Driver();
+        await replacement.SetPttAsync(true);
+        int connections = 0;
+        ValueTask<IRadioDriver> ConnectAsync(CancellationToken cancellationToken) =>
+            ValueTask.FromResult<IRadioDriver>(
+                Interlocked.Increment(ref connections) == 1 ? first : replacement);
+
+        await using ManagedRadio radio = await ManagedRadio.CreateReconnectableAsync(
+            "safe-reconnect-radio",
+            ConnectAsync,
+            new RadioConnectionSupervisorOptions
+            {
+                InitialRetryDelay = TimeSpan.FromMilliseconds(10),
+                MaximumRetryDelay = TimeSpan.FromMilliseconds(20)
+            });
+        await using IRadioSession session = radio.OpenSession(new ClientIdentity("observer"));
+
+        first.SimulateConnectionFailure();
+        await WaitUntilAsync(async () =>
+            connections == 2 &&
+            (await session.GetSnapshotAsync()).State.Connection == ConnectionStatus.Connected,
+            TimeSpan.FromSeconds(2));
+
+        RadioState state = await session.RefreshStateAsync();
+        Assert.False(state.IsTransmitting);
+        Assert.Contains("SetPtt:False", replacement.CommandLog);
+    }
+
+    [Fact]
+    public async Task DisposalClosesDriverWhenDekeyAndDriverDisposalFail()
+    {
+        var driver = new SimulatedFtdx10Driver(new SimulatedRadioOptions
+        {
+            DisposeException = new IOException("Simulated transport close failure.")
+        });
+        ManagedRadio radio = await ManagedRadio.CreateAsync("disposal-radio", driver);
+        IRadioSession session = radio.OpenSession(new ClientIdentity("tx"), ClientRole.Operator);
+        LeaseToken lease = await session.AcquireLeaseAsync(LeaseKinds.Transmit, TimeSpan.FromSeconds(5));
+        await session.SetPttAsync(true, lease);
+        driver.FailNextCommand(new InvalidOperationException("Simulated shutdown de-key failure."));
+
+        AggregateException failure = await Assert.ThrowsAsync<AggregateException>(
+            () => radio.DisposeAsync().AsTask());
+
+        Assert.True(driver.IsDisposed);
+        Assert.Contains(failure.InnerExceptions, exception =>
+            exception.Message.Contains("de-key", StringComparison.Ordinal));
+        Assert.Contains(failure.InnerExceptions, exception =>
+            exception.Message.Contains("transport close", StringComparison.Ordinal));
     }
 
     [Fact]

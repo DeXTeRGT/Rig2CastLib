@@ -63,7 +63,7 @@ public sealed class ManagedRadio : IAsyncDisposable
         _driver = driver;
         _scheduler = scheduler;
         _leases = leases;
-        _state = initialState;
+        _state = SynchronizeSignalPaths(initialState);
         _timeProvider = timeProvider;
         MarkFullStateFresh(timeProvider.GetUtcNow());
         _connector = connector;
@@ -821,7 +821,8 @@ public sealed class ManagedRadio : IAsyncDisposable
     private async ValueTask<RadioState> RefreshStateCoreAsync(CancellationToken cancellationToken)
     {
         EnsureConnected();
-        RadioState reported = await _driver.ReadStateAsync(cancellationToken).ConfigureAwait(false);
+        RadioState reported = SynchronizeSignalPaths(
+            await _driver.ReadStateAsync(cancellationToken).ConfigureAwait(false));
         DateTimeOffset refreshedAt = _timeProvider.GetUtcNow();
         if (HasStateChanged(_state, reported))
         {
@@ -847,6 +848,8 @@ public sealed class ManagedRadio : IAsyncDisposable
         current.IsTransmitting != reported.IsTransmitting ||
         current.SelectedReceiver != reported.SelectedReceiver ||
         current.TransmitReceiver != reported.TransmitReceiver ||
+        !current.ReceivePaths.SequenceEqual(reported.ReceivePaths) ||
+        current.TransmitPath != reported.TransmitPath ||
         current.FrequenciesHz.Count != reported.FrequenciesHz.Count ||
         current.FrequenciesHz.Any(pair =>
             !reported.FrequenciesHz.TryGetValue(pair.Key, out long frequency) || frequency != pair.Value) ||
@@ -944,12 +947,51 @@ public sealed class ManagedRadio : IAsyncDisposable
                 _events.Publish(RadioEventKind.LeaseChanged, _leases.Snapshot);
                 if (expired.Any(lease => lease.Kind == LeaseKinds.Transmit) && _state.IsTransmitting)
                 {
-                    await ForcePttOffAsync(_stopping.Token).ConfigureAwait(false);
+                    await ForcePttOffAfterLeaseExpiryAsync(_stopping.Token).ConfigureAwait(false);
                 }
             }
         }
         catch (OperationCanceledException) when (_stopping.IsCancellationRequested)
         {
+        }
+    }
+
+    private async Task ForcePttOffAfterLeaseExpiryAsync(CancellationToken cancellationToken)
+    {
+        const int maximumAttempts = 3;
+        Exception? lastFailure = null;
+        for (int attempt = 1; attempt <= maximumAttempts; attempt++)
+        {
+            try
+            {
+                await ForcePttOffAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                return;
+            }
+            catch (Exception exception)
+            {
+                lastFailure = exception;
+                _events.Publish(
+                    RadioEventKind.Diagnostic,
+                    new TransmitSafetyFailure("lease-expiry-dekey", attempt, maximumAttempts, exception));
+                if (attempt < maximumAttempts)
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(50 * attempt), cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
+        }
+
+        if (lastFailure is not null)
+        {
+            _commandFailures.Writer.TryWrite(new RadioCommandFailure(
+                _driver,
+                new RadioConnectionException(
+                    "The radio connection is unsafe because lease-expiry de-keying failed.",
+                    lastFailure)));
         }
     }
 
@@ -1060,7 +1102,19 @@ public sealed class ManagedRadio : IAsyncDisposable
             try
             {
                 replacement = await _connector!(_stopping.Token).ConfigureAwait(false);
-                RadioState reported = await replacement.ReadStateAsync(_stopping.Token).ConfigureAwait(false);
+                RadioState reported = SynchronizeSignalPaths(
+                    await replacement.ReadStateAsync(_stopping.Token).ConfigureAwait(false));
+                if (reported.IsTransmitting && !HasActiveTransmitLease())
+                {
+                    await replacement.SetPttAsync(false, _stopping.Token).ConfigureAwait(false);
+                    reported = SynchronizeSignalPaths(
+                        await replacement.ReadStateAsync(_stopping.Token).ConfigureAwait(false));
+                    if (reported.IsTransmitting)
+                    {
+                        throw new RadioConnectionException(
+                            "A replacement radio remained in transmit without a valid transmit lease.");
+                    }
+                }
                 IRadioDriver? replaced = null;
                 await _scheduler.ExecuteAsync(
                     _ =>
@@ -1158,6 +1212,9 @@ public sealed class ManagedRadio : IAsyncDisposable
             RadioCommandPriority.Safety,
             _stopping.Token);
 
+    private bool HasActiveTransmitLease() =>
+        _leases.Snapshot.Active.Any(lease => lease.Kind == LeaseKinds.Transmit);
+
     private void ApplyObservation(RadioDriverObservation observation)
     {
         if (observation is DeliveryGapObservation)
@@ -1194,16 +1251,28 @@ public sealed class ManagedRadio : IAsyncDisposable
                 _state with
                 {
                     ActiveVfo = active.Vfo,
-                    TransmitVfo = active.TransmitVfo ?? _state.TransmitVfo
+                    TransmitVfo = active.TransmitVfo ?? _state.TransmitVfo,
+                    TransmitPath = CreateTransmitPath(
+                        _state,
+                        _state.IsSplit ? active.TransmitVfo : active.Vfo)
                 },
             ModeChangedObservation mode => _state with { Mode = mode.Mode },
             SplitChangedObservation split =>
                 _state with
                 {
                     IsSplit = split.IsSplit,
-                    TransmitVfo = split.TransmitVfo ?? _state.TransmitVfo
+                    TransmitVfo = split.TransmitVfo ?? _state.TransmitVfo,
+                    TransmitPath = CreateTransmitPath(
+                        _state,
+                        split.IsSplit ? split.TransmitVfo ?? _state.TransmitVfo : _state.ActiveVfo)
                 },
-            TransmitVfoChangedObservation transmitVfo => _state with { TransmitVfo = transmitVfo.TransmitVfo },
+            TransmitVfoChangedObservation transmitVfo => _state with
+            {
+                TransmitVfo = transmitVfo.TransmitVfo,
+                TransmitPath = _state.IsSplit
+                    ? CreateTransmitPath(_state, transmitVfo.TransmitVfo)
+                    : _state.TransmitPath
+            },
             TransmitChangedObservation transmit => _state with { IsTransmitting = transmit.IsTransmitting },
             StateInformationObservation information =>
                 _state with
@@ -1213,12 +1282,18 @@ public sealed class ManagedRadio : IAsyncDisposable
                     Mode = information.Mode,
                     ActiveVfo = information.ActiveVfo ?? _state.ActiveVfo,
                     TransmitVfo = information.TransmitVfo ?? _state.TransmitVfo,
+                    TransmitPath = CreateTransmitPath(
+                        _state,
+                        (information.IsSplit ?? _state.IsSplit)
+                            ? information.TransmitVfo ?? _state.TransmitVfo
+                            : information.ActiveVfo ?? _state.ActiveVfo),
                     IsSplit = information.IsSplit ?? _state.IsSplit,
                     IsTransmitting = information.IsTransmitting ?? _state.IsTransmitting
                 },
             _ => _state
         };
-        updated = SynchronizeMainReceiverState(updated, observation.ObservedAt);
+        updated = SynchronizeSignalPaths(
+            SynchronizeMainReceiverState(updated, observation.ObservedAt));
 
         if (observation is not UnknownFrameObservation && HasStateChanged(_state, updated))
         {
@@ -1257,6 +1332,44 @@ public sealed class ManagedRadio : IAsyncDisposable
                 observedAt)
         };
         return state with { Vfos = vfos, Receivers = receivers };
+    }
+
+    private static RadioState SynchronizeSignalPaths(RadioState state)
+    {
+        VfoId? receiveVfo = ToPersistentVfo(
+            state.Receivers.GetValueOrDefault(state.SelectedReceiver)?.SelectedVfo ?? state.ActiveVfo);
+        IReadOnlyList<RadioSignalPath> receivePaths;
+        if (state.ReceivePaths.Count == 0)
+        {
+            receivePaths = [new RadioSignalPath(state.SelectedReceiver, receiveVfo)];
+        }
+        else
+        {
+            receivePaths = state.ReceivePaths
+                .Select(path => path.Receiver == state.SelectedReceiver
+                    ? new RadioSignalPath(path.Receiver, receiveVfo)
+                    : path)
+                .ToArray();
+        }
+
+        RadioSignalPath? transmitPath = state.TransmitPath;
+        if (transmitPath is null && state.TransmitReceiver is ReceiverId transmitReceiver)
+            transmitPath = new RadioSignalPath(transmitReceiver, ToPersistentVfo(state.TransmitVfo));
+        return state with { ReceivePaths = receivePaths, TransmitPath = transmitPath };
+    }
+
+    private static VfoId? ToPersistentVfo(VfoId vfo) => vfo switch
+    {
+        VfoId.A or VfoId.B or VfoId.Memory => vfo,
+        _ => null
+    };
+
+    private static RadioSignalPath? CreateTransmitPath(RadioState state, VfoId? vfo)
+    {
+        ReceiverId? receiver = state.TransmitPath?.Receiver ?? state.TransmitReceiver;
+        return receiver is ReceiverId id
+            ? new RadioSignalPath(id, vfo is VfoId value ? ToPersistentVfo(value) : null)
+            : null;
     }
 
     private static bool HasCapabilityIdentityChanged(
@@ -1465,26 +1578,79 @@ public sealed class ManagedRadio : IAsyncDisposable
             return;
         }
 
-        await _stopping.CancelAsync().ConfigureAwait(false);
-        await _leaseMonitor.ConfigureAwait(false);
-        await _commandFailureMonitor.ConfigureAwait(false);
-        if (_state.IsTransmitting)
+        var failures = new List<Exception>();
+        try
         {
-            await ForcePttOffAsync(CancellationToken.None).ConfigureAwait(false);
+            await CaptureDisposalFailureAsync(_stopping.CancelAsync(), failures).ConfigureAwait(false);
+            await CaptureDisposalFailureAsync(_leaseMonitor, failures).ConfigureAwait(false);
+            await CaptureDisposalFailureAsync(_commandFailureMonitor, failures).ConfigureAwait(false);
+            if (_state.IsTransmitting)
+            {
+                try
+                {
+                    await ForcePttOffAsync(CancellationToken.None).ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    failures.Add(exception);
+                }
+            }
+
+            _events.Complete();
+            try
+            {
+                await _scheduler.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                failures.Add(exception);
+            }
+
+            // SerialPort.BaseStream.ReadAsync does not reliably observe cancellation on
+            // every Windows driver. Dispose the driver/transport before awaiting the
+            // observation monitor so closing the port can release a blocked read.
+            try
+            {
+                await _driver.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception exception)
+            {
+                failures.Add(exception);
+            }
+            await CaptureDisposalFailureAsync(_connectionMonitor, failures).ConfigureAwait(false);
+        }
+        finally
+        {
+            _events.Complete();
+            _recoveryGate.Dispose();
+            _stopping.Dispose();
         }
 
-        _events.Complete();
-        await _scheduler.DisposeAsync().ConfigureAwait(false);
-        // SerialPort.BaseStream.ReadAsync does not reliably observe cancellation on
-        // every Windows driver. Dispose the driver/transport before awaiting the
-        // observation monitor so closing the port can release a blocked read.
-        await _driver.DisposeAsync().ConfigureAwait(false);
-        await _connectionMonitor.ConfigureAwait(false);
-        _recoveryGate.Dispose();
-        _stopping.Dispose();
+        if (failures.Count == 1)
+            throw failures[0];
+        if (failures.Count > 1)
+            throw new AggregateException("Managed radio disposal encountered multiple failures.", failures);
+    }
+
+    private static async Task CaptureDisposalFailureAsync(Task task, List<Exception> failures)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            failures.Add(exception);
+        }
     }
 
     private sealed record RadioCommandFailure(IRadioDriver Driver, RadioConnectionException Error);
+
+    public sealed record TransmitSafetyFailure(
+        string Operation,
+        int Attempt,
+        int MaximumAttempts,
+        Exception Error);
 
     private sealed class RadioOperationScope(IRadioDriver driver) : IRadioOperationScope
     {

@@ -49,7 +49,7 @@ categories later, but do not generalize prematurely.
 - Target framework: .NET 8
 - Shell: PowerShell
 - Current baseline commit when this handover was written: `c73d761`
-- Current automated suite: **137 passing tests**.
+- Current automated suite: **144 passing tests**.
 
 Git may report dubious ownership because Codex and the interactive Windows user
 have different SIDs. Do not modify the user's global Git configuration. For
@@ -165,6 +165,8 @@ Read `docs/architecture/receiver-vfo-model.md` before receiver work.
 - A response timeout makes an ASCII CAT session unsafe because a late response
   can poison a later query. `AsciiCatSession` therefore faults the session and the
   reconnect supervisor replaces it.
+- Caller cancellation after a query frame has been committed creates the same
+  ambiguity and also faults the session. Cancellation before commit remains safe.
 - Do not change a timeout into a harmless empty value at the generic protocol
   layer.
 - Prevent invalid/context-inapplicable queries through capabilities and runtime
@@ -179,6 +181,10 @@ Read `docs/architecture/receiver-vfo-model.md` before receiver work.
 - PTT requires an authorized client and a `radio.transmit` lease.
 - Lease ownership is exclusive across clients.
 - Lease expiry, owning-session disposal, shutdown, and renewal loss force RX.
+- Lease-expiry de-key failures are diagnosed and retried with a bounded policy;
+  they do not terminate the lease monitor.
+- A reconnecting replacement that reports TX without a valid transmit lease is
+  forced to RX before it can be published as connected.
 - PTT-off uses safety priority.
 - PTT mutations verify settled hardware state; `ManagedRadio` retries readback
   for up to one second to accommodate radio transition latency.
@@ -196,6 +202,8 @@ Read `docs/architecture/receiver-vfo-model.md` before receiver work.
   cancellation.
 - Exit/quit, Ctrl+C, session disposal, driver disposal, and observation-task
   shutdown must remain clean and bounded.
+- Shutdown attempts de-keying but unconditionally continues through scheduler,
+  driver, and transport cleanup, preserving or aggregating failures afterward.
 - Do not terminate a user's running Console or rigctld process without explicit
   permission. A running process may lock output DLLs; build to a temporary output
   for validation or ask the user to exit it.
@@ -250,6 +258,12 @@ Physically validated during the development session:
 - CAT PTT on/off and settled readback work. The user reported the requested PTT
   safety scenarios working on available hardware before the latest continuous
   renewal refactor.
+- Explicit signal-path reporting was physically validated on 2026-09-02 on both
+  radios. With split off, FTDX10 and K3S reported `main <- VFO A` for receive and
+  transmit. With split on, both continued receiving on `main <- VFO A` and
+  reported transmission on `main <- VFO B`; disabling split restored the active
+  transmit path to A. The FTDX10 legacy `TransmitVfo` intentionally continued to
+  report its configured split VFO B while split was off.
 
 Implemented and automatically tested, but awaiting an explicit new hardware
 confirmation after the latest changes:
@@ -353,7 +367,7 @@ Standard test command:
 dotnet test .\tests\Rig2Cast.Runtime.Tests\Rig2Cast.Runtime.Tests.csproj --no-restore
 ```
 
-Expected at handover: 137 passed, 0 failed.
+Expected after the high-priority reliability hardening milestone: 144 passed, 0 failed.
 
 Console build:
 
@@ -445,19 +459,18 @@ Ask the user to validate the just-built features before deeper changes:
 
 ### Finish receiver/signal-path stabilization
 
-The receiver-targeted frequency/mode layer, synthetic three-receiver test, and
-ReceiverId JSON round trip are complete. Remaining work:
+The receiver-targeted frequency/mode layer, synthetic three-receiver test,
+ReceiverId JSON round trip, and additive `ReceivePaths`/`TransmitPath` state are
+complete. FTDX10, Elecraft, simulator, observation reconciliation, state-change
+comparison, Console output, and JSON tests populate or preserve the new model.
+Legacy state fields remain intact for compatibility. Remaining work:
 
-1. Introduce explicit receive and transmit signal-path values rather than relying
-   only on `SelectedReceiver`, `TransmitReceiver`, `ActiveVfo`, and `TransmitVfo`.
-2. Keep this additive. Do not remove legacy fields during the current compatibility
-   cycle.
-3. Update FTDX10, Elecraft, simulator, observation reconciliation, state-change
-   comparison, and JSON tests together.
-4. Add split-path tests that do not assume TX uses the opposite RX VFO in common
-   runtime code.
-5. Add explicit legacy adapter success and ambiguity-failure tests.
-6. Only then consider marking `VfoId.Main`/`Sub` obsolete for a future major API.
+1. Add further legacy adapter success and ambiguity-failure tests as new non-A/B
+   topologies are introduced; receiver-only VFO-operation rejection is already
+   covered.
+2. Define driver observations for future radios that can independently change
+   several receive paths without a full state refresh.
+3. Only then consider marking `VfoId.Main`/`Sub` obsolete for a future major API.
 
 ### Pluggable driver SDK
 
@@ -535,6 +548,6 @@ dotnet test .\Rig2Cast\tests\Rig2Cast.Runtime.Tests\Rig2Cast.Runtime.Tests.cspro
 dotnet build .\Rig2Cast\samples\Rig2Cast.Console\Rig2Cast.Console.csproj --no-restore
 ```
 
-Then compare the result with the expected 137 tests and inspect changes made after
+Then compare the result with the expected 144 tests and inspect changes made after
 this handover. Continue from the physical-validation checkpoint or the explicit
 signal-path milestone; do not restart the architecture from scratch.

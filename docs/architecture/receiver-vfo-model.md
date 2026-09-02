@@ -1,10 +1,11 @@
 # Receiver and VFO separation
 
 Status: additive migration in progress. Receiver identity, topology capabilities,
-parallel receiver/VFO state, and receiver-targeted frequency, mode, controls,
-switches, choices, passband, and meters are implemented. Legacy VFO APIs remain available while the
-new receiver-targeted operations are physically validated and in-tree consumers
-are migrated.
+parallel receiver/VFO state, explicit receive/transmit signal paths, and
+receiver-targeted frequency, mode, controls, switches, choices, passband, and
+meters are implemented. Legacy VFO APIs remain available while the new
+receiver-targeted operations are physically validated and in-tree consumers are
+migrated.
 
 ## Problem
 
@@ -58,11 +59,21 @@ public sealed record RadioVfoState(
     long FrequencyHz,
     RadioMode? Mode,
     DateTimeOffset ObservedAt);
+
+public readonly record struct RadioSignalPath(
+    ReceiverId Receiver,
+    VfoId? Vfo);
 ```
 
 `RadioState` publishes receiver states and, where the radio exposes persistent
 VFO registers independently, VFO states. A driver is not required to invent a
 VFO register for a receiver-oriented or slice-oriented protocol.
+
+`RadioState.ReceivePaths` lists the paths currently known to be participating in
+reception; it may contain several entries. `RadioState.TransmitPath` identifies
+the path currently selected for transmission. An installed receiver is not
+automatically an active receive path, and a path may have a null VFO for radios
+that expose receivers or slices without persistent A/B-style registers.
 
 Split state must identify the receive and transmit signal paths explicitly.
 It must not infer the transmit VFO by selecting the opposite of the receive
@@ -118,10 +129,11 @@ radios whose protocol tunes receiver paths directly.
 
 ## Compatibility migration
 
-1. Add `ReceiverId`, receiver descriptors, and receiver state alongside the
-   existing API.
+1. Add `ReceiverId`, receiver descriptors, receiver state, and explicit signal
+   paths alongside the existing API. (Complete.)
 2. Populate both representations in FTDX10, K3-family, and simulator drivers.
-3. Add receiver-targeted session and operation-scope methods.
+   (Complete for current verified topology.)
+3. Add receiver-targeted session and operation-scope methods. (Complete.)
 4. Move Console and future REST/gRPC contracts to the receiver-oriented API.
 5. Keep existing `VfoId` target methods as adapters for one compatibility cycle.
 6. Mark `VfoId.Main` and `VfoId.Sub` obsolete only after all in-tree consumers

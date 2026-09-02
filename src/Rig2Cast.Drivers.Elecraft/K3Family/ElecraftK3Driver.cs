@@ -136,7 +136,11 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
             },
             Receivers = receivers,
             SelectedReceiver = ReceiverId.Main,
-            TransmitReceiver = ReceiverId.Main
+            TransmitReceiver = ReceiverId.Main,
+            // An installed sub receiver is not necessarily enabled. Until its
+            // active state is observed, only publish the confirmed main path.
+            ReceivePaths = [new RadioSignalPath(ReceiverId.Main, information.ActiveVfo)],
+            TransmitPath = new RadioSignalPath(ReceiverId.Main, transmitVfo)
         };
     }
 

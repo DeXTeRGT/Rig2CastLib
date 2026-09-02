@@ -183,6 +183,8 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         bool split = ParseBoolean(await QueryParsedAsync("ST", "ST", ParseBoolean, cancellationToken).ConfigureAwait(false));
         bool transmitting = ParseTransmit(await QueryParsedAsync("TX", "TX", ParseTransmit, cancellationToken).ConfigureAwait(false));
         DateTimeOffset observedAt = DateTimeOffset.UtcNow;
+        VfoId splitTransmitVfo = OppositeVfo(activeVfo);
+        VfoId activeTransmitVfo = split ? splitTransmitVfo : activeVfo;
 
         return new RadioState(
             1,
@@ -195,7 +197,9 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             observedAt)
         {
             // The FTDX10 split model uses the VFO opposite the selected receive VFO.
-            TransmitVfo = OppositeVfo(activeVfo),
+            // Retain the legacy field's established meaning: the VFO selected
+            // for split transmission, whether or not split is currently on.
+            TransmitVfo = splitTransmitVfo,
             Vfos = new Dictionary<VfoId, RadioVfoState>
             {
                 [VfoId.A] = new(VfoId.A, frequencyA, activeVfo == VfoId.A ? mode : null, observedAt),
@@ -208,7 +212,9 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
                     activeVfo == VfoId.A ? frequencyA : frequencyB, mode, null, observedAt)
             },
             SelectedReceiver = ReceiverId.Main,
-            TransmitReceiver = ReceiverId.Main
+            TransmitReceiver = ReceiverId.Main,
+            ReceivePaths = [new RadioSignalPath(ReceiverId.Main, activeVfo)],
+            TransmitPath = new RadioSignalPath(ReceiverId.Main, activeTransmitVfo)
         };
     }
 

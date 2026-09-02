@@ -46,6 +46,26 @@ public sealed class ReceiverTopologyTests
         Assert.Equal(3, snapshot.Capabilities.Receivers.Available.Count);
         Assert.Equal(50_125_000, snapshot.State.Receivers[third].FrequencyHz);
         Assert.Equal(RadioMode.Cw, snapshot.State.Receivers[third].Mode);
+        Assert.Equal(3, snapshot.State.ReceivePaths.Count);
+        Assert.All(snapshot.State.ReceivePaths, path => Assert.Null(path.Vfo));
+        Assert.Equal(new RadioSignalPath(ReceiverId.Main, null), snapshot.State.TransmitPath);
+    }
+
+    [Fact]
+    public async Task LegacyVfoOperationFailsInsteadOfGuessingOnReceiverOnlyTopology()
+    {
+        await using var driver = new ThreeReceiverDriver();
+        await using ManagedRadio radio = await ManagedRadio.CreateAsync("three-receiver", driver);
+        await using IRadioSession session = radio.OpenSession(
+            new ClientIdentity("operator"), ClientRole.Operator);
+
+        await Assert.ThrowsAsync<NotSupportedException>(
+            () => session.SetFrequencyAsync(VfoId.A, 14_250_000).AsTask());
+
+        RadioState state = (await session.GetSnapshotAsync()).State;
+        Assert.Equal(14_200_000, state.Receivers[ReceiverId.Main].FrequencyHz);
+        Assert.Equal(7_100_000, state.Receivers[ReceiverId.Sub].FrequencyHz);
+        Assert.Equal(144_300_000, state.Receivers[ReceiverId.Indexed(3)].FrequencyHz);
     }
 
     [Fact]
@@ -61,7 +81,13 @@ public sealed class ReceiverTopologyTests
                 [ReceiverId.Main] = new(ReceiverId.Main, true, null, 14_200_000, RadioMode.Usb, 2400, observedAt),
                 [ReceiverId.Indexed(3)] = new(ReceiverId.Indexed(3), true, null, 50_125_000, RadioMode.Cw, 500, observedAt)
             },
-            SelectedReceiver = ReceiverId.Indexed(3)
+            SelectedReceiver = ReceiverId.Indexed(3),
+            ReceivePaths =
+            [
+                new RadioSignalPath(ReceiverId.Main, VfoId.A),
+                new RadioSignalPath(ReceiverId.Indexed(3), null)
+            ],
+            TransmitPath = new RadioSignalPath(ReceiverId.Indexed(3), null)
         };
 
         string json = JsonSerializer.Serialize(state);
@@ -69,6 +95,8 @@ public sealed class ReceiverTopologyTests
 
         Assert.Equal(ReceiverId.Indexed(3), restored.SelectedReceiver);
         Assert.Equal(50_125_000, restored.Receivers[ReceiverId.Indexed(3)].FrequencyHz);
+        Assert.Equal(state.ReceivePaths, restored.ReceivePaths);
+        Assert.Equal(state.TransmitPath, restored.TransmitPath);
         Assert.Contains("\"receiver-3\"", json, StringComparison.Ordinal);
     }
 
@@ -154,7 +182,11 @@ public sealed class ReceiverTopologyTests
                     pair => new RadioReceiverState(
                         pair.Key, true, null, pair.Value.Frequency, pair.Value.Mode, null, observedAt)),
                 SelectedReceiver = selected,
-                TransmitReceiver = selected
+                TransmitReceiver = selected,
+                ReceivePaths = _state.Keys
+                    .Select(receiver => new RadioSignalPath(receiver, null))
+                    .ToArray(),
+                TransmitPath = new RadioSignalPath(selected, null)
             });
         }
 

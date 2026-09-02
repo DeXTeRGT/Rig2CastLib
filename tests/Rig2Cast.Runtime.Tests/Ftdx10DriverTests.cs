@@ -206,8 +206,37 @@ public sealed class Ftdx10DriverTests
         Assert.Equal(VfoId.A, state.Receivers[ReceiverId.Main].SelectedVfo);
         Assert.Equal(14_250_000, state.Receivers[ReceiverId.Main].FrequencyHz);
         Assert.Equal(7_100_000, state.Vfos[VfoId.B].FrequencyHz);
+        Assert.Equal(
+            [new RadioSignalPath(ReceiverId.Main, VfoId.A)],
+            state.ReceivePaths);
+        Assert.Equal(
+            new RadioSignalPath(ReceiverId.Main, VfoId.B),
+            state.TransmitPath);
         Assert.Single(driver.Capabilities.Receivers.Available);
         Assert.Contains(ReceiverId.Main, driver.Capabilities.Receivers.Available.Keys);
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task NonSplitStateUsesTheReceivePathForTransmit()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("FA;", "FA014250000;");
+        transport.Add("FB;", "FB007100000;");
+        transport.Add("VS;", "VS0;");
+        transport.Add("MD0;", "MD02;");
+        transport.Add("ST;", "ST0;");
+        transport.Add("TX;", "TX0;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+
+        RadioState state = await driver.ReadStateAsync();
+
+        Assert.False(state.IsSplit);
+        Assert.Equal(VfoId.B, state.TransmitVfo);
+        Assert.Equal(
+            new RadioSignalPath(ReceiverId.Main, VfoId.A),
+            state.TransmitPath);
         transport.AssertComplete();
     }
 

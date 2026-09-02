@@ -392,12 +392,17 @@ static void PrintState(RadioState state)
     Console.WriteLine($"Connection: {state.Connection}");
     Console.WriteLine($"Active VFO: {state.ActiveVfo}");
     Console.WriteLine($"Transmit VFO: {state.TransmitVfo}");
+    Console.WriteLine($"Receive paths: {string.Join(", ", state.ReceivePaths.Select(FormatSignalPath))}");
+    Console.WriteLine($"Transmit path: {(state.TransmitPath is RadioSignalPath path ? FormatSignalPath(path) : "unknown")}");
     foreach ((VfoId vfo, long frequency) in state.FrequenciesHz)
     {
         Console.WriteLine($"VFO {vfo}: {frequency} Hz");
     }
     Console.WriteLine($"Mode: {state.Mode}; Split: {state.IsSplit}; Transmitting: {state.IsTransmitting}");
 }
+
+static string FormatSignalPath(RadioSignalPath path) =>
+    path.Vfo is VfoId vfo ? $"{path.Receiver} <- VFO {vfo}" : path.Receiver.ToString();
 
 static void PrintCapabilities(RadioCapabilities capabilities, string? category)
 {

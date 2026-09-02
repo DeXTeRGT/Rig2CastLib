@@ -128,6 +128,42 @@ public sealed class YaesuAsciiProtocolTests
     }
 
     [Fact]
+    public async Task CancellingCommittedQueryFaultsSessionBeforeLateIdenticalResponse()
+    {
+        var transport = new BlockingWriteRadioTransport();
+        await transport.ConnectAsync();
+        await using var protocol = new YaesuAsciiProtocol(transport);
+        using var cancellation = new CancellationTokenSource();
+
+        Task<string> query = protocol.QueryAsync("FA", "FA", cancellation.Token).AsTask();
+        await transport.WriteStarted.WaitAsync(TimeSpan.FromSeconds(1));
+        cancellation.Cancel();
+        transport.CompleteWrite();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => query);
+        await transport.EmitAsync("FA014250000;");
+        await Assert.ThrowsAsync<RadioConnectionException>(
+            () => protocol.QueryAsync("FA", "FA").AsTask());
+    }
+
+    [Fact]
+    public async Task CancellationBeforeQueryCommitLeavesSessionUsable()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("FA;", "FA014250000;");
+        await transport.ConnectAsync();
+        await using var protocol = new YaesuAsciiProtocol(transport);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => protocol.QueryAsync("FA", "FA", cancellation.Token).AsTask());
+
+        Assert.Equal("FA014250000;", await protocol.QueryAsync("FA", "FA"));
+        transport.AssertComplete();
+    }
+
+    [Fact]
     public async Task SamePrefixFrameDuringWriteCannotCompleteQuery()
     {
         var transport = new BlockingWriteRadioTransport();

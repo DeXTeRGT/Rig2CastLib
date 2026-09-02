@@ -63,6 +63,12 @@ public sealed class ElecraftK3DriverTests
         Assert.Equal(VfoId.B, state.Receivers[ReceiverId.Sub].SelectedVfo);
         Assert.Equal(14_275_000, state.Receivers[ReceiverId.Sub].FrequencyHz);
         Assert.Null(state.Receivers[ReceiverId.Sub].IsEnabled);
+        Assert.Equal(
+            [new RadioSignalPath(ReceiverId.Main, VfoId.A)],
+            state.ReceivePaths);
+        Assert.Equal(
+            new RadioSignalPath(ReceiverId.Main, VfoId.B),
+            state.TransmitPath);
     }
 
     [Fact]

@@ -87,6 +87,7 @@ public sealed class AsciiCatSession : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(responseValidator);
         await _transactionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         var pending = new PendingQuery(_options.FrameCommand(command), expectedPrefix, responseValidator);
+        bool commandCommitted = false;
         try
         {
             lock (_pendingGate)
@@ -99,6 +100,7 @@ public sealed class AsciiCatSession : IAsyncDisposable
 
             cancellationToken.ThrowIfCancellationRequested();
             await WriteFramedAsync(pending.Command, _stopping.Token).ConfigureAwait(false);
+            commandCommitted = true;
             lock (_pendingGate)
             {
                 if (ReferenceEquals(_pending, pending))
@@ -118,6 +120,12 @@ public sealed class AsciiCatSession : IAsyncDisposable
                 FailSession(new RadioConnectionException(
                     $"The {_options.ProtocolName} CAT session is unusable after a response timeout.", timeoutException));
                 throw timeoutException;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested && commandCommitted)
+            {
+                FailSession(new RadioConnectionException(
+                    $"The {_options.ProtocolName} CAT session is unusable after a committed query was abandoned."));
+                throw;
             }
         }
         finally
