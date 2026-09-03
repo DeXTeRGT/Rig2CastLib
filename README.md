@@ -13,6 +13,8 @@ drivers, capability discovery, and optional protocol adapters.
 > initial Elecraft K3S/K3/KX3/KX2 core driver is implemented from the official
 > programmer's reference. A documented, simulator-validated Icom
 > IC-7300 CI-V driver is also available; it has not been physically validated.
+> A Xiegu G90 CI-V driver has been physically validated on firmware 1.81, including
+> A/B VFO frequency control, split routing, DATA mode, and core operating controls.
 
 ## Why another radio-control framework?
 

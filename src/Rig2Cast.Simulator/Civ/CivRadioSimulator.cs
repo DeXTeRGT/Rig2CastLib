@@ -14,15 +14,23 @@ public sealed class CivRadioSimulator : IAsyncDisposable
     private readonly object _stateGate = new();
     private readonly Task _runLoop;
     private long _frequencyHz;
+    private long _backgroundFrequencyHz;
     private byte _mode;
+    private byte _backgroundMode;
     private byte _filter;
+    private byte _backgroundFilter;
     private byte _passbandCode;
     private bool _dataMode;
+    private bool _backgroundDataMode;
+    private byte _activeVfo;
     private bool _split;
     private bool _transmitting;
     private readonly Dictionary<byte, int> _levels = new()
     {
-        [0x01] = 128, [0x02] = 128, [0x03] = 0, [0x06] = 64, [0x0A] = 64, [0x12] = 64
+        [0x01] = 128, [0x02] = 128, [0x03] = 0, [0x06] = 64,
+        [0x09] = 128, [0x0A] = 64, [0x0B] = 128, [0x0C] = 128,
+        [0x0F] = 0, [0x12] = 64, [0x15] = 0, [0x16] = 0,
+        [0x17] = 0, [0x19] = 128
     };
     private readonly Dictionary<byte, int> _meters = new()
     {
@@ -31,8 +39,9 @@ public sealed class CivRadioSimulator : IAsyncDisposable
     private readonly Dictionary<(byte Command, byte Subcommand), bool> _switches = new()
     {
         [(0x16, 0x22)] = false, [(0x16, 0x40)] = false,
-        [(0x16, 0x41)] = false, [(0x16, 0x48)] = false,
-        [(0x21, 0x01)] = false, [(0x21, 0x02)] = false
+        [(0x16, 0x41)] = false, [(0x16, 0x44)] = false, [(0x16, 0x48)] = false,
+        [(0x16, 0x50)] = false,
+        [(0x1C, 0x01)] = false, [(0x21, 0x01)] = false, [(0x21, 0x02)] = false
     };
     private byte _attenuator;
     private byte _preamp;
@@ -48,7 +57,8 @@ public sealed class CivRadioSimulator : IAsyncDisposable
             throw new InvalidOperationException("The in-memory transport must be connected before starting the CI-V simulator.");
 
         _options = options ?? new CivSimulatorOptions();
-        if (_options.InitialFrequencyHz < 0 || !IsPassbandCode(_options.InitialPassbandCode) ||
+        if (_options.InitialFrequencyHz < 0 || _options.InitialBackgroundFrequencyHz < 0 ||
+            _options.InitialActiveVfo > 1 || !IsPassbandCode(_options.InitialPassbandCode) ||
             _options.ResponseFragmentLength <= 0 ||
             _options.ResponseDelay < TimeSpan.Zero)
         {
@@ -58,8 +68,14 @@ public sealed class CivRadioSimulator : IAsyncDisposable
 
         _transport = transport;
         _frequencyHz = _options.InitialFrequencyHz;
+        _backgroundFrequencyHz = _options.InitialBackgroundFrequencyHz;
         _mode = _options.InitialMode;
+        _backgroundMode = _options.InitialBackgroundMode;
         _filter = _options.InitialFilter;
+        _backgroundFilter = _options.InitialBackgroundFilter;
+        _dataMode = _options.InitialDataMode;
+        _backgroundDataMode = _options.InitialBackgroundDataMode;
+        _activeVfo = _options.InitialActiveVfo;
         _passbandCode = _options.InitialPassbandCode;
         _split = _options.InitialSplit;
         _transmitting = _options.InitialTransmitting;
@@ -162,6 +178,8 @@ public sealed class CivRadioSimulator : IAsyncDisposable
         {
             response = BuildResponse(command);
         }
+        if (_options.SupportsXieguIdentity && command.Message.Span is [0x11, 0x00 or 0x20])
+            return;
         await SendFrameAsync(response, cancellationToken).ConfigureAwait(false);
     }
 
@@ -173,6 +191,26 @@ public sealed class CivRadioSimulator : IAsyncDisposable
         {
             lock (_stateGate)
                 _frequencyHz = frequency;
+            return Reply([CivSession.Acknowledgement]);
+        }
+        if (_options.SupportsXieguExtendedVfo && message.Length == 7 && message[0] == 0x25 &&
+            message[1] is 0x00 or 0x01 &&
+            CivBcd.TryDecode(message[2..], out long targetedFrequency) && targetedFrequency <= 74_800_000)
+        {
+            WriteRelativeVfoFrequency(message[1], targetedFrequency);
+            return Reply([CivSession.Acknowledgement]);
+        }
+        if (_options.SupportsXieguExtendedVfo && message.Length == 5 && message[0] == 0x26 &&
+            message[1] is 0x00 or 0x01 && IsSupportedMode(message[2]) &&
+            message[3] is 0x00 or 0x01 && message[4] is >= 0x01 and <= 0x03)
+        {
+            WriteRelativeVfoMode(message[1], message[2], message[3] == 0x01, message[4]);
+            return Reply([CivSession.Acknowledgement]);
+        }
+        if (_options.SupportsXieguExtendedVfo && message.Length == 2 && message[0] == 0x07 &&
+            message[1] is 0x00 or 0x01)
+        {
+            SelectVfo(message[1]);
             return Reply([CivSession.Acknowledgement]);
         }
         if (message.Length is 2 or 3 && message[0] == 0x06 && IsSupportedMode(message[1]) &&
@@ -196,6 +234,13 @@ public sealed class CivRadioSimulator : IAsyncDisposable
         {
             lock (_stateGate)
                 _transmitting = message[2] == 0x01;
+            return Reply([CivSession.Acknowledgement]);
+        }
+        if (message.Length == 3 && message[0] == 0x1C && message[1] == 0x01 &&
+            message[2] is 0x00 or 0x01)
+        {
+            lock (_stateGate)
+                _switches[(0x1C, 0x01)] = message[2] == 0x01;
             return Reply([CivSession.Acknowledgement]);
         }
         if (message.Length == 3 && message[0] == 0x1A && message[1] == 0x03 &&
@@ -234,7 +279,9 @@ public sealed class CivRadioSimulator : IAsyncDisposable
         if (message.Length == 2 && message[0] == 0x11 && message[1] is 0x00 or 0x20)
         {
             lock (_stateGate)
-                _attenuator = message[1];
+                _attenuator = _options.SupportsXieguIdentity
+                    ? (_attenuator == 0 ? (byte)0x0C : (byte)0x00)
+                    : message[1];
             return Reply([CivSession.Acknowledgement]);
         }
         if (message.Length == 3 && message[0] == 0x16 && message[1] == 0x02 && message[2] <= 0x02)
@@ -244,7 +291,7 @@ public sealed class CivRadioSimulator : IAsyncDisposable
             return Reply([CivSession.Acknowledgement]);
         }
         if (message.Length == 3 && message[0] == 0x16 && message[1] == 0x12 &&
-            message[2] is >= 0x01 and <= 0x03)
+            message[2] <= 0x03)
         {
             lock (_stateGate)
                 _agc = message[2];
@@ -258,10 +305,21 @@ public sealed class CivRadioSimulator : IAsyncDisposable
                 _clarifierOffsetHz = (int)(message[4] == 0x01 ? -offset : offset);
             return Reply([CivSession.Acknowledgement]);
         }
-        if (message.SequenceEqual(new byte[] { 0x19, 0x00 }))
+        if (_options.SupportsStandardIdentity && message.SequenceEqual(new byte[] { 0x19, 0x00 }))
             return Reply([0x19, 0x00, _options.RadioAddress]);
+        if (_options.SupportsXieguIdentity && message.SequenceEqual(new byte[] { 0x1D, 0x19 }))
+            return Reply([0x1D, 0x19, 0x00, 0x90]);
         if (message.SequenceEqual(new byte[] { 0x1C, 0x00 }))
             return Reply([0x1C, 0x00, ReadTransmitting() ? (byte)0x01 : (byte)0x00]);
+        if (_options.SupportsXieguExtendedVfo && message.Length == 2 && message[0] == 0x25 &&
+            message[1] is 0x00 or 0x01)
+            return Reply([0x25, ReadActiveVfo(), .. CivBcd.Encode(ReadRelativeVfoFrequency(message[1]), 5)]);
+        if (_options.SupportsXieguExtendedVfo && message.Length == 2 && message[0] == 0x26 &&
+            message[1] is 0x00 or 0x01)
+        {
+            (byte mode, bool dataMode, byte filter) = ReadRelativeVfoMode(message[1]);
+            return Reply([0x26, ReadActiveVfo(), mode, dataMode ? (byte)0x01 : (byte)0x00, filter]);
+        }
         if (message.SequenceEqual(new byte[] { 0x1A, 0x03 }))
             return Reply([0x1A, 0x03, ReadPassbandCode()]);
         if (message.SequenceEqual(new byte[] { 0x1A, 0x06 }))
@@ -270,9 +328,9 @@ public sealed class CivRadioSimulator : IAsyncDisposable
             return Reply([0x1A, 0x06, enabled ? (byte)0x01 : (byte)0x00, enabled ? filter : (byte)0x00]);
         }
         if (message.Length == 2 && message[0] == 0x14 && ReadLevel(message[1]) is int currentLevel)
-            return Reply([0x14, message[1], .. CivBcd.EncodeBigEndian(currentLevel, 2)]);
+            return Reply([0x14, message[1], .. EncodeLevel(currentLevel)]);
         if (message.Length == 2 && message[0] == 0x15 && ReadMeter(message[1]) is int currentMeter)
-            return Reply([0x15, message[1], .. CivBcd.EncodeBigEndian(currentMeter, 2)]);
+            return Reply([0x15, message[1], .. EncodeLevel(currentMeter)]);
         if (message.Length == 2 && ReadSwitch(message[0], message[1]) is bool currentSwitch)
             return Reply([message[0], message[1], currentSwitch ? (byte)0x01 : (byte)0x00]);
         if (message.SequenceEqual(new byte[] { 0x11 }))
@@ -398,6 +456,71 @@ public sealed class CivRadioSimulator : IAsyncDisposable
         lock (_stateGate)
             return _clarifierOffsetHz;
     }
+
+    private byte ReadActiveVfo()
+    {
+        lock (_stateGate)
+            return _activeVfo;
+    }
+
+    private long ReadRelativeVfoFrequency(byte relativeSelector)
+    {
+        lock (_stateGate)
+            return relativeSelector == 0 ? _frequencyHz : _backgroundFrequencyHz;
+    }
+
+    private (byte Mode, bool DataMode, byte Filter) ReadRelativeVfoMode(byte relativeSelector)
+    {
+        lock (_stateGate)
+            return relativeSelector == 0
+                ? (_mode, _dataMode, _filter)
+                : (_backgroundMode, _backgroundDataMode, _backgroundFilter);
+    }
+
+    private void WriteRelativeVfoFrequency(byte relativeSelector, long frequencyHz)
+    {
+        lock (_stateGate)
+        {
+            if (relativeSelector == 0) _frequencyHz = frequencyHz;
+            else _backgroundFrequencyHz = frequencyHz;
+        }
+    }
+
+    private void WriteRelativeVfoMode(byte relativeSelector, byte mode, bool dataMode, byte filter)
+    {
+        lock (_stateGate)
+        {
+            if (relativeSelector == 0)
+            {
+                _mode = mode;
+                _dataMode = dataMode;
+                _filter = filter;
+            }
+            else
+            {
+                _backgroundMode = mode;
+                _backgroundDataMode = dataMode;
+                _backgroundFilter = filter;
+            }
+        }
+    }
+
+    private void SelectVfo(byte activeVfo)
+    {
+        lock (_stateGate)
+        {
+            if (_activeVfo == activeVfo) return;
+            (_frequencyHz, _backgroundFrequencyHz) = (_backgroundFrequencyHz, _frequencyHz);
+            (_mode, _backgroundMode) = (_backgroundMode, _mode);
+            (_dataMode, _backgroundDataMode) = (_backgroundDataMode, _dataMode);
+            (_filter, _backgroundFilter) = (_backgroundFilter, _filter);
+            _activeVfo = activeVfo;
+        }
+    }
+
+    private byte[] EncodeLevel(int value) => _options.SupportsXieguIdentity
+        ? [(byte)(value >> 8), (byte)value]
+        : CivBcd.EncodeBigEndian(value, 2);
 
     private static byte[] Prepend(byte value, byte[] tail)
     {

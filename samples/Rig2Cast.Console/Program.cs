@@ -9,6 +9,7 @@ using Rig2Cast.Abstractions.Sessions;
 using Rig2Cast.Core.Drivers;
 using Rig2Cast.Drivers.Elecraft.K3Family;
 using Rig2Cast.Drivers.Icom.Ic7300;
+using Rig2Cast.Drivers.Xiegu.G90;
 using Rig2Cast.Drivers.Yaesu.Ftdx10;
 using Rig2Cast.PluginHost;
 using Rig2Cast.Runtime.Sessions;
@@ -28,6 +29,7 @@ var catalog = new RadioDriverCatalog();
 catalog.Register(new Ftdx10DriverFactory());
 catalog.Register(new ElecraftK3DriverFactory());
 catalog.Register(new Ic7300DriverFactory());
+catalog.Register(new G90DriverFactory());
 string? pluginConfigurationPath = GetOption(args, "--plugin-config");
 string[] additionalPluginDirectories = GetOptions(args, "--plugin-directory");
 bool pluginDevelopmentMode = HasFlag(args, "--plugin-development-mode");
@@ -93,7 +95,9 @@ Console.CancelKeyPress += (_, eventArgs) =>
 };
 
 ManagedRadio managedRadio;
-IAsyncDisposable? simulatorPeer = null;
+CivRadioSimulator? simulatorPeer = null;
+try
+{
 if (simulator)
 {
     if (!selectedModel.Model.SupportedTransports.Contains(RadioTransportKind.Simulator))
@@ -103,13 +107,20 @@ if (simulator)
     {
         driver = new SimulatedFtdx10Driver();
     }
-    else if (selectedModel.Model.Id.Equals(Ic7300Profile.ModelId, StringComparison.OrdinalIgnoreCase))
+    else if (selectedModel.Model.Id.Equals(Ic7300Profile.ModelId, StringComparison.OrdinalIgnoreCase) ||
+             selectedModel.Model.Id.Equals(G90Profile.ModelId, StringComparison.OrdinalIgnoreCase))
     {
-        byte radioAddress = ParseHexByte(configuredCivAddress ?? "94", "--civ-address");
+        string defaultAddress = selectedModel.Model.Id.Equals(G90Profile.ModelId, StringComparison.OrdinalIgnoreCase)
+            ? "70" : "94";
+        byte radioAddress = ParseHexByte(configuredCivAddress ?? defaultAddress, "--civ-address");
         var transport = new InMemoryRadioTransport($"simulator:{modelId}");
         await transport.ConnectAsync(stopping.Token);
         var civSimulator = new CivRadioSimulator(
-            transport, new CivSimulatorOptions { RadioAddress = radioAddress });
+            transport, new CivSimulatorOptions
+            {
+                RadioAddress = radioAddress,
+                SupportsXieguIdentity = selectedModel.Model.Id.Equals(G90Profile.ModelId, StringComparison.OrdinalIgnoreCase)
+            });
         simulatorPeer = civSimulator;
         try
         {
@@ -168,8 +179,16 @@ else
         },
         cancellationToken: stopping.Token);
 }
+}
+catch (Exception exception)
+{
+    if (simulatorPeer is not null)
+        await simulatorPeer.DisposeAsync();
+    Console.Error.WriteLine($"ERROR: Could not open {selectedModel.Model.Manufacturer} {selectedModel.Model.Model}: {exception.Message}");
+    return;
+}
 
-await using IAsyncDisposable? activeSimulatorPeer = simulatorPeer;
+await using CivRadioSimulator? activeSimulatorPeer = simulatorPeer;
 await using ManagedRadio radio = managedRadio;
 ClientRole role = allowWrite ? ClientRole.Operator : ClientRole.Observer;
 await using IRadioSession session = radio.OpenSession(

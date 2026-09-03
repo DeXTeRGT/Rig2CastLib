@@ -748,21 +748,76 @@ The user confirmed the read-only simulator and frequency/mode setter behavior on
 2026-09-03. Split and PTT setters are automatically validated but await the same
 manual confirmation; ordinary automated PTT tests use only the simulator.
 
-1. Choose one documented Icom model/CI-V address and record exact official source
-   revision and assumptions. The user does not own Icom hardware, so mark all results
-   simulated/unvalidated.
-2. Build a byte-oriented incremental frame decoder with preamble resynchronization,
-   controller/radio addressing, partial and concatenated frames, echo discrimination,
-   ACK/NAK/error handling, maximum-frame bounds, and cancellation/timeout semantics.
-3. Define query correlation for addressed binary replies and route transceive frames
-   as typed unsolicited observations. Prove late replies cannot satisfy later queries.
-4. Create deterministic scripted fixtures and a CI-V simulator before a model driver.
-   Cover noise, repeated preambles, wrong addresses, echo on/off, malformed frames,
-   timeout, cancellation after commit, disconnect, and clean shutdown.
-5. Implement the first driver as a narrow read-only slice: identify, frequency, mode,
-   state, and capabilities. Add setters only after readback and runtime validation are
-   proven. Add PTT last and retain the normal lease/safety path.
-6. Seek community hardware validation before claiming production support.
+The separate `Rig2Cast.Drivers.Xiegu` project contains the physically validated
+`xiegu.g90` driver, built on the model-neutral CI-V engine without architecture or
+shared-protocol changes. It defaults to address `70`, controller `E0`, and 19200 8N1.
+Firmware 1.80 or newer is required for verified `1D 19 -> 00 90` identity; older
+firmware gets a fresh session and a conservative `03` compatibility probe. The
+Console and simulator recognize the profile. Evidence and hardware findings are in
+`docs/protocol-sources/xiegu-g90-civ.md`.
+The implemented surface includes frequency, mode, split, RX/TX/PTT, typed transceive
+observations, raw levels `14 01/02/06/0A/0B/12/15/17`, meters `15 02/11/12/13`,
+attenuator `11`, preamp `16 02`, AGC `16 12`, NB `16 22`, compressor `16 44`,
+read-only dial lock `16 50`, tuner enabled/bypassed state `1C 01`, and RIT/XIT
+`21 00/01/02`. Tuner start is not exposed. Attenuator writes read first because the
+radio command toggles state, then verify the result. Physical firmware 1.81 applies
+the attenuator toggle without returning `FB`; waiting for ACK faults the session even
+though the hardware changed, so only readback confirms this command. Its read response
+is `11 00` when off and `11 0C` when active, so zero/nonzero—not an assumed Icom
+`20` value—determines the binary state. Other writes use ACK and
+readback where the protocol permits it.
+Physical firmware 1.81 then disproved the document's BCD `0000–0255` level claim:
+AF returned `00 4D`, RF gain `01 2E`, and 20 W transmit power `02 5F`. These are
+two-byte binary raw values, including values above 255. Maximum AF volume and maximum
+20 W TX power both returned `02 5F` (607), establishing the command `14` full-scale
+endpoint. All `14` levels are therefore temporarily read-only and advertised as
+uncalibrated binary raw 0–607 until captures establish a safe write conversion.
+Command `15` meters remain provisionally 0–1023 pending physical endpoint evidence.
+RIT uses its independent documented encoding and
+remains writable. Dial lock also remains read-only. The remaining advertised writes
+use ACK plus readback.
+Treat the binary level representation as observed G90 firmware behavior, not as a
+general CI-V rule. CI-V field encoding is command/model-specific; frequency and RIT
+remain packed BCD, and other command families require their own evidence.
+Physical firmware 1.81 established the G90-specific `25`/`26` rule: request selector
+`00` means foreground and `01` background, while the response selector identifies
+the absolute active VFO A/B rather than echoing the request. The driver correlates
+these replies by command, reads both relative positions close together, and rebuilds
+stable absolute A/B state. The user physically confirmed A/B reads, targeted
+background-frequency writes, VFO selection (`07 00/01`), the radio's equalize and
+exchange commands (`07 A0/B0`), split routing, and DATA USB mode with filter
+preservation. Extended A/B/DATA capabilities are conditional; rejection or timeout
+retains the current-VFO fallback surface.
+
+Optional-probe recovery must close the transport before awaiting disposal of the
+failed CI-V session, then reconnect and create a new session. Some Windows serial
+drivers do not release `SerialPort.BaseStream.ReadAsync` on cancellation alone. A
+regression transport deliberately ignores cancellation and proves G90 startup still
+falls back instead of hanging.
+
+Remaining G90 work is intentionally outside this no-abstraction-change slice: public
+VFO equalize/exchange, direct background-mode and filter/passband APIs, tuner start,
+QSK time, LCD backlight, squelch-gate status, and supply-voltage semantics need new or
+clarified abstractions. Command `14` writes and CW pitch/keyer conversion need
+calibration. The reference marks NR and VOX switches as X6100-only, so they are not
+G90 candidates. The next major family milestone remains legacy Yaesu binary CAT.
+
+G90 firmware 1.81 physically reports compressor state through `16 44` and returns
+`FB` for `16 44 00/01`, but the user observed no corresponding radio change. Retain
+the documented write capability for now as a possible firmware defect, while avoiding
+claims that the mutation itself has been physically validated.
+
+The user physically confirmed on G90 firmware 1.81 that the `AntennaTuner` switch
+correctly reads and changes the `1C 01` tuner enabled/bypassed state. This command
+does not start a tuning cycle; tuner-start remains unimplemented.
+
+Physical G90 AGC testing established wire values `01` FAST, `02` SLOW, and `03`
+AUTO. The public G90 choices are therefore `fast`, `slow`, and `auto`; do not restore
+the earlier assumed `medium` label.
+
+The user also physically confirmed G90 firmware 1.81 preamp (`16 02`), noise blanker
+(`16 22`), signed clarifier offset (`21 00`), RX clarifier (`21 01`), and TX clarifier
+(`21 02`) reads and writes. Console readback matched the front-panel state.
 
 ### Milestone 6: legacy Yaesu binary CAT
 

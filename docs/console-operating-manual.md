@@ -1,12 +1,13 @@
 # Rig2Cast Console operating manual
 
-This guide is for radio amateurs who want to inspect and manually test the three
+This guide is for radio amateurs who want to inspect and manually test the four
 built-in CAT driver families:
 
 - Yaesu FTDX10 (`yaesu.ftdx10`)
 - Elecraft K3S, K3, KX3, and KX2 (`elecraft.k3s`, `elecraft.k3`,
   `elecraft.kx3`, `elecraft.kx2`)
 - Icom IC-7300 (`icom.ic-7300`)
+- Xiegu G90 (`xiegu.g90`)
 
 The Console is a diagnostic and validation tool. It is not intended to replace a
 logging program or full station-control application.
@@ -31,8 +32,8 @@ off when the lease expires, the session closes, or the Console shuts down normal
 This protection supplements normal station safety; it does not replace it.
 
 The Console does not expose radio power commands, memory writes, message playback,
-or antenna-tuner start. The FTDX10 `AntennaTuner` switch controls tuner enable/status;
-it does not initiate a tuning cycle.
+or antenna-tuner start. The FTDX10 and G90 `AntennaTuner` switches control tuner
+enable/status; they do not initiate a tuning cycle.
 
 ## 2. Building and starting the Console
 
@@ -76,7 +77,7 @@ default to `COM11`; specify the actual port rather than relying on this convenie
 | `--allow-write` | none | Opens an Operator session and permits supported mutations. |
 | `--auto-information` | none | Enables supported unsolicited CAT reporting. |
 | `--auto-information-mode` | `0`–`3` | Selects an Elecraft AI mode; specifying it also enables automatic information. |
-| `--civ-address` | hex byte | IC-7300 radio address, for example `94` or `0x94`. |
+| `--civ-address` | hex byte | CI-V radio address; IC-7300 defaults to `94`, G90 to `70`. |
 | `--plugin-config` | path | Loads the strict plugin-host configuration file. |
 | `--plugin-directory` | path | Adds a plugin directory; may be repeated. |
 | `--plugin-development-mode` | none | Bypasses plugin SHA-256 verification for trusted local development only. |
@@ -91,6 +92,7 @@ exactly as displayed by `--list-models` and the operating system.
 | FTDX10 | 4800, 9600, 19200, 38400 | 38400 | 8 data bits, no parity, 2 stop bits, RTS/CTS |
 | Elecraft K3 family | 4800, 9600, 19200, 38400 | 38400 | 8 data bits, no parity, 1 stop bit, no handshake |
 | IC-7300 | 4800, 9600, 19200, 38400, 57600, 115200 | 19200 | 8 data bits, no parity, 1 stop bit, no handshake |
+| Xiegu G90 | 19200 | 19200 | 8 data bits, no parity, 1 stop bit, no handshake |
 
 The selected rate must match the radio menu. IC-7300 rates above 19200 require the
 appropriate unlinked USB CI-V configuration. The default IC-7300 CI-V radio address
@@ -161,6 +163,35 @@ dotnet run --project .\samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --mod
 Change `--civ-address` if the radio's CI-V address was changed. CI-V Transceive is
 useful for `watch on`; USB Echo Back may be on or off because the CI-V session handles
 both conditions.
+
+### Xiegu G90
+
+Simulator with writes:
+
+```powershell
+dotnet run --project .\samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --model xiegu.g90 --simulator --allow-write
+```
+
+Physical radio using the profile-default CI-V address `70`:
+
+```powershell
+dotnet run --project .\samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --model xiegu.g90 --port COM9 --baud 19200 --civ-address 70
+```
+
+Start read-only, run `state`, and confirm the displayed frequency and mode. Then
+restart with `--allow-write` for controlled frequency/mode/split tests. PTT is
+implemented through the normal transmit lease; test it only into a dummy load at
+minimum power. The initial G90 profile exposes current frequency, the six documented
+base modes, split, PTT, documented raw levels/meters, preamp, AGC, noise blanker,
+RIT, XIT, and read-only dial-lock status. Firmware-dependent data mode, filter width,
+and A/B VFO behavior are intentionally not advertised yet.
+
+Firmware 1.80 or newer is required for verified `1D 19` G90/G90S identification and
+is the minimum recommended version for this profile. On older firmware, a rejected or
+timed-out identity query automatically falls back to the read-only `03` frequency
+probe; the capability extensions then record `xiegu.identityVerified = False` rather
+than claiming that the connected radio was positively identified as a G90. The
+current Console does not print arbitrary capability-extension fields.
 
 ## 5. Interactive command conventions
 
@@ -313,6 +344,7 @@ set frequency Current 7100000
 - Elecraft: use `A` or `B`; `main` follows the active receive path. `sub` is available
   only when the detected radio/options expose it.
 - IC-7300: use `main` or `Current`. Stable A/B identity is intentionally not exposed.
+- G90: use `main`; extended firmware exposes A/B, otherwise use `Current`.
 
 ### `set vfo <A|B>`
 
@@ -350,6 +382,9 @@ DataLsb DataUsb DataFm DataFmNarrow Psk Rtty RttyReverse
 Not every radio supports every value. KX2 excludes FM. IC-7300 currently exposes
 LSB, USB, AM, CW, CW-R, RTTY, RTTY-R, FM, DATA LSB, DATA USB, and DATA FM. Always
 check `capabilities core`.
+
+The G90 exposes `Lsb`, `Usb`, `Am`, `Cw`, `CwReverse`, and `FmNarrow`. When its
+extended VFO probe succeeds it also exposes `DataLsb` and `DataUsb`.
 
 ### `set passband [target] <hz>`
 
@@ -630,6 +665,150 @@ ptt status
 
 Wait at least two seconds and run `ptt status` again; it should report RX/off.
 
+### Xiegu G90
+
+The G90 driver exposes one receiver (`main`). On firmware supporting commands
+`25`/`26` (physically confirmed on 1.81), it exposes stable VFO A/B frequency state,
+writable VFO selection, and targeted A/B frequency writes. If that extension probe
+fails, it safely falls back to the conservative `Current`-VFO surface.
+
+Start a physical write-enabled session with:
+
+```powershell
+Rig2Cast.Console.exe --model xiegu.g90 --port COM16 --baud 19200 --civ-address 70 --allow-write
+```
+
+Change the port if necessary. Firmware 1.80 or newer is recommended for verified
+identity; the physical validation below was completed on firmware 1.81.
+
+- Numeric read/write: `ClarifierOffsetHz`.
+- Numeric read-only: `AfGain`, `RfGain`, `NoiseReductionLevel`, `TransmitPower`,
+  `MicrophoneGain`, `NoiseBlankerLevel`, `MonitorLevel`, and `AntiVoxLevel`.
+- Switch read/write: `NoiseBlanker`, `SpeechProcessor`, `AntennaTuner`,
+  `ReceiveClarifier`, and `TransmitClarifier`.
+- Switch read-only: `DialLock`.
+- Choices: `Attenuator` (`off`, `on`), `Preamp` (`off`, `on`), and `Agc` (`off`,
+  `fast`, `slow`, `auto`).
+- Meters: `SignalStrength`, `Power`, `Swr`, and `Alc`.
+- Modes: `Lsb`, `Usb`, `Am`, `Cw`, `CwReverse`, and `FmNarrow`; successful extended
+  probing also adds `DataLsb` and `DataUsb`.
+
+The physically confirmed AGC mapping is:
+
+| Console value | G90 setting | CI-V value |
+|---|---|---:|
+| `off` | Off | `00` |
+| `fast` | Fast | `01` |
+| `slow` | Slow | `02` |
+| `auto` | Auto | `03` |
+
+The G90 reports attenuator state as `00` when off and `0C` when active. The driver
+maps this to the stable Console values `off` and `on`. Because its write is a toggle
+without an acknowledgement, Rig2Cast reads before writing and verifies afterward.
+
+Physical firmware 1.81 was observed returning two-byte binary raw levels, including
+values above 255, contrary to the reference's BCD `0000–0255` claim. Both maximum AF
+volume and maximum 20 W transmit power physically return `02 5F`, binary raw 607.
+Command `14` levels are therefore exposed as binary raw 0–607. Command `15` meters
+remain provisionally 0–1023 pending physical endpoint captures. Values are also
+shown normalized by the Console, but no calibrated watts, dBm, SWR ratio, ALC scale,
+or S-unit conversion is claimed. Power, SWR, and ALC are transmit-time meters and
+are skipped by the `meters` command while the radio is receiving.
+
+Safe read-only physical test:
+
+```text
+radio
+capabilities
+state
+get numeric AfGain
+get numeric RfGain
+get numeric NoiseReductionLevel
+get numeric MonitorLevel
+get numeric MicrophoneGain
+get numeric TransmitPower
+get numeric NoiseBlankerLevel
+get numeric AntiVoxLevel
+get numeric ClarifierOffsetHz
+get choice Attenuator
+get choice Preamp
+get choice Agc
+get switch NoiseBlanker
+get switch SpeechProcessor
+get switch AntennaTuner
+get switch DialLock
+get switch ReceiveClarifier
+get switch TransmitClarifier
+meters
+```
+
+Controlled write test after restarting with `--allow-write`:
+
+```text
+set frequency A 14300000
+set frequency B 7060000
+set vfo A
+set mode Usb
+set mode DataUsb
+set mode Usb
+set choice Attenuator off
+set choice Attenuator on
+set choice Preamp off
+set choice Preamp on
+set choice Agc fast
+set choice Agc slow
+set choice Agc auto
+set switch SpeechProcessor on
+set switch SpeechProcessor off
+set switch AntennaTuner on
+set switch AntennaTuner off
+set switch NoiseBlanker on
+set switch NoiseBlanker off
+set numeric ClarifierOffsetHz 250
+set switch ReceiveClarifier on
+set switch ReceiveClarifier off
+set switch TransmitClarifier on
+set switch TransmitClarifier off
+set numeric ClarifierOffsetHz 0
+set split on
+state
+set split off
+```
+
+`AntennaTuner` controls tuner enable/bypass only; it does not start a tune cycle.
+`SpeechProcessor` reads front-panel state correctly. Firmware 1.81 acknowledges the
+documented on/off writes but did not visibly apply them during physical testing; this
+is retained as a documented firmware caveat rather than claimed as a validated
+mutation.
+Do not attempt writes to any `14` level or to `DialLock`. Rig2Cast currently marks
+all G90 level values read-only because physical firmware returns a different binary
+scale than the documented write scale; this prevents unsafe gain or power conversion
+until captures establish it. Test PTT and transmit-time meters only into
+a dummy load at minimum power:
+
+```text
+ptt status
+ptt on 2
+meters
+ptt status
+```
+
+After two seconds, run `ptt status` again and confirm that the managed transmit lease
+returned the radio to RX. Physical testing confirmed PTT lease expiry and the
+receive/transmit meter paths on firmware 1.81.
+
+The following were physically confirmed through the Console: A/B frequency reads
+and writes, VFO selection, split routing, DATA USB, attenuator, preamp, AGC, noise
+blanker, tuner enable/bypass, signed clarifier offset, RIT/XIT, PTT lease behavior,
+and receive/transmit meters.
+
+Deferred G90 functionality includes read-only passband/filter mapping, direct
+background-mode APIs, public VFO equalize/exchange operations, command `14` writes,
+CW pitch/keyer conversions, QSK time, LCD backlight, squelch-gate status,
+supply-voltage semantics, and tuner start. Some require new abstractions; others need
+safe unit conversion or more physical evidence. The documented noise-reduction and
+VOX switch commands are X6100-only and are not G90 capabilities.
+
 ## 11. Reconnection behavior
 
 Physical connections are supervised. If the radio is powered off or the CAT cable is
@@ -711,4 +890,3 @@ exit
 Either command performs normal asynchronous cleanup. `Ctrl+C` requests the same
 shutdown path. If continuous PTT was active, cleanup requests RX before releasing the
 radio and serial connection.
-
