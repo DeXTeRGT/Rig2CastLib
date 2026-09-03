@@ -71,6 +71,15 @@ families can reuse the ASCII engine when their wire behavior fits its contract.
 Binary protocols such as Icom CI-V, and network-native radio APIs, should use separate
 engines while continuing to implement the same radio-driver abstractions.
 
+The CI-V engine uses a byte-oriented incremental decoder and address-aware session.
+Transactions are serialized. Exact outbound echoes are consumed; a solicited reply
+must reverse the command's source/destination addresses and match its expected
+command prefix and validator. CI-V `FB` and `FA` are explicit acknowledgement and
+rejection responses. Other valid frames, including broadcast/transceive messages,
+are routed through a bounded unsolicited stream. A response timeout or caller
+cancellation after command commitment makes the session terminal so a late response
+cannot satisfy a later transaction; reconnect must replace the session.
+
 ## Driver plugins
 
 External drivers use the same `IRadioDriverFactory` contract and catalog as built-in

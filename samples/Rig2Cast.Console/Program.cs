@@ -8,10 +8,12 @@ using Rig2Cast.Abstractions.Security;
 using Rig2Cast.Abstractions.Sessions;
 using Rig2Cast.Core.Drivers;
 using Rig2Cast.Drivers.Elecraft.K3Family;
+using Rig2Cast.Drivers.Icom.Ic7300;
 using Rig2Cast.Drivers.Yaesu.Ftdx10;
 using Rig2Cast.PluginHost;
 using Rig2Cast.Runtime.Sessions;
 using Rig2Cast.Simulator;
+using Rig2Cast.Simulator.Civ;
 using Rig2Cast.Transports.Serial;
 using System.Globalization;
 
@@ -21,9 +23,11 @@ string? configuredAutoInformationMode = GetOption(args, "--auto-information-mode
 bool automaticInformation = HasFlag(args, "--auto-information") || configuredAutoInformationMode is not null;
 int automaticInformationMode = int.TryParse(configuredAutoInformationMode, out int parsedAutoInformationMode)
     ? parsedAutoInformationMode : 1;
+string? configuredCivAddress = GetOption(args, "--civ-address");
 var catalog = new RadioDriverCatalog();
 catalog.Register(new Ftdx10DriverFactory());
 catalog.Register(new ElecraftK3DriverFactory());
+catalog.Register(new Ic7300DriverFactory());
 string? pluginConfigurationPath = GetOption(args, "--plugin-config");
 string[] additionalPluginDirectories = GetOptions(args, "--plugin-directory");
 bool pluginDevelopmentMode = HasFlag(args, "--plugin-development-mode");
@@ -89,6 +93,7 @@ Console.CancelKeyPress += (_, eventArgs) =>
 };
 
 ManagedRadio managedRadio;
+IAsyncDisposable? simulatorPeer = null;
 if (simulator)
 {
     if (!selectedModel.Model.SupportedTransports.Contains(RadioTransportKind.Simulator))
@@ -97,6 +102,32 @@ if (simulator)
     if (selectedModel.Model.Id.Equals(Ftdx10CatProfile.ModelId, StringComparison.OrdinalIgnoreCase))
     {
         driver = new SimulatedFtdx10Driver();
+    }
+    else if (selectedModel.Model.Id.Equals(Ic7300Profile.ModelId, StringComparison.OrdinalIgnoreCase))
+    {
+        byte radioAddress = ParseHexByte(configuredCivAddress ?? "94", "--civ-address");
+        var transport = new InMemoryRadioTransport($"simulator:{modelId}");
+        await transport.ConnectAsync(stopping.Token);
+        var civSimulator = new CivRadioSimulator(
+            transport, new CivSimulatorOptions { RadioAddress = radioAddress });
+        simulatorPeer = civSimulator;
+        try
+        {
+            driver = await selectedModel.Factory.OpenAsync(
+                new RadioConnectionOptions(
+                    "radio-1", modelId,
+                    new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["icom.civAddress"] = $"{radioAddress:X2}"
+                    }),
+                transport,
+                stopping.Token);
+        }
+        catch
+        {
+            await civSimulator.DisposeAsync();
+            throw;
+        }
     }
     else
     {
@@ -119,22 +150,26 @@ else
         async cancellationToken =>
         {
             var transport = new SerialRadioTransport(CreateSerialOptions(selectedModel.Model, port, baud));
+            var connectionSettings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["yaesu.autoInformation"] = automaticInformation.ToString(),
+                ["elecraft.autoInformation"] = automaticInformation.ToString(),
+                ["elecraft.autoInformationMode"] = automaticInformationMode.ToString(CultureInfo.InvariantCulture)
+            };
+            if (configuredCivAddress is not null)
+                connectionSettings["icom.civAddress"] = configuredCivAddress;
             return await selectedModel.Factory.OpenAsync(
                 new RadioConnectionOptions(
                     "radio-1",
                     modelId,
-                    new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-                    {
-                        ["yaesu.autoInformation"] = automaticInformation.ToString(),
-                        ["elecraft.autoInformation"] = automaticInformation.ToString(),
-                        ["elecraft.autoInformationMode"] = automaticInformationMode.ToString(CultureInfo.InvariantCulture)
-                    }),
+                    connectionSettings),
                 transport,
                 cancellationToken);
         },
         cancellationToken: stopping.Token);
 }
 
+await using IAsyncDisposable? activeSimulatorPeer = simulatorPeer;
 await using ManagedRadio radio = managedRadio;
 ClientRole role = allowWrite ? ClientRole.Operator : ClientRole.Observer;
 await using IRadioSession session = radio.OpenSession(
@@ -668,6 +703,15 @@ static void EnsureWriteAllowed(bool allowed)
 
 static T ParseEnum<T>(string value) where T : struct, Enum =>
     Enum.TryParse(value, true, out T parsed) ? parsed : throw new ArgumentException($"Unknown {typeof(T).Name} '{value}'.");
+
+static byte ParseHexByte(string text, string option)
+{
+    ReadOnlySpan<char> value = text.AsSpan();
+    if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) value = value[2..];
+    return byte.TryParse(value, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out byte parsed)
+        ? parsed
+        : throw new ArgumentException($"Option '{option}' requires a hexadecimal byte value.");
+}
 
 static bool ParseBoolean(string value) => value.ToLowerInvariant() switch
 {

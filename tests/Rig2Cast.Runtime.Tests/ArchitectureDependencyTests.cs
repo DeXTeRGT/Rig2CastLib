@@ -12,6 +12,7 @@ public sealed class ArchitectureDependencyTests
         [
             Path.Combine(repository, "src", "Rig2Cast.Drivers.Yaesu", "Rig2Cast.Drivers.Yaesu.csproj"),
             Path.Combine(repository, "src", "Rig2Cast.Drivers.Elecraft", "Rig2Cast.Drivers.Elecraft.csproj"),
+            Path.Combine(repository, "src", "Rig2Cast.Drivers.Icom", "Rig2Cast.Drivers.Icom.csproj"),
             Path.Combine(repository, "samples", "Rig2Cast.ExamplePlugin", "Rig2Cast.ExamplePlugin.csproj"),
             Path.Combine(repository, "samples", "Rig2Cast.DeclarativeExamplePlugin",
                 "Rig2Cast.DeclarativeExamplePlugin.csproj")

@@ -11,7 +11,8 @@ drivers, capability discovery, and optional protocol adapters.
 > FTDX10 vertical slice are in place, but public APIs are not yet stable. The
 > Yaesu FTDX10 is the first supported and physically tested transceiver. An
 > initial Elecraft K3S/K3/KX3/KX2 core driver is implemented from the official
-> programmer's reference and awaits physical K3S validation.
+> programmer's reference. A documented, simulator-validated Icom
+> IC-7300 CI-V driver is also available; it has not been physically validated.
 
 ## Why another radio-control framework?
 
@@ -201,6 +202,26 @@ been validated against a physical K3S; the newer control batch is awaiting its
 interactive hardware pass. See the
 [Elecraft protocol record](docs/protocol-sources/elecraft-k3-family.md).
 
+## Initial Icom IC-7300 support
+
+The built-in `icom.ic-7300` driver uses the separate binary CI-V engine. Its
+pilot verifies the transceiver ID and reads current operating frequency, mode/filter,
+split, and RX/TX state. Frequency, mode, and split setters require CI-V
+acknowledgement and verified readback. Frequency and mode are available through
+either current-VFO or main-receiver APIs. CI-V transceive frequency and mode frames
+become typed receiver observations. CAT PTT uses the managed runtime's authorization,
+bounded transmit lease, verified state, and forced-RX cleanup. VFO selection remains
+unavailable.
+The expanded control surface also includes mode-dependent adjustable passband,
+S-meter/power/SWR/ALC raw meters, AF/RF gain, squelch, transmit power, preamp,
+20 dB attenuator, AGC, noise blanker/reduction levels and switches, automatic/manual
+notch switches, DATA LSB/USB/FM modes, and the shared RIT/Delta-TX offset and enable
+switches. Meter calibration is not claimed: readings expose documented CI-V raw
+values plus normalized 0–1 values.
+The implementation is verified against Icom Full Manual `A7292-4EX-12b` and the
+deterministic CI-V simulator, but not physical hardware. See the
+[Icom CI-V protocol record](docs/protocol-sources/icom-civ.md).
+
 ## Quick start
 
 ### Requirements
@@ -216,17 +237,21 @@ dotnet build Rig2Cast.sln
 dotnet test tests\Rig2Cast.Runtime.Tests\Rig2Cast.Runtime.Tests.csproj
 ```
 
-The current suite contains **192 automated tests** covering CAT framing and
+The current suite contains **258 automated tests** covering CAT framing and
 parsing, runtime serialization, concurrent clients, roles and leases, capability
 and model discovery, trusted plugin loading, TCP behavior, disconnect/reconnect behavior, unsolicited
-reporting, shutdown cleanup, FTDX10 controls, and the initial Elecraft K3-family
-protocol slice.
+reporting, shutdown cleanup, FTDX10 controls, the initial Elecraft K3-family slice,
+and CI-V framing, session, simulator, and IC-7300 driver behavior.
 
 The diagnostic Console can add trusted external driver assemblies to the same model
 catalog used by built-in drivers. Use `--plugin-config <file>` and then
 `--list-models`; see the [plugin host guide](docs/plugin-host.md) for the strict JSON
 schema and SHA-256 trust workflow. `--plugin-development-mode` is only for trusted
 local development and bypasses binary-hash verification.
+
+For startup options, every interactive command, safety guidance, and model-specific
+FTDX10, Elecraft K3-family, and IC-7300 test sequences, see the
+[Console operating manual](docs/console-operating-manual.md).
 
 ### Run the simulator demo
 
@@ -327,6 +352,26 @@ dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --model
 
 Add `--allow-write` only when the radio is safely configured for setter testing.
 The console deliberately does not expose transmit commands.
+
+### Run the IC-7300 CI-V pilot
+
+The simulator exercises the same built-in factory and driver used for serial access:
+
+```powershell
+dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --model icom.ic-7300 --simulator
+```
+
+For a physical IC-7300, select the configured serial port and baud. Its default CI-V
+address is `94h`; use `--civ-address` if the radio setting was changed:
+
+```powershell
+dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --model icom.ic-7300 --port COM13 --baud 19200
+dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --model icom.ic-7300 --port COM13 --baud 115200 --civ-address 94
+```
+
+Add `--allow-write` to exercise frequency, mode, split, and lease-protected PTT.
+Use a simulator for routine PTT testing; physical tests require a dummy load and low
+power.
 
 ### Run the rigctld-compatible server
 

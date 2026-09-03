@@ -1,6 +1,6 @@
 # Rig2Cast AI development handover
 
-Last updated: 2026-09-02 (Europe/Bucharest)
+Last updated: 2026-09-03 (Europe/Bucharest)
 
 This document is the continuity source for an AI agent resuming development of
 Rig2Cast. Read it before modifying code. Then read the architecture and decision
@@ -49,7 +49,7 @@ categories later, but do not generalize prematurely.
 - Target framework: .NET 8
 - Shell: PowerShell
 - Current baseline commit when this handover was written: `49eed20`
-- Current automated suite: **192 passing tests**.
+- Current automated suite: **258 passing tests**.
 
 Git may report dubious ownership because Codex and the interactive Windows user
 have different SIDs. Do not modify the user's global Git configuration. For
@@ -99,6 +99,8 @@ after this document was written.
 - `src/Rig2Cast.Drivers.Yaesu/Ftdx10`: Yaesu FTDX10 driver.
 - `src/Rig2Cast.Drivers.Elecraft/K3Family`: shared K3S/K3/KX3/KX2 family driver
   with model profiles and option/firmware-dependent capabilities.
+- `src/Rig2Cast.Drivers.Icom/Ic7300`: documented, simulator-validated IC-7300 CI-V
+  pilot with configurable addresses and verified frequency/mode setters.
 
 ### Adapters and hosts
 
@@ -150,7 +152,8 @@ Implemented and covered by automated tests:
   and event timestamps. The FTDX10 and Elecraft K3-family factories also accept a
   clock and propagate it to every driver-produced timestamp while retaining
   parameterless constructors and `TimeProvider.System` defaults.
-- Built-in Yaesu FTDX10 and Elecraft K3-family factories and drivers.
+- Built-in Yaesu FTDX10, Elecraft K3-family, and Icom IC-7300 factories
+  and drivers.
 - Plugin-host library foundation: strict manifests, exact API compatibility,
   SHA-256 trust, safe entry paths, descriptor matching, duplicate handling,
   collectible load contexts, and per-manifest diagnostics.
@@ -171,7 +174,14 @@ Not implemented or not integrated yet:
   factories directly. The Console supports `--plugin-config`, repeatable
   `--plugin-directory`, and explicit `--plugin-development-mode`.
 - `Rig2Cast.Server`, REST, gRPC, WebSocket, desktop, and web hosts remain future work.
-- Icom CI-V and legacy Yaesu binary CAT protocol engines/drivers are not implemented.
+- The model-neutral Icom CI-V framing, addressed session, packed-BCD primitive, and
+  deterministic IC-7300 simulator are implemented. The
+  session serializes transactions, discriminates exact echoes, correlates reversed
+  addresses and command prefixes, recognizes ACK/NAK, bounds unsolicited delivery,
+  and makes ambiguous timeout/post-commit cancellation terminal. The simulator covers
+  frequency and mode/filter reads, echo, fragmentation, broadcasts, injected delay,
+  drop, rejection, and close behavior. Model drivers remain future work. Legacy
+  Yaesu binary CAT is not implemented.
 - A general declarative command engine is not implemented. Existing family/model
   profiles are only partially declarative.
 - The latest renewable-PTT and receiver-targeted physical checks listed in section 7
@@ -449,7 +459,7 @@ dotnet test .\tests\Rig2Cast.Runtime.Tests\Rig2Cast.Runtime.Tests.csproj --no-re
 ```
 
 Expected after the typed declarative mode, query, applicability, and conditional
-capability pilots: 192 passed, 0 failed.
+capability pilots and expanded CI-V framing/session/simulator/driver: 258 passed, 0 failed.
 
 Console build:
 
@@ -541,7 +551,7 @@ Read `docs/rigctld-adapter.md` before adapter changes.
 
 Before another structural milestone:
 
-1. Run all 192 tests, build the Console, and run `git diff --check`.
+1. Run all 258 tests, build the Console, and run `git diff --check`.
 2. Review the intentionally dirty worktree as one coherent change set. Do not
    discard or rewrite earlier user work and do not commit without explicit approval.
 3. Ask the user for the outstanding physical confirmation:
@@ -688,6 +698,56 @@ declaration model.
 CI-V is the recommended binary architectural stress test. Implement a separate engine
 beside `AsciiCatSession`; do not add binary switches to the ASCII engine:
 
+Current status: the IC-7300 is selected as the first documented model with planned
+stable model ID `icom.ic-7300`. `CivFrame`, `CivFrameCodec`, and the bounded
+incremental `CivFrameDecoder` implement model-neutral framing under
+`Rig2Cast.Protocols/Civ`. `CivSession` adds one continuous reader, serialized
+transactions, exact echo discrimination, reversed-address and message-prefix
+correlation, response validation, ACK/NAK handling, bounded unsolicited delivery,
+terminal timeout/post-commit cancellation semantics, connection-failure propagation,
+and disposal. `CivBcd` provides validated little-endian packed-BCD conversion.
+`CivRadioSimulator` implements the IC-7300 frequency (`03`/`05`), mode/filter
+(`04`/`06`), split (`0F`), and RX/TX (`1C 00`) subset with optional echo,
+fragmentation and delay, transceive
+broadcasts, unsupported-command rejection, and injected drop/reject/close outcomes.
+Tests cover framing boundaries plus routing, echo, wrong addresses, validators,
+ACK/NAK, serialization, timeout, cancellation, remote close, overflow, BCD vectors,
+simulator reads, broadcasts, and fault injection. The evidence and source policy are
+recorded in `docs/protocol-sources/icom-civ.md`. The command subset is verified against
+the official IC-7300 Full Manual `A7292-4EX-12b` (August 2024), local SHA-256
+`2A08D85F47FA9CB4297BE290596E4AB9B73C599FD23B97D2BFAF01CDF944A73B`.
+The PDF is a local reference and must not be committed. `Rig2Cast.Drivers.Icom`
+contains the `icom.ic-7300` pilot. It verifies command `19 00` identity and
+reads frequency (`03`), mode/filter (`04`), split (`0F`), and RX/TX status (`1C 00`).
+It publishes current-VFO/main-receiver state and typed `00`/`01` transceive
+observations. Frequency (`05`), mode (`06`), and split (`0F`) setters require `FB`
+acknowledgement and immediate readback verification; both legacy current-VFO and
+receiver `main` frequency/mode paths are covered. Capabilities expose read/write
+frequency, mode, split, and transmit. PTT command `1C 00 00/01` uses CI-V
+acknowledgement and remains behind the existing managed-runtime authorization,
+bounded transmit lease, settled-state verification, forced-RX, and cleanup path.
+VFO selection remains intentionally unimplemented.
+The expanded IC-7300 surface implements `1A 03` mode-dependent passband;
+`15 02/11/12/13` raw S/power/SWR/ALC meters; `14 01/02/03/06/0A/12` AF gain,
+RF gain, squelch, NR level, transmit power, and NB level; attenuator `11`; preamp
+`16 02`; AGC `16 12`; NB/NR/auto-notch/manual-notch switches `16 22/40/41/48`;
+DATA mode `1A 06`; and shared RIT/Delta-TX offset plus independent enables
+`21 00/01/02`. All writes use acknowledgement and readback. Meter values remain raw
+and normalized, with calibration explicitly unavailable. Adjustable passband is not
+advertised for FM. DATA AM is not exposed because the current `RadioMode` abstraction
+has no corresponding value. Frequency/RIT and level/meter BCD byte orders are
+handled explicitly rather than conflated. The passband index conversion was
+cross-checked against the local Hamlib Icom backend as a secondary source and remains
+simulator-only evidence.
+Commands `25`/`26` expose selected/unselected VFO data but do not identify whether
+the selected VFO is A or B; command `07` selects A/B but has no documented read form.
+Do not publish stable A/B identity without an explicit synchronization policy that
+also handles reconnects and front-panel changes. The Console supports
+`--civ-address`, and runs it with the CI-V simulator. No physical validation exists.
+The user confirmed the read-only simulator and frequency/mode setter behavior on
+2026-09-03. Split and PTT setters are automatically validated but await the same
+manual confirmation; ordinary automated PTT tests use only the simulator.
+
 1. Choose one documented Icom model/CI-V address and record exact official source
    revision and assumptions. The user does not own Icom hardware, so mark all results
    simulated/unvalidated.
@@ -741,6 +801,8 @@ Read these before related work:
 - `docs/plugin-host.md`
 - `docs/decisions/0004-trusted-plugins.md`
 - `docs/decisions/0005-transmit-leases.md`
+- `docs/console-operating-manual.md` (operator-facing startup, command, safety, and
+  three-driver physical/simulator test manual)
 - `docs/diagnostic-console.md`
 - `docs/rigctld-adapter.md`
 - `docs/protocol-sources/yaesu-ftdx10.md`
@@ -779,7 +841,7 @@ dotnet test .\Rig2Cast\tests\Rig2Cast.Runtime.Tests\Rig2Cast.Runtime.Tests.cspro
 dotnet build .\Rig2Cast\samples\Rig2Cast.Console\Rig2Cast.Console.csproj --no-restore
 ```
 
-Then compare the result with the expected 192 tests and inspect changes made after
+Then compare the result with the expected 258 tests and inspect changes made after
 this handover. The compiled descriptor vocabulary and external sample are complete.
 Next, either add target applicability only for a concrete receiver-targeted need or
 begin the separate CI-V protocol-family framing work; do not turn the descriptor

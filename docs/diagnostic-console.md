@@ -1,6 +1,9 @@
 # Rig2Cast diagnostic console
 
-The diagnostic console is the supported manual test surface during early development. It can use the deterministic FTDX10 simulator or a registered physical radio such as the FTDX10 or Elecraft K3 family. Physical connections are read-only unless write access is explicitly enabled at startup. CAT PTT requires write access and a bounded transmit lease; tuner-start is not exposed.
+For the complete operator-facing command and three-driver test reference, see the
+[Rig2Cast Console operating manual](console-operating-manual.md).
+
+The diagnostic console is the supported manual test surface during early development. It can use deterministic simulators or registered physical radios such as the FTDX10, Elecraft K3 family, or IC-7300 pilot. Physical connections are read-only unless write access is explicitly enabled at startup. CAT PTT requires write access and a bounded transmit lease; tuner-start is not exposed.
 
 ## Start the console
 
@@ -26,6 +29,30 @@ dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --model
 
 # Elecraft AI2: typed front-panel control announcements
 dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --model elecraft.k3s --port COM12 --baud 38400 --allow-write --auto-information-mode 2
+
+# IC-7300 CI-V simulator
+dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --model icom.ic-7300 --simulator
+
+# IC-7300 simulator with acknowledged, readback-verified frequency/mode/split setters
+dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --model icom.ic-7300 --simulator --allow-write
+
+# At the interactive prompt: set split on, inspect state, then restore split off
+# Safe simulator PTT example: ptt on 2 (automatically returns to RX after two seconds)
+
+# Representative expanded IC-7300 commands at the interactive prompt:
+# set passband 2700
+# set numeric AfGain 143
+# set numeric ClarifierOffsetHz -1250
+# set choice Preamp preamp2
+# set choice Attenuator 20db
+# set choice Agc slow
+# set switch NoiseReduction on
+# set switch ReceiveClarifier on
+# set mode DataUsb
+# meters
+
+# Physical IC-7300; override --civ-address if its documented 94h default was changed
+dotnet run --project samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --model icom.ic-7300 --port COM13 --baud 19200 --civ-address 94
 ```
 
 Only one application may own the serial port. Close other CAT software before opening the physical radio.
