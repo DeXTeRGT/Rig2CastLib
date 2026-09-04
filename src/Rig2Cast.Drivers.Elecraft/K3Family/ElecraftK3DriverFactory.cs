@@ -58,5 +58,8 @@ public sealed class ElecraftK3DriverFactory : IRadioDriverFactory
             ["serial.rtsEnable"] = "false",
             ["elecraft.autoInformation"] = "false",
             ["elecraft.autoInformationMode"] = "1"
-        });
+        })
+    {
+        SerialProfile = SerialConnectionProfile.Create()
+    };
 }

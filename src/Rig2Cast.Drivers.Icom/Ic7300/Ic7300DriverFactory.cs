@@ -39,7 +39,10 @@ public sealed class Ic7300DriverFactory : IRadioDriverFactory
                 ["serial.rtsEnable"] = "false",
                 ["icom.civAddress"] = "94",
                 ["icom.controllerAddress"] = "E0"
-            })]);
+            })
+        {
+            SerialProfile = SerialConnectionProfile.Create()
+        }]);
 
     public ValueTask<IRadioDriver> OpenAsync(
         RadioConnectionOptions options,

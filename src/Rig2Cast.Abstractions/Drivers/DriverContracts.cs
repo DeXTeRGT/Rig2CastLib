@@ -26,7 +26,10 @@ public sealed record RadioModelDescriptor(
     IReadOnlySet<RadioTransportKind> SupportedTransports,
     IReadOnlyList<int> SupportedBaudRates,
     int? DefaultBaudRate = null,
-    IReadOnlyDictionary<string, string>? DefaultConnectionSettings = null);
+    IReadOnlyDictionary<string, string>? DefaultConnectionSettings = null)
+{
+    public SerialConnectionProfile? SerialProfile { get; init; }
+}
 
 public sealed record RadioDriverDescriptor(
     string Id,

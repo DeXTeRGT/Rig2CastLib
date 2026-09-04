@@ -529,6 +529,31 @@ Do not kill the process automatically.
 - `ReceiverIdJsonConverter` writes receiver IDs as strings and supports dictionary
   property names. Do not replace this with object-shaped IDs in REST/gRPC JSON.
 
+### Typed serial connection composition
+
+- `RadioModelDescriptor.SerialProfile` publishes typed serial defaults and constraints
+  without changing its existing positional constructor.
+- `SerialConnectionSettings` is the host/user-selected effective configuration.
+- `SerialRadioTransportFactory` is the single validator and mapper to
+  `System.IO.Ports`; the Console no longer parses `serial.*` keys itself.
+- Fixed settings require an explicit `allowUnsafeOverride` decision to change;
+  configurable and constrained settings are described with `SerialSetting<T>`.
+- Built-in FTDX10, Elecraft, IC-7300, and G90 descriptors have typed profiles.
+- `SerialConnectionProfile.Resolve` supports older plugins that expose only legacy
+  string settings, with an 8-N-1 fallback. Do not remove this compatibility path
+  without a versioned plugin-contract migration.
+- Reconnect connectors create a fresh transport from captured effective settings.
+  Drivers remain transport-independent and receive `IRadioTransport`.
+- The Console exposes every effective serial field as an optional startup override,
+  prints the resolved configuration, and requires
+  `--allow-unsafe-serial-overrides` for fixed framing or unsupported baud values.
+- See `docs/architecture/serial-connection-profiles.md`.
+
+The diagnostic Console also supports `get frequency <A|B|Current|main|sub>`. It
+forces a state refresh, reads VFO values from `RadioState.FrequenciesHz`, resolves
+`Current` to `ActiveVfo` when necessary, and uses receiver state for receiver targets.
+This is Console composition only; no duplicate driver query API was introduced.
+
 ## 11. rigctld compatibility boundary
 
 rigctld is intentionally a separate adapter/project. It supports a useful subset

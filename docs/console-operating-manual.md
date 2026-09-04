@@ -73,6 +73,15 @@ default to `COM11`; specify the actual port rather than relying on this convenie
 | `--model` | model ID | Selects a built-in or plugin model. |
 | `--port` | port name | Physical serial port, for example `COM7`. Default is `COM11`. |
 | `--baud` | integer | CAT baud rate. If omitted, the selected model's default is used. |
+| `--serial-data-bits` | `5`-`8` | Overrides data bits; omitted uses the model profile. |
+| `--serial-parity` | `none`, `odd`, `even`, `mark`, `space` | Overrides parity. |
+| `--serial-stop-bits` | `1`, `1.5`, `2` | Overrides stop bits. |
+| `--serial-handshake` | `none`, `xonxoff`, `rtscts`, `rtscts-xonxoff` | Overrides flow control. |
+| `--serial-dtr` | `on`/`off` | Overrides DTR state. |
+| `--serial-rts` | `on`/`off` | Overrides RTS state when handshake does not own RTS. |
+| `--serial-read-timeout-ms` | positive integer | Overrides the serial read timeout in milliseconds. |
+| `--serial-write-timeout-ms` | positive integer | Overrides the serial write timeout in milliseconds. |
+| `--allow-unsafe-serial-overrides` | none | Explicitly permits settings outside fixed/model-supported values. |
 | `--simulator` | none | Uses a supported in-process simulator instead of a serial port. |
 | `--allow-write` | none | Opens an Operator session and permits supported mutations. |
 | `--auto-information` | none | Enables supported unsolicited CAT reporting. |
@@ -84,6 +93,25 @@ default to `COM11`; specify the actual port rather than relying on this convenie
 
 Option names are case-insensitive. Model IDs and serial-port names should be entered
 exactly as displayed by `--list-models` and the operating system.
+
+All serial override options are optional. Omitted values come from the selected
+model's typed serial profile. DTR, RTS, and timeouts are normally configurable;
+changing fixed framing settings or selecting an unsupported baud rate requires
+`--allow-unsafe-serial-overrides`. The Console prints the effective serial settings
+before opening the port. Example advanced override:
+
+```powershell
+Rig2Cast.Console.exe --model xiegu.g90 --port COM16 --baud 19200 --serial-dtr on --serial-read-timeout-ms 3000
+```
+
+Example explicitly unsafe framing override:
+
+```powershell
+Rig2Cast.Console.exe --model xiegu.g90 --port COM16 --baud 19200 --serial-stop-bits 2 --allow-unsafe-serial-overrides
+```
+
+Unsafe overrides can prevent communication and should only be used when the radio or
+interface configuration is known to differ from the model profile.
 
 ### Serial settings used by the built-in drivers
 
@@ -324,6 +352,30 @@ get choice Preamp main
 
 Use `capabilities choices` to see the stable values accepted for each model and
 target. Option-dependent Elecraft choices can differ between main and sub receivers.
+
+### `get frequency <target>`
+
+Refreshes radio state and prints one VFO or receiver frequency:
+
+```text
+get frequency A
+get frequency B
+get frequency Current
+get frequency main
+```
+
+Example output:
+
+```text
+A = 14300000 Hz
+B = 7060000 Hz
+```
+
+Only targets present in the connected radio state are accepted. `Current` resolves
+to the active VFO when a driver exposes stable A/B identities instead of a literal
+`Current` entry. Receiver targets such as `main` return the frequency of that receive
+path. Use `state` when the complete topology is needed. The G90 Console simulator
+models firmware 1.81 extended VFO behavior, so it exposes both A and B.
 
 ## 7. Write commands
 
@@ -730,6 +782,9 @@ get numeric TransmitPower
 get numeric NoiseBlankerLevel
 get numeric AntiVoxLevel
 get numeric ClarifierOffsetHz
+get frequency A
+get frequency B
+get frequency main
 get choice Attenuator
 get choice Preamp
 get choice Agc

@@ -38,7 +38,12 @@ public sealed class Ftdx10DriverFactory : IRadioDriverFactory
                 ["serial.dtrEnable"] = "false",
                 ["serial.rtsEnable"] = "false",
                 ["yaesu.autoInformation"] = "false"
-            })]);
+            })
+        {
+            SerialProfile = SerialConnectionProfile.Create(
+                stopBits: RadioSerialStopBits.Two,
+                handshake: RadioSerialHandshake.RequestToSend)
+        }]);
 
     public async ValueTask<IRadioDriver> OpenAsync(
         RadioConnectionOptions options,

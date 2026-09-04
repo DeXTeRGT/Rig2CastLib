@@ -6,6 +6,7 @@ using Rig2Cast.Abstractions.Meters;
 using Rig2Cast.Abstractions.Radios;
 using Rig2Cast.Abstractions.Security;
 using Rig2Cast.Abstractions.Sessions;
+using Rig2Cast.Abstractions.Transports;
 using Rig2Cast.Core.Drivers;
 using Rig2Cast.Drivers.Elecraft.K3Family;
 using Rig2Cast.Drivers.Icom.Ic7300;
@@ -18,8 +19,15 @@ using Rig2Cast.Simulator.Civ;
 using Rig2Cast.Transports.Serial;
 using System.Globalization;
 
+if (HasFlag(args, "--help") || HasFlag(args, "-h"))
+{
+    PrintStartupHelp();
+    return;
+}
+
 bool simulator = HasFlag(args, "--simulator");
 bool allowWrite = HasFlag(args, "--allow-write");
+bool allowUnsafeSerialOverrides = HasFlag(args, "--allow-unsafe-serial-overrides");
 string? configuredAutoInformationMode = GetOption(args, "--auto-information-mode");
 bool automaticInformation = HasFlag(args, "--auto-information") || configuredAutoInformationMode is not null;
 int automaticInformationMode = int.TryParse(configuredAutoInformationMode, out int parsedAutoInformationMode)
@@ -119,7 +127,8 @@ if (simulator)
             transport, new CivSimulatorOptions
             {
                 RadioAddress = radioAddress,
-                SupportsXieguIdentity = selectedModel.Model.Id.Equals(G90Profile.ModelId, StringComparison.OrdinalIgnoreCase)
+                SupportsXieguIdentity = selectedModel.Model.Id.Equals(G90Profile.ModelId, StringComparison.OrdinalIgnoreCase),
+                SupportsXieguExtendedVfo = selectedModel.Model.Id.Equals(G90Profile.ModelId, StringComparison.OrdinalIgnoreCase)
             });
         simulatorPeer = civSimulator;
         try
@@ -153,14 +162,19 @@ if (simulator)
 }
 else
 {
-    if (!selectedModel.Model.SupportedBaudRates.Contains(baud))
+    if (!allowUnsafeSerialOverrides && !selectedModel.Model.SupportedBaudRates.Contains(baud))
         throw new ArgumentException($"Baud rate {baud} is not supported by {modelId}. Supported values: {string.Join(", ", selectedModel.Model.SupportedBaudRates)}.");
-    Console.WriteLine($"Opening {selectedModel.Model.Manufacturer} {selectedModel.Model.Model} on {port} at {baud} baud...");
+    SerialConnectionSettings serialSettings = CreateSerialSettings(
+        selectedModel.Model, port, baud, args);
+    _ = SerialRadioTransportFactory.CreateOptions(
+        selectedModel.Model, serialSettings, allowUnsafeSerialOverrides);
+    Console.WriteLine($"Opening {selectedModel.Model.Manufacturer} {selectedModel.Model.Model} on {port} at {baud} baud ({FormatSerialSettings(serialSettings)})...");
     managedRadio = await ManagedRadio.CreateReconnectableAsync(
         "radio-1",
         async cancellationToken =>
         {
-            var transport = new SerialRadioTransport(CreateSerialOptions(selectedModel.Model, port, baud));
+            IRadioTransport transport = SerialRadioTransportFactory.Create(
+                selectedModel.Model, serialSettings, allowUnsafeSerialOverrides);
             var connectionSettings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {
                 ["yaesu.autoInformation"] = automaticInformation.ToString(),
@@ -344,9 +358,33 @@ static async Task ExecutePttAsync(
 
 static async Task ExecuteGetAsync(IRadioSession session, string[] parts)
 {
-    RequireParts(parts, 3, "get <numeric|switch|choice> <name>");
+    RequireParts(parts, 3, "get <frequency|numeric|switch|choice> <target-or-name>");
     switch (parts[1].ToLowerInvariant())
     {
+        case "frequency":
+            RadioState state = await session.RefreshStateAsync();
+            if (IsReceiver(parts[2]))
+            {
+                ReceiverId receiver = ParseReceiver(parts[2]);
+                if (!state.Receivers.TryGetValue(receiver, out RadioReceiverState? receiverState))
+                    throw new NotSupportedException($"Receiver '{receiver}' is not available.");
+                long receiverFrequency = receiverState.FrequencyHz ??
+                    (receiverState.SelectedVfo is VfoId selectedVfo &&
+                     state.FrequenciesHz.TryGetValue(selectedVfo, out long selectedFrequency)
+                        ? selectedFrequency
+                        : throw new NotSupportedException($"Receiver '{receiver}' did not report a frequency."));
+                Console.WriteLine($"{receiver} = {receiverFrequency} Hz");
+                break;
+            }
+            VfoId requestedVfo = ParseEnum<VfoId>(parts[2]);
+            VfoId resolvedVfo = requestedVfo == VfoId.Current &&
+                !state.FrequenciesHz.ContainsKey(VfoId.Current)
+                    ? state.ActiveVfo
+                    : requestedVfo;
+            if (!state.FrequenciesHz.TryGetValue(resolvedVfo, out long vfoFrequency))
+                throw new NotSupportedException($"VFO '{requestedVfo}' is not available.");
+            Console.WriteLine($"{requestedVfo} = {vfoFrequency} Hz");
+            break;
         case "numeric":
             RadioControlId numeric = ParseEnum<RadioControlId>(parts[2]);
             RadioControlValue numericValue = parts.Length > 3
@@ -373,7 +411,7 @@ static async Task ExecuteGetAsync(IRadioSession session, string[] parts)
             Console.WriteLine($"{choice}{FormatAddress(choiceValue.Target, choiceValue.Receiver)} = {choiceValue.Value}");
             break;
         default:
-            throw new ArgumentException("Expected numeric, switch, or choice.");
+            throw new ArgumentException("Expected frequency, numeric, switch, or choice.");
     }
 }
 
@@ -685,12 +723,109 @@ static async Task<(CancellationTokenSource?, Task?)> ConfigurePollAsync(
 static void PrintHelp()
 {
     Console.WriteLine("Read: radio | state | refresh | capabilities [core|numeric|switches|choices|meters] | meters [main|sub|A|B] | passband [main|sub|A|B]");
+    Console.WriteLine("Read: get frequency <main|sub|Current|A|B>");
     Console.WriteLine("Read: get numeric <name> [main|sub|A|B] | get switch <name> [main|sub] | get choice <name> [main|sub|A|B]");
     Console.WriteLine("Events: watch [on|off] | poll start [milliseconds] | poll stop");
     Console.WriteLine("Transmit: ptt status | ptt on (renewed until off) | ptt on <1..60 seconds> | ptt off (writes require --allow-write)");
     Console.WriteLine("Write: set frequency <main|sub|A|B> <hz> | set vfo <A|B> | set mode [main|sub] <mode> | set passband [main|sub|A|B] <hz> | set split <on|off>");
     Console.WriteLine("Write: set numeric <name> [main|sub|A|B] <value> | set switch <name> [main|sub] <on|off> | set choice <name> [main|sub|A|B] <value>");
     Console.WriteLine("Exit: exit | quit");
+}
+
+static void PrintStartupHelp()
+{
+    Console.WriteLine("Rig2Cast.Console startup options:");
+    Console.WriteLine("  --list-models | --model <id> | --port <COMn> | --baud <rate> | --simulator | --allow-write");
+    Console.WriteLine("  --civ-address <hex> | --auto-information | --auto-information-mode <0..3>");
+    Console.WriteLine("  --serial-data-bits <5..8> | --serial-parity <none|odd|even|mark|space>");
+    Console.WriteLine("  --serial-stop-bits <1|1.5|2> | --serial-handshake <none|xonxoff|rtscts|rtscts-xonxoff>");
+    Console.WriteLine("  --serial-dtr <on|off> | --serial-rts <on|off>");
+    Console.WriteLine("  --serial-read-timeout-ms <positive> | --serial-write-timeout-ms <positive>");
+    Console.WriteLine("  --allow-unsafe-serial-overrides (required to override fixed or unsupported model settings)");
+    Console.WriteLine("Omitted serial options use the selected model's defaults.");
+}
+
+static SerialConnectionSettings CreateSerialSettings(
+    RadioModelDescriptor model, string port, int baud, string[] arguments)
+{
+    SerialConnectionSettings settings = SerialConnectionSettings.FromModel(model, port, baud);
+    return settings with
+    {
+        DataBits = ParseOptionalInt(arguments, "--serial-data-bits") ?? settings.DataBits,
+        Parity = ParseOptionalParity(arguments) ?? settings.Parity,
+        StopBits = ParseOptionalStopBits(arguments) ?? settings.StopBits,
+        Handshake = ParseOptionalHandshake(arguments) ?? settings.Handshake,
+        DtrEnable = ParseOptionalBoolean(arguments, "--serial-dtr") ?? settings.DtrEnable,
+        RtsEnable = ParseOptionalBoolean(arguments, "--serial-rts") ?? settings.RtsEnable,
+        ReadTimeout = ParseOptionalMilliseconds(arguments, "--serial-read-timeout-ms") ?? settings.ReadTimeout,
+        WriteTimeout = ParseOptionalMilliseconds(arguments, "--serial-write-timeout-ms") ?? settings.WriteTimeout
+    };
+}
+
+static int? ParseOptionalInt(string[] arguments, string option)
+{
+    string? value = GetSerialOption(arguments, option);
+    return value is null ? null : int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed)
+        ? parsed : throw new ArgumentException($"Option '{option}' requires an integer value.");
+}
+
+static TimeSpan? ParseOptionalMilliseconds(string[] arguments, string option)
+{
+    int? milliseconds = ParseOptionalInt(arguments, option);
+    if (milliseconds is null) return null;
+    if (milliseconds <= 0) throw new ArgumentOutOfRangeException(option, "Timeout must be positive.");
+    return TimeSpan.FromMilliseconds(milliseconds.Value);
+}
+
+static bool? ParseOptionalBoolean(string[] arguments, string option)
+{
+    string? value = GetSerialOption(arguments, option);
+    return value is null ? null : ParseBoolean(value);
+}
+
+static RadioSerialParity? ParseOptionalParity(string[] arguments)
+{
+    string? value = GetSerialOption(arguments, "--serial-parity");
+    return value is null ? null : ParseEnum<RadioSerialParity>(value);
+}
+
+static RadioSerialStopBits? ParseOptionalStopBits(string[] arguments)
+{
+    string? value = GetSerialOption(arguments, "--serial-stop-bits");
+    return value?.ToLowerInvariant() switch
+    {
+        null => null,
+        "1" or "one" => RadioSerialStopBits.One,
+        "1.5" or "onepointfive" => RadioSerialStopBits.OnePointFive,
+        "2" or "two" => RadioSerialStopBits.Two,
+        _ => throw new ArgumentException("Option '--serial-stop-bits' requires 1, 1.5, or 2.")
+    };
+}
+
+static RadioSerialHandshake? ParseOptionalHandshake(string[] arguments)
+{
+    string? value = GetSerialOption(arguments, "--serial-handshake");
+    return value?.ToLowerInvariant() switch
+    {
+        null => null,
+        "none" => RadioSerialHandshake.None,
+        "xonxoff" => RadioSerialHandshake.XOnXOff,
+        "rtscts" or "requesttosend" => RadioSerialHandshake.RequestToSend,
+        "rtscts-xonxoff" or "requesttosendxonxoff" => RadioSerialHandshake.RequestToSendXOnXOff,
+        _ => throw new ArgumentException("Unknown serial handshake. Use none, xonxoff, rtscts, or rtscts-xonxoff.")
+    };
+}
+
+static string FormatSerialSettings(SerialConnectionSettings settings) =>
+    $"{settings.DataBits}-{settings.Parity}-{settings.StopBits}, {settings.Handshake}, DTR={(settings.DtrEnable ? "on" : "off")}, RTS={(settings.RtsEnable ? "on" : "off")}, timeouts={settings.ReadTimeout.TotalMilliseconds:0}/{settings.WriteTimeout.TotalMilliseconds:0} ms";
+
+static string? GetSerialOption(string[] arguments, string option)
+{
+    int index = Array.FindIndex(arguments, value => StringComparer.OrdinalIgnoreCase.Equals(value, option));
+    if (index < 0) return null;
+    if (index + 1 >= arguments.Length || arguments[index + 1].StartsWith("--", StringComparison.Ordinal))
+        throw new ArgumentException($"Option '{option}' requires a value.");
+    return arguments[index + 1];
 }
 
 static string FormatTarget(VfoId? target) => target is null ? string.Empty : $"[{target}]";
@@ -781,29 +916,3 @@ static async Task IgnoreCancellationAsync(Task task)
     try { await task; }
     catch (OperationCanceledException) { }
 }
-
-static SerialRadioTransportOptions CreateSerialOptions(RadioModelDescriptor model, string port, int baud)
-{
-    IReadOnlyDictionary<string, string> settings = model.DefaultConnectionSettings ??
-        new Dictionary<string, string>();
-    return new SerialRadioTransportOptions
-    {
-        PortName = port,
-        BaudRate = baud,
-        DataBits = GetInt(settings, "serial.dataBits", 8),
-        StopBits = GetEnum(settings, "serial.stopBits", System.IO.Ports.StopBits.One),
-        Parity = GetEnum(settings, "serial.parity", System.IO.Ports.Parity.None),
-        Handshake = GetEnum(settings, "serial.handshake", System.IO.Ports.Handshake.None),
-        DtrEnable = GetBool(settings, "serial.dtrEnable"),
-        RtsEnable = GetBool(settings, "serial.rtsEnable")
-    };
-}
-
-static int GetInt(IReadOnlyDictionary<string, string> settings, string key, int fallback) =>
-    settings.TryGetValue(key, out string? value) && int.TryParse(value, out int parsed) ? parsed : fallback;
-
-static bool GetBool(IReadOnlyDictionary<string, string> settings, string key) =>
-    settings.TryGetValue(key, out string? value) && bool.TryParse(value, out bool parsed) && parsed;
-
-static T GetEnum<T>(IReadOnlyDictionary<string, string> settings, string key, T fallback) where T : struct, Enum =>
-    settings.TryGetValue(key, out string? value) && Enum.TryParse(value, true, out T parsed) ? parsed : fallback;

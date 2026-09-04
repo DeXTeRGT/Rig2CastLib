@@ -37,7 +37,10 @@ public sealed class G90DriverFactory : IRadioDriverFactory
                 ["serial.rtsEnable"] = "false",
                 ["icom.civAddress"] = "70",
                 ["icom.controllerAddress"] = "E0"
-            })]);
+            })
+        {
+            SerialProfile = SerialConnectionProfile.Create()
+        }]);
 
     public async ValueTask<IRadioDriver> OpenAsync(
         RadioConnectionOptions options,

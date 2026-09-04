@@ -1,5 +1,9 @@
 # Architecture
 
+Serial model defaults, user overrides, legacy-plugin compatibility, and shared
+transport construction are specified in
+[`architecture/serial-connection-profiles.md`](architecture/serial-connection-profiles.md).
+
 Rig2Cast has one runtime and two first-class deployment forms: embedded in a .NET process or hosted by a standalone service. Network adapters contain no radio-control logic.
 
 ## Dependency direction
