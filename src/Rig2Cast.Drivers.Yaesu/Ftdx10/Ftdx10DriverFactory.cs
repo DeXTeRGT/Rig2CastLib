@@ -26,7 +26,7 @@ public sealed class Ftdx10DriverFactory : IRadioDriverFactory
             Ftdx10CatProfile.ModelId,
             "Yaesu",
             "FTDX10",
-            new HashSet<RadioTransportKind> { RadioTransportKind.Serial, RadioTransportKind.Simulator },
+            new HashSet<RadioTransportKind> { RadioTransportKind.Serial, RadioTransportKind.Tcp, RadioTransportKind.Simulator },
             Ftdx10CatProfile.SupportedBaudRates,
             38_400,
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)

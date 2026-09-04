@@ -24,7 +24,7 @@ public sealed class G90DriverFactory : IRadioDriverFactory
             G90Profile.ModelId,
             "Xiegu",
             "G90",
-            new HashSet<RadioTransportKind> { RadioTransportKind.Serial, RadioTransportKind.Simulator },
+            new HashSet<RadioTransportKind> { RadioTransportKind.Serial, RadioTransportKind.Tcp, RadioTransportKind.Simulator },
             G90Profile.SupportedBaudRates,
             19_200,
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)

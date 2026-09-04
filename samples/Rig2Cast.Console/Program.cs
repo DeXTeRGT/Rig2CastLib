@@ -17,6 +17,7 @@ using Rig2Cast.Runtime.Sessions;
 using Rig2Cast.Simulator;
 using Rig2Cast.Simulator.Civ;
 using Rig2Cast.Transports.Serial;
+using Rig2Cast.Transports.Tcp;
 using System.Globalization;
 
 if (HasFlag(args, "--help") || HasFlag(args, "-h"))
@@ -25,7 +26,20 @@ if (HasFlag(args, "--help") || HasFlag(args, "-h"))
     return;
 }
 
-bool simulator = HasFlag(args, "--simulator");
+string? configuredTransport = GetOption(args, "--transport");
+if (HasFlag(args, "--simulator") && configuredTransport is not null &&
+    !configuredTransport.Equals("simulator", StringComparison.OrdinalIgnoreCase))
+    throw new ArgumentException("--simulator cannot be combined with a different --transport value.");
+string transportName = configuredTransport?.ToLowerInvariant() ??
+    (HasFlag(args, "--simulator") ? "simulator" : "serial");
+RadioTransportKind transportKind = transportName switch
+{
+    "serial" => RadioTransportKind.Serial,
+    "tcp" => RadioTransportKind.Tcp,
+    "simulator" => RadioTransportKind.Simulator,
+    _ => throw new ArgumentException("--transport must be serial, tcp, or simulator.")
+};
+bool simulator = transportKind == RadioTransportKind.Simulator;
 bool allowWrite = HasFlag(args, "--allow-write");
 bool allowUnsafeSerialOverrides = HasFlag(args, "--allow-unsafe-serial-overrides");
 string? configuredAutoInformationMode = GetOption(args, "--auto-information-mode");
@@ -79,21 +93,16 @@ string modelId = GetOption(args, "--model") ?? Ftdx10CatProfile.ModelId;
 RadioModelRegistration selectedModel = catalog.Find(modelId);
 string port = GetOption(args, "--port") ?? "COM11";
 int baud = 0;
-if (!simulator)
+if (!selectedModel.Model.SupportedTransports.Contains(transportKind))
+    throw new ArgumentException($"Model '{modelId}' does not support {transportKind} transport.");
+if (transportKind == RadioTransportKind.Serial)
 {
-    if (!selectedModel.Model.SupportedTransports.Contains(RadioTransportKind.Serial))
-    {
-        string suggestion = selectedModel.Model.SupportedTransports.Contains(RadioTransportKind.Simulator)
-            ? " Restart with --simulator."
-            : string.Empty;
-        throw new ArgumentException(
-            $"Model '{modelId}' does not support a serial connection.{suggestion}");
-    }
     baud = int.TryParse(GetOption(args, "--baud"), out int parsedBaud)
         ? parsedBaud
         : selectedModel.Model.DefaultBaudRate ??
             throw new ArgumentException($"Model '{modelId}' has no default baud rate; specify --baud.");
 }
+TcpRadioTransportOptions? tcpOptions = null;
 
 using var stopping = new CancellationTokenSource();
 Console.CancelKeyPress += (_, eventArgs) =>
@@ -106,6 +115,8 @@ ManagedRadio managedRadio;
 CivRadioSimulator? simulatorPeer = null;
 try
 {
+if (transportKind == RadioTransportKind.Tcp)
+    tcpOptions = CreateTcpOptions(args);
 if (simulator)
 {
     if (!selectedModel.Model.SupportedTransports.Contains(RadioTransportKind.Simulator))
@@ -162,19 +173,28 @@ if (simulator)
 }
 else
 {
-    if (!allowUnsafeSerialOverrides && !selectedModel.Model.SupportedBaudRates.Contains(baud))
-        throw new ArgumentException($"Baud rate {baud} is not supported by {modelId}. Supported values: {string.Join(", ", selectedModel.Model.SupportedBaudRates)}.");
-    SerialConnectionSettings serialSettings = CreateSerialSettings(
-        selectedModel.Model, port, baud, args);
-    _ = SerialRadioTransportFactory.CreateOptions(
-        selectedModel.Model, serialSettings, allowUnsafeSerialOverrides);
-    Console.WriteLine($"Opening {selectedModel.Model.Manufacturer} {selectedModel.Model.Model} on {port} at {baud} baud ({FormatSerialSettings(serialSettings)})...");
+    SerialConnectionSettings? serialSettings = null;
+    if (transportKind == RadioTransportKind.Serial)
+    {
+        if (!allowUnsafeSerialOverrides && !selectedModel.Model.SupportedBaudRates.Contains(baud))
+            throw new ArgumentException($"Baud rate {baud} is not supported by {modelId}. Supported values: {string.Join(", ", selectedModel.Model.SupportedBaudRates)}.");
+        serialSettings = CreateSerialSettings(selectedModel.Model, port, baud, args);
+        _ = SerialRadioTransportFactory.CreateOptions(
+            selectedModel.Model, serialSettings, allowUnsafeSerialOverrides);
+        Console.WriteLine($"Opening {selectedModel.Model.Manufacturer} {selectedModel.Model.Model} on {port} at {baud} baud ({FormatSerialSettings(serialSettings)})...");
+    }
+    else
+    {
+        Console.WriteLine($"Opening {selectedModel.Model.Manufacturer} {selectedModel.Model.Model} over raw TCP at {tcpOptions!.Host}:{tcpOptions.Port}...");
+    }
     managedRadio = await ManagedRadio.CreateReconnectableAsync(
         "radio-1",
         async cancellationToken =>
         {
-            IRadioTransport transport = SerialRadioTransportFactory.Create(
-                selectedModel.Model, serialSettings, allowUnsafeSerialOverrides);
+            IRadioTransport transport = transportKind == RadioTransportKind.Tcp
+                ? new TcpRadioTransport(tcpOptions!)
+                : SerialRadioTransportFactory.Create(
+                    selectedModel.Model, serialSettings!, allowUnsafeSerialOverrides);
             var connectionSettings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {
                 ["yaesu.autoInformation"] = automaticInformation.ToString(),
@@ -735,7 +755,10 @@ static void PrintHelp()
 static void PrintStartupHelp()
 {
     Console.WriteLine("Rig2Cast.Console startup options:");
-    Console.WriteLine("  --list-models | --model <id> | --port <COMn> | --baud <rate> | --simulator | --allow-write");
+    Console.WriteLine("  --list-models | --model <id> | --transport <serial|tcp|simulator> | --allow-write");
+    Console.WriteLine("  Serial: --port <COMn|device> | --baud <rate>");
+    Console.WriteLine("  Raw TCP: --tcp-host <name-or-address> | --tcp-port <1..65535>");
+    Console.WriteLine("           --tcp-connect-timeout-ms <positive> | --tcp-no-delay <on|off> | --tcp-keep-alive <on|off>");
     Console.WriteLine("  --civ-address <hex> | --auto-information | --auto-information-mode <0..3>");
     Console.WriteLine("  --serial-data-bits <5..8> | --serial-parity <none|odd|even|mark|space>");
     Console.WriteLine("  --serial-stop-bits <1|1.5|2> | --serial-handshake <none|xonxoff|rtscts|rtscts-xonxoff>");
@@ -743,6 +766,23 @@ static void PrintStartupHelp()
     Console.WriteLine("  --serial-read-timeout-ms <positive> | --serial-write-timeout-ms <positive>");
     Console.WriteLine("  --allow-unsafe-serial-overrides (required to override fixed or unsupported model settings)");
     Console.WriteLine("Omitted serial options use the selected model's defaults.");
+}
+
+static TcpRadioTransportOptions CreateTcpOptions(string[] arguments)
+{
+    string host = GetRequiredOption(arguments, "--tcp-host");
+    int port = ParseOptionalInt(arguments, "--tcp-port") ??
+        throw new ArgumentException("Option '--tcp-port' is required for TCP transport.");
+    if (port is < 1 or > 65_535)
+        throw new ArgumentException("Option '--tcp-port' must be from 1 through 65535.");
+    return new TcpRadioTransportOptions
+    {
+        Host = host,
+        Port = port,
+        ConnectTimeout = ParseOptionalMilliseconds(arguments, "--tcp-connect-timeout-ms") ?? TimeSpan.FromSeconds(5),
+        NoDelay = ParseOptionalBoolean(arguments, "--tcp-no-delay") ?? true,
+        KeepAlive = ParseOptionalBoolean(arguments, "--tcp-keep-alive") ?? true
+    };
 }
 
 static SerialConnectionSettings CreateSerialSettings(
@@ -764,7 +804,7 @@ static SerialConnectionSettings CreateSerialSettings(
 
 static int? ParseOptionalInt(string[] arguments, string option)
 {
-    string? value = GetSerialOption(arguments, option);
+    string? value = GetValidatedOption(arguments, option);
     return value is null ? null : int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed)
         ? parsed : throw new ArgumentException($"Option '{option}' requires an integer value.");
 }
@@ -779,19 +819,19 @@ static TimeSpan? ParseOptionalMilliseconds(string[] arguments, string option)
 
 static bool? ParseOptionalBoolean(string[] arguments, string option)
 {
-    string? value = GetSerialOption(arguments, option);
+    string? value = GetValidatedOption(arguments, option);
     return value is null ? null : ParseBoolean(value);
 }
 
 static RadioSerialParity? ParseOptionalParity(string[] arguments)
 {
-    string? value = GetSerialOption(arguments, "--serial-parity");
+    string? value = GetValidatedOption(arguments, "--serial-parity");
     return value is null ? null : ParseEnum<RadioSerialParity>(value);
 }
 
 static RadioSerialStopBits? ParseOptionalStopBits(string[] arguments)
 {
-    string? value = GetSerialOption(arguments, "--serial-stop-bits");
+    string? value = GetValidatedOption(arguments, "--serial-stop-bits");
     return value?.ToLowerInvariant() switch
     {
         null => null,
@@ -804,7 +844,7 @@ static RadioSerialStopBits? ParseOptionalStopBits(string[] arguments)
 
 static RadioSerialHandshake? ParseOptionalHandshake(string[] arguments)
 {
-    string? value = GetSerialOption(arguments, "--serial-handshake");
+    string? value = GetValidatedOption(arguments, "--serial-handshake");
     return value?.ToLowerInvariant() switch
     {
         null => null,
@@ -819,7 +859,7 @@ static RadioSerialHandshake? ParseOptionalHandshake(string[] arguments)
 static string FormatSerialSettings(SerialConnectionSettings settings) =>
     $"{settings.DataBits}-{settings.Parity}-{settings.StopBits}, {settings.Handshake}, DTR={(settings.DtrEnable ? "on" : "off")}, RTS={(settings.RtsEnable ? "on" : "off")}, timeouts={settings.ReadTimeout.TotalMilliseconds:0}/{settings.WriteTimeout.TotalMilliseconds:0} ms";
 
-static string? GetSerialOption(string[] arguments, string option)
+static string? GetValidatedOption(string[] arguments, string option)
 {
     int index = Array.FindIndex(arguments, value => StringComparer.OrdinalIgnoreCase.Equals(value, option));
     if (index < 0) return null;
@@ -827,6 +867,10 @@ static string? GetSerialOption(string[] arguments, string option)
         throw new ArgumentException($"Option '{option}' requires a value.");
     return arguments[index + 1];
 }
+
+static string GetRequiredOption(string[] arguments, string option) =>
+    GetValidatedOption(arguments, option) ??
+    throw new ArgumentException($"Option '{option}' is required for TCP transport.");
 
 static string FormatTarget(VfoId? target) => target is null ? string.Empty : $"[{target}]";
 

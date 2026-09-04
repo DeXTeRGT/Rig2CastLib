@@ -45,7 +45,7 @@ public sealed class ElecraftK3DriverFactory : IRadioDriverFactory
         profile.ModelId,
         "Elecraft",
         profile.Model,
-        new HashSet<RadioTransportKind> { RadioTransportKind.Serial, RadioTransportKind.Simulator },
+        new HashSet<RadioTransportKind> { RadioTransportKind.Serial, RadioTransportKind.Tcp, RadioTransportKind.Simulator },
         ElecraftK3Profile.SupportedBaudRates,
         38_400,
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)

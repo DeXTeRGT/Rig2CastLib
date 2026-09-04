@@ -26,7 +26,7 @@ public sealed class Ic7300DriverFactory : IRadioDriverFactory
             Ic7300Profile.ModelId,
             "Icom",
             "IC-7300",
-            new HashSet<RadioTransportKind> { RadioTransportKind.Serial, RadioTransportKind.Simulator },
+            new HashSet<RadioTransportKind> { RadioTransportKind.Serial, RadioTransportKind.Tcp, RadioTransportKind.Simulator },
             Ic7300Profile.SupportedBaudRates,
             19_200,
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)

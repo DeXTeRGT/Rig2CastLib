@@ -549,6 +549,23 @@ Do not kill the process automatically.
   `--allow-unsafe-serial-overrides` for fixed framing or unsupported baud values.
 - See `docs/architecture/serial-connection-profiles.md`.
 
+### Raw TCP CAT transport
+
+- `TcpRadioTransport` is a client for transparent serial-over-TCP byte streams. It
+  deliberately has no Telnet, RFC2217, rigctld, text encoding, or extra framing.
+- `TcpRadioTransportOptions` supplies host, port, connect timeout, no-delay, and
+  keep-alive. No-delay and keep-alive default on.
+- All built-in models advertise `RadioTransportKind.Tcp`; this means bridge-compatible
+  CAT, not native radio Ethernet support.
+- The Console selects it with `--transport tcp --tcp-host ... --tcp-port ...` and
+  recreates a fresh transport on managed reconnect.
+- Loopback tests prove byte transparency, fragmented CI-V responses, CI-V query
+  correlation, and release of blocked reads on disconnect.
+- Keep raw CAT on localhost or a trusted network/VPN when control/PTT is permitted.
+- On 2026-09-04 the user physically validated G90 CI-V through a VSPE raw TCP server
+  at `127.0.0.1:5555`, including numeric reads and confirmed VFO A frequency writes.
+- See `docs/architecture/raw-tcp-transport.md`.
+
 The diagnostic Console also supports `get frequency <A|B|Current|main|sub>`. It
 forces a state refresh, reads VFO values from `RadioState.FrequenciesHz`, resolves
 `Current` to `ActiveVfo` when necessary, and uses receiver state for receiver targets.

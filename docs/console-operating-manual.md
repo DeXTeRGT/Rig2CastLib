@@ -71,6 +71,7 @@ default to `COM11`; specify the actual port rather than relying on this convenie
 |---|---:|---|
 | `--list-models` | none | Lists registered model IDs and exits. |
 | `--model` | model ID | Selects a built-in or plugin model. |
+| `--transport` | `serial`, `tcp`, `simulator` | Selects the connection transport; default is `serial`. |
 | `--port` | port name | Physical serial port, for example `COM7`. Default is `COM11`. |
 | `--baud` | integer | CAT baud rate. If omitted, the selected model's default is used. |
 | `--serial-data-bits` | `5`-`8` | Overrides data bits; omitted uses the model profile. |
@@ -82,6 +83,11 @@ default to `COM11`; specify the actual port rather than relying on this convenie
 | `--serial-read-timeout-ms` | positive integer | Overrides the serial read timeout in milliseconds. |
 | `--serial-write-timeout-ms` | positive integer | Overrides the serial write timeout in milliseconds. |
 | `--allow-unsafe-serial-overrides` | none | Explicitly permits settings outside fixed/model-supported values. |
+| `--tcp-host` | host/address | Required raw TCP server name or IP address in TCP mode. |
+| `--tcp-port` | `1`-`65535` | Required raw TCP server port in TCP mode. |
+| `--tcp-connect-timeout-ms` | positive integer | TCP connection timeout; default is 5000 ms. |
+| `--tcp-no-delay` | `on`/`off` | Controls Nagle buffering; default is on. |
+| `--tcp-keep-alive` | `on`/`off` | Controls TCP keep-alive; default is on. |
 | `--simulator` | none | Uses a supported in-process simulator instead of a serial port. |
 | `--allow-write` | none | Opens an Operator session and permits supported mutations. |
 | `--auto-information` | none | Enables supported unsolicited CAT reporting. |
@@ -112,6 +118,25 @@ Rig2Cast.Console.exe --model xiegu.g90 --port COM16 --baud 19200 --serial-stop-b
 
 Unsafe overrides can prevent communication and should only be used when the radio or
 interface configuration is known to differ from the model profile.
+
+### Raw serial over TCP
+
+Use `tcp` when a server such as a VSPE endpoint transparently exposes the radio's raw
+serial bytes:
+
+```powershell
+Rig2Cast.Console.exe --model xiegu.g90 --transport tcp --tcp-host 127.0.0.1 --tcp-port 5000 --civ-address 70 --allow-write
+```
+
+The TCP path sends CAT bytes unchanged and does not use Telnet, RFC2217, or rigctld.
+Configure baud rate, parity, stop bits, handshake, DTR, and RTS on the remote serial
+bridge; Console serial options do not apply in TCP mode. Each reconnect creates a new
+TCP connection. Use raw CAT only on localhost or a trusted network/VPN, particularly
+when writes or PTT are enabled.
+
+The raw TCP path was physically validated with a G90 through VSPE. Interactive command
+grammar is unchanged by the transport; frequency setters always place the target
+before the value, for example `set frequency A 14100000`.
 
 ### Serial settings used by the built-in drivers
 

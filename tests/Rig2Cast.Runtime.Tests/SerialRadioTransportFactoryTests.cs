@@ -21,7 +21,11 @@ public sealed class SerialRadioTransportFactoryTests
             .. new G90DriverFactory().Descriptor.Models
         ];
 
-        Assert.All(models, model => Assert.NotNull(model.SerialProfile));
+        Assert.All(models, model =>
+        {
+            Assert.NotNull(model.SerialProfile);
+            Assert.Contains(RadioTransportKind.Tcp, model.SupportedTransports);
+        });
         RadioModelDescriptor ftdx10 = Assert.Single(
             models.Where(model => model.Id == Ftdx10CatProfile.ModelId));
         Assert.Equal(RadioSerialStopBits.Two, ftdx10.SerialProfile!.StopBits.DefaultValue);
