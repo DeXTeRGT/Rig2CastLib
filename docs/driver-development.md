@@ -13,6 +13,13 @@ factory. Static catalog metadata describes transports and connection defaults;
 after connection, the driver's `RadioCapabilities` remain authoritative for the
 features available from that particular radio instance.
 
+Model-specific pre-open parameters are declared through
+`RadioModelDescriptor.ConnectionSettings`. Hosts can render these definitions,
+apply user or application defaults, and validate them with
+`ConnectionSettingsResolver`. Built-in factories consume `ResolvedConnectionSettings`
+instead of duplicating parsing. See
+[typed-connection-settings.md](architecture/typed-connection-settings.md).
+
 A plugin exposes complete static model metadata through a sidecar manifest so it can
 be discovered without loading its assembly. Loading requires an explicit trust record
 containing plugin ID and SHA-256 binary hash; development mode may opt out. The host

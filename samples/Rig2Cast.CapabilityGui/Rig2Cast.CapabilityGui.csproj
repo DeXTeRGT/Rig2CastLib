@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="12.1.2" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.2" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="12.1.2" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Rig2Cast.Abstractions\Rig2Cast.Abstractions.csproj" />
+    <ProjectReference Include="..\..\src\Rig2Cast.Core\Rig2Cast.Core.csproj" />
+    <ProjectReference Include="..\..\src\Rig2Cast.Runtime\Rig2Cast.Runtime.csproj" />
+    <ProjectReference Include="..\..\src\Rig2Cast.Transports\Rig2Cast.Transports.csproj" />
+    <ProjectReference Include="..\..\src\Rig2Cast.Simulator\Rig2Cast.Simulator.csproj" />
+    <ProjectReference Include="..\..\src\Rig2Cast.Drivers.Yaesu\Rig2Cast.Drivers.Yaesu.csproj" />
+    <ProjectReference Include="..\..\src\Rig2Cast.Drivers.Elecraft\Rig2Cast.Drivers.Elecraft.csproj" />
+    <ProjectReference Include="..\..\src\Rig2Cast.Drivers.Icom\Rig2Cast.Drivers.Icom.csproj" />
+    <ProjectReference Include="..\..\src\Rig2Cast.Drivers.Xiegu\Rig2Cast.Drivers.Xiegu.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -43,10 +43,8 @@ bool simulator = transportKind == RadioTransportKind.Simulator;
 bool allowWrite = HasFlag(args, "--allow-write");
 bool allowUnsafeSerialOverrides = HasFlag(args, "--allow-unsafe-serial-overrides");
 string? configuredAutoInformationMode = GetOption(args, "--auto-information-mode");
-bool automaticInformation = HasFlag(args, "--auto-information") || configuredAutoInformationMode is not null;
-int automaticInformationMode = int.TryParse(configuredAutoInformationMode, out int parsedAutoInformationMode)
-    ? parsedAutoInformationMode : 1;
 string? configuredCivAddress = GetOption(args, "--civ-address");
+string? configuredCivControllerAddress = GetOption(args, "--civ-controller-address");
 var catalog = new RadioDriverCatalog();
 catalog.Register(new Ftdx10DriverFactory());
 catalog.Register(new ElecraftK3DriverFactory());
@@ -78,6 +76,16 @@ if (pluginConfigurationPath is not null || additionalPluginDirectories.Length > 
 }
 using (pluginComposition)
 {
+if (HasFlag(args, "--list-ports"))
+{
+    IReadOnlyList<SerialPortDescriptor> ports = new SystemSerialPortDiscovery().GetPorts();
+    if (ports.Count == 0)
+        Console.WriteLine("No serial ports were discovered.");
+    else
+        foreach (SerialPortDescriptor serialPort in ports)
+            Console.WriteLine($"{serialPort.PortName,-16} {serialPort.DisplayName}");
+    return;
+}
 if (HasFlag(args, "--list-models"))
 {
     foreach (RadioModelRegistration item in catalog.Models)
@@ -91,6 +99,37 @@ if (HasFlag(args, "--list-models"))
 }
 string modelId = GetOption(args, "--model") ?? Ftdx10CatProfile.ModelId;
 RadioModelRegistration selectedModel = catalog.Find(modelId);
+if (HasFlag(args, "--list-connection-settings"))
+{
+    PrintConnectionSettings(selectedModel.Model);
+    return;
+}
+Dictionary<string, string> explicitConnectionSettings = ParseConnectionSettings(args);
+if (configuredCivAddress is not null)
+    explicitConnectionSettings["icom.civAddress"] = configuredCivAddress;
+if (configuredCivControllerAddress is not null)
+    explicitConnectionSettings["icom.controllerAddress"] = configuredCivControllerAddress;
+if (HasFlag(args, "--auto-information") || configuredAutoInformationMode is not null)
+{
+    string automaticInformationId = selectedModel.Model.ConnectionSettings
+        .Select(definition => definition.Id)
+        .FirstOrDefault(id => id.EndsWith(".autoInformation", StringComparison.OrdinalIgnoreCase)) ??
+        throw new ArgumentException($"Model '{modelId}' does not advertise an automatic-information setting.");
+    explicitConnectionSettings[automaticInformationId] = "true";
+}
+if (configuredAutoInformationMode is not null)
+    explicitConnectionSettings["elecraft.autoInformationMode"] = configuredAutoInformationMode;
+ResolvedConnectionSettings resolvedConnectionSettings;
+try
+{
+    resolvedConnectionSettings = ConnectionSettingsResolver.Resolve(
+        selectedModel.Model, explicitConnectionSettings);
+}
+catch (ArgumentException exception)
+{
+    Console.Error.WriteLine($"ERROR: Invalid connection settings: {exception.Message}");
+    return;
+}
 string port = GetOption(args, "--port") ?? "COM11";
 int baud = 0;
 if (!selectedModel.Model.SupportedTransports.Contains(transportKind))
@@ -129,9 +168,7 @@ if (simulator)
     else if (selectedModel.Model.Id.Equals(Ic7300Profile.ModelId, StringComparison.OrdinalIgnoreCase) ||
              selectedModel.Model.Id.Equals(G90Profile.ModelId, StringComparison.OrdinalIgnoreCase))
     {
-        string defaultAddress = selectedModel.Model.Id.Equals(G90Profile.ModelId, StringComparison.OrdinalIgnoreCase)
-            ? "70" : "94";
-        byte radioAddress = ParseHexByte(configuredCivAddress ?? defaultAddress, "--civ-address");
+        byte radioAddress = resolvedConnectionSettings.Get<byte>("icom.civAddress");
         var transport = new InMemoryRadioTransport($"simulator:{modelId}");
         await transport.ConnectAsync(stopping.Token);
         var civSimulator = new CivRadioSimulator(
@@ -145,12 +182,10 @@ if (simulator)
         try
         {
             driver = await selectedModel.Factory.OpenAsync(
-                new RadioConnectionOptions(
-                    "radio-1", modelId,
-                    new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-                    {
-                        ["icom.civAddress"] = $"{radioAddress:X2}"
-                    }),
+                new RadioConnectionOptions("radio-1", modelId, explicitConnectionSettings)
+                {
+                    ResolvedSettings = resolvedConnectionSettings
+                },
                 transport,
                 stopping.Token);
         }
@@ -163,8 +198,10 @@ if (simulator)
     else
     {
         driver = await selectedModel.Factory.OpenAsync(
-            new RadioConnectionOptions(
-                "radio-1", modelId, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)),
+            new RadioConnectionOptions("radio-1", modelId, explicitConnectionSettings)
+            {
+                ResolvedSettings = resolvedConnectionSettings
+            },
             new InMemoryRadioTransport($"simulator:{modelId}"),
             stopping.Token);
     }
@@ -195,19 +232,14 @@ else
                 ? new TcpRadioTransport(tcpOptions!)
                 : SerialRadioTransportFactory.Create(
                     selectedModel.Model, serialSettings!, allowUnsafeSerialOverrides);
-            var connectionSettings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["yaesu.autoInformation"] = automaticInformation.ToString(),
-                ["elecraft.autoInformation"] = automaticInformation.ToString(),
-                ["elecraft.autoInformationMode"] = automaticInformationMode.ToString(CultureInfo.InvariantCulture)
-            };
-            if (configuredCivAddress is not null)
-                connectionSettings["icom.civAddress"] = configuredCivAddress;
             return await selectedModel.Factory.OpenAsync(
                 new RadioConnectionOptions(
                     "radio-1",
                     modelId,
-                    connectionSettings),
+                    explicitConnectionSettings)
+                {
+                    ResolvedSettings = resolvedConnectionSettings
+                },
                 transport,
                 cancellationToken);
         },
@@ -755,17 +787,58 @@ static void PrintHelp()
 static void PrintStartupHelp()
 {
     Console.WriteLine("Rig2Cast.Console startup options:");
-    Console.WriteLine("  --list-models | --model <id> | --transport <serial|tcp|simulator> | --allow-write");
+    Console.WriteLine("  --list-models | --list-ports | --model <id> | --list-connection-settings");
+    Console.WriteLine("  --transport <serial|tcp|simulator> | --allow-write");
     Console.WriteLine("  Serial: --port <COMn|device> | --baud <rate>");
     Console.WriteLine("  Raw TCP: --tcp-host <name-or-address> | --tcp-port <1..65535>");
     Console.WriteLine("           --tcp-connect-timeout-ms <positive> | --tcp-no-delay <on|off> | --tcp-keep-alive <on|off>");
-    Console.WriteLine("  --civ-address <hex> | --auto-information | --auto-information-mode <0..3>");
+    Console.WriteLine("  --connection-setting <id=value> (repeatable; model metadata validates values)");
+    Console.WriteLine("  --civ-address <hex> | --civ-controller-address <hex>");
+    Console.WriteLine("  --auto-information | --auto-information-mode <0..3>");
     Console.WriteLine("  --serial-data-bits <5..8> | --serial-parity <none|odd|even|mark|space>");
     Console.WriteLine("  --serial-stop-bits <1|1.5|2> | --serial-handshake <none|xonxoff|rtscts|rtscts-xonxoff>");
     Console.WriteLine("  --serial-dtr <on|off> | --serial-rts <on|off>");
     Console.WriteLine("  --serial-read-timeout-ms <positive> | --serial-write-timeout-ms <positive>");
     Console.WriteLine("  --allow-unsafe-serial-overrides (required to override fixed or unsupported model settings)");
     Console.WriteLine("Omitted serial options use the selected model's defaults.");
+}
+
+static void PrintConnectionSettings(RadioModelDescriptor model)
+{
+    Console.WriteLine($"Connection settings for {model.Manufacturer} {model.Model} ({model.Id}):");
+    if (model.ConnectionSettings.Count == 0)
+    {
+        Console.WriteLine("  None advertised.");
+        return;
+    }
+    foreach (ConnectionSettingDefinition definition in model.ConnectionSettings)
+    {
+        string range = definition.Minimum is null && definition.Maximum is null
+            ? string.Empty : $", range={definition.Minimum ?? long.MinValue}..{definition.Maximum ?? long.MaxValue}";
+        string choices = definition.Choices is { Count: > 0 }
+            ? $", choices={string.Join("|", definition.Choices)}" : string.Empty;
+        Console.WriteLine($"  {definition.Id}");
+        Console.WriteLine($"    {definition.DisplayName}: {definition.Description}");
+        Console.WriteLine($"    type={definition.ValueType}, format={definition.Format}, " +
+            $"required={definition.IsRequired}, default={definition.DefaultValue ?? "<none>"}{range}{choices}");
+    }
+}
+
+static Dictionary<string, string> ParseConnectionSettings(string[] arguments)
+{
+    var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+    foreach (string item in GetOptions(arguments, "--connection-setting"))
+    {
+        int separator = item.IndexOf('=');
+        if (separator <= 0)
+            throw new ArgumentException("Option '--connection-setting' requires <id=value>.");
+        string id = item[..separator].Trim();
+        string value = item[(separator + 1)..].Trim();
+        if (value.Length == 0)
+            throw new ArgumentException($"Connection setting '{id}' requires a value.");
+        result[id] = value;
+    }
+    return result;
 }
 
 static TcpRadioTransportOptions CreateTcpOptions(string[] arguments)
@@ -901,15 +974,6 @@ static void EnsureWriteAllowed(bool allowed)
 
 static T ParseEnum<T>(string value) where T : struct, Enum =>
     Enum.TryParse(value, true, out T parsed) ? parsed : throw new ArgumentException($"Unknown {typeof(T).Name} '{value}'.");
-
-static byte ParseHexByte(string text, string option)
-{
-    ReadOnlySpan<char> value = text.AsSpan();
-    if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase)) value = value[2..];
-    return byte.TryParse(value, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out byte parsed)
-        ? parsed
-        : throw new ArgumentException($"Option '{option}' requires a hexadecimal byte value.");
-}
 
 static bool ParseBoolean(string value) => value.ToLowerInvariant() switch
 {

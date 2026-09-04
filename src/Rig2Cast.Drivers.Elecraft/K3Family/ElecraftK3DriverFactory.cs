@@ -31,10 +31,11 @@ public sealed class ElecraftK3DriverFactory : IRadioDriverFactory
     {
         if (!ElecraftK3Profile.Models.TryGetValue(options.ModelId, out ElecraftK3Profile? profile))
             throw new NotSupportedException($"Model '{options.ModelId}' is not supported by the Elecraft K3-family driver.");
-        bool autoInformation = options.Settings.TryGetValue("elecraft.autoInformation", out string? configured) &&
-            bool.TryParse(configured, out bool enabled) && enabled;
-        int autoInformationMode = options.Settings.TryGetValue("elecraft.autoInformationMode", out string? configuredMode) &&
-            int.TryParse(configuredMode, out int parsedMode) ? parsedMode : 1;
+        RadioModelDescriptor model = Descriptor.Models.Single(item =>
+            StringComparer.OrdinalIgnoreCase.Equals(item.Id, options.ModelId));
+        ResolvedConnectionSettings settings = ConnectionSettingsResolver.ResolveForFactory(options, model);
+        bool autoInformation = settings.Get<bool>("elecraft.autoInformation");
+        int autoInformationMode = settings.Get<int>("elecraft.autoInformationMode");
         return await ElecraftK3Driver.OpenAsync(
             transport, profile, autoInformation, autoInformationMode,
             timeProvider: _timeProvider,
@@ -60,6 +61,14 @@ public sealed class ElecraftK3DriverFactory : IRadioDriverFactory
             ["elecraft.autoInformationMode"] = "1"
         })
     {
-        SerialProfile = SerialConnectionProfile.Create()
+        SerialProfile = SerialConnectionProfile.Create(),
+        ConnectionSettings =
+        [
+            new("elecraft.autoInformation", ConnectionSettingValueType.Boolean, "Automatic information",
+                "Enables Elecraft AI unsolicited status messages.", DefaultValue: "false"),
+            new("elecraft.autoInformationMode", ConnectionSettingValueType.WholeNumber, "Automatic-information mode",
+                "Elecraft AI mode selected when automatic information is enabled.", DefaultValue: "1",
+                Format: ConnectionSettingFormat.Base10, Minimum: 0, Maximum: 3)
+        ]
     };
 }

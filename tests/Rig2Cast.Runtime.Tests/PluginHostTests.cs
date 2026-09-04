@@ -376,7 +376,10 @@ public sealed class PluginHostTests
                     model.SupportedTransports.ToArray(),
                     model.SupportedBaudRates,
                     model.DefaultBaudRate,
-                    model.DefaultConnectionSettings)).ToArray());
+                    model.DefaultConnectionSettings)
+                {
+                    ConnectionSettings = model.ConnectionSettings
+                }).ToArray());
             var fixture = new PluginFixture(directory, manifestPath, assemblyPath, manifest);
             fixture.WriteManifest(manifest);
             return fixture;

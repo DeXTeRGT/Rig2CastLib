@@ -497,7 +497,8 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         if (control == RadioChoiceId.VoxDelay)
             return await ReadVoxDelayAsync(cancellationToken).ConfigureAwait(false);
         if (control == RadioChoiceId.TuningStep)
-            return await ReadTuningStepAsync(cancellationToken).ConfigureAwait(false);
+            throw new NotSupportedException(
+                "The FTDX10 CAT FS command is write-only; its current tuning-step state cannot be queried.");
         if (control == RadioChoiceId.FilterWidth)
         {
             RadioMode mode = await ReadActiveModeAsync(cancellationToken).ConfigureAwait(false);
@@ -765,10 +766,6 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         return code is 0 or 2 or 4 or >= 6 and <= 33;
     }
 
-    private static bool IsValidFastStepResponse(string response) =>
-        response.Length == 4 && response[^1] == ';' &&
-        response.StartsWith("FS", StringComparison.Ordinal) && response[2] is '0' or '1';
-
     private static long ParseFrequency(string response)
     {
         if (response.Length != 12 || response[^1] != ';' ||
@@ -998,7 +995,8 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             });
         choices[RadioChoiceId.FilterWidth] = CreateFilterWidthCapability(feature);
         choices[RadioChoiceId.VoxDelay] = CreateVoxDelayCapability(feature);
-        choices[RadioChoiceId.TuningStep] = CreateTuningStepCapability(feature);
+        choices[RadioChoiceId.TuningStep] = CreateTuningStepCapability(
+            new FeatureDescriptor(CapabilitySupport.Supported, FeatureAccess.Write));
         return choices.ToDictionary(
             pair => pair.Key,
             pair => pair.Value with { ReceiverTargets = MainReceiverTargets() });
@@ -1113,18 +1111,6 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
 
         int code = milliseconds switch { 0 => 0, 100 => 2, 200 => 4, _ => (milliseconds - 300) / 100 + 6 };
         return _protocol.SendAsync($"VD{code:D2}", cancellationToken);
-    }
-
-    private async ValueTask<RadioChoiceValue> ReadTuningStepAsync(CancellationToken cancellationToken)
-    {
-        RadioMode mode = await ReadActiveModeAsync(cancellationToken).ConfigureAwait(false);
-        string response = await _protocol.QueryAsync(
-            "FS", "FS", IsValidFastStepResponse, cancellationToken).ConfigureAwait(false);
-        if (response.Length != 4 || response[2] is not ('0' or '1'))
-            throw new YaesuProtocolException($"Invalid fast-step response '{response}'.");
-        (string normal, string fast) = GetTuningSteps(mode);
-        return new RadioChoiceValue(RadioChoiceId.TuningStep,
-            response[2] == '1' ? fast : normal, _timeProvider.GetUtcNow());
     }
 
     private async ValueTask WriteTuningStepAsync(string value, CancellationToken cancellationToken)

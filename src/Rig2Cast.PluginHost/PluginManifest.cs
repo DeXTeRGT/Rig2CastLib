@@ -9,7 +9,10 @@ public sealed record PluginModelManifest(
     IReadOnlyList<RadioTransportKind> SupportedTransports,
     IReadOnlyList<int> SupportedBaudRates,
     int? DefaultBaudRate = null,
-    IReadOnlyDictionary<string, string>? DefaultConnectionSettings = null);
+    IReadOnlyDictionary<string, string>? DefaultConnectionSettings = null)
+{
+    public IReadOnlyList<ConnectionSettingDefinition> ConnectionSettings { get; init; } = [];
+}
 
 public sealed record PluginManifest(
     string Id,

@@ -3,6 +3,9 @@
 Serial model defaults, user overrides, legacy-plugin compatibility, and shared
 transport construction are specified in
 [`architecture/serial-connection-profiles.md`](architecture/serial-connection-profiles.md).
+Typed model-specific protocol settings and cross-platform port discovery are
+specified in
+[`architecture/typed-connection-settings.md`](architecture/typed-connection-settings.md).
 Transparent serial-over-TCP client behavior is specified in
 [`architecture/raw-tcp-transport.md`](architecture/raw-tcp-transport.md).
 

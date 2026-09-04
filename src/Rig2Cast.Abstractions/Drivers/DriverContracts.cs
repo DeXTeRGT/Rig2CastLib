@@ -9,7 +9,15 @@ namespace Rig2Cast.Abstractions.Drivers;
 public sealed record RadioConnectionOptions(
     string RadioId,
     string ModelId,
-    IReadOnlyDictionary<string, string> Settings);
+    IReadOnlyDictionary<string, string> Settings)
+{
+    /// <summary>
+    /// Optional settings resolved by the composition root. Driver factories validate and resolve
+    /// <see cref="Settings"/> themselves when this value is absent, preserving compatibility with
+    /// existing callers and plugins.
+    /// </summary>
+    public ResolvedConnectionSettings? ResolvedSettings { get; init; }
+}
 
 public enum RadioTransportKind
 {
@@ -29,6 +37,9 @@ public sealed record RadioModelDescriptor(
     IReadOnlyDictionary<string, string>? DefaultConnectionSettings = null)
 {
     public SerialConnectionProfile? SerialProfile { get; init; }
+
+    /// <summary>Typed, user-overridable settings required by this radio model.</summary>
+    public IReadOnlyList<ConnectionSettingDefinition> ConnectionSettings { get; init; } = [];
 }
 
 public sealed record RadioDriverDescriptor(

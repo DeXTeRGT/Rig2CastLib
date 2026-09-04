@@ -861,7 +861,119 @@ The user also physically confirmed G90 firmware 1.81 preamp (`16 02`), noise bla
 (`16 22`), signed clarifier offset (`21 00`), RX clarifier (`21 01`), and TX clarifier
 (`21 02`) reads and writes. Console readback matched the front-panel state.
 
-### Milestone 6: legacy Yaesu binary CAT
+### Typed protocol settings and serial-port discovery
+
+Point 3 of the post-CI-V roadmap is implemented. `RadioModelDescriptor` now exposes
+typed `ConnectionSettings` definitions containing stable ID, type, default,
+required/optional status, label, description, format, range, and choices. The shared
+`ConnectionSettingsResolver` applies explicit user value > application default >
+model default precedence, rejects unknown or malformed settings before connection,
+records the winning source, and exposes typed values. Applications may explicitly
+replace definitions for experimental hardware or policy; ordinary customization
+should override values instead.
+
+`RadioConnectionOptions.ResolvedSettings` lets a composition root pass its validated
+result to a factory. It is optional for backward compatibility; all built-in Yaesu,
+Elecraft, Icom, and Xiegu factories fall back to resolving legacy string inputs and
+now consume typed values rather than implementing private parsers. Legacy defaults
+remain in descriptors until a versioned plugin-contract migration.
+
+`ISerialPortDiscovery` and `SystemSerialPortDiscovery` provide cross-platform port
+snapshots without putting UI concerns in the library. The Console exposes
+`--list-ports`, `--list-connection-settings`, repeatable
+`--connection-setting <id=value>`, and `--civ-controller-address`; older convenience
+options still feed the same resolver. See
+`docs/architecture/typed-connection-settings.md`. Automated coverage is 306 passing
+tests, and Console metadata output plus local COM discovery were manually checked.
+
+The next milestone was a small Avalonia sample that dynamically renders transport
+and connection controls from static model metadata, then renders operational controls
+from connected `RadioCapabilities`. It is now implemented as described below.
+
+### Milestone 6: capability-driven Avalonia sample
+
+`samples/Rig2Cast.CapabilityGui` is a runnable Avalonia 12.1.2/.NET 8 desktop sample.
+It generates model, transport, port, baud, and model-specific pre-connection controls
+from the catalog descriptors and typed setting schema. It supports Serial, raw TCP,
+and the available deterministic simulator peers. The sample includes FTDX10,
+IC-7300, and G90 simulator paths; the Elecraft profiles require serial or raw TCP
+because this repository does not yet contain an Elecraft simulator peer.
+
+After connection it generates core summaries, VFO frequency setters, a mode setter,
+numeric controls, switches, choices, meter readers, and read/write button state from
+the connected `RadioCapabilities`. Numeric and meter values remain explicitly raw;
+calibration is application-owned. Non-PTT writes require an explicit checkbox before
+connection and an Operator session. CAT PTT is intentionally omitted rather than
+bypassing transmit leases. See `samples/Rig2Cast.CapabilityGui/README.md`.
+
+The sample owns layout and refresh behavior and is intentionally not a production
+station-control application. Model-specific checks exist only to select available
+simulator peers, not to generate connection or operational controls.
+
+The sample presentation has been promoted from a single diagnostic form to a more
+realistic reference shell: a fixed connection sidebar, live radio header with active
+frequency and RX/TX/connection badge, and separate Radio, Controls, Meters, and
+Diagnostics tabs. Capability cards and empty states remain generated without model
+conditionals. The timestamped diagnostics log is application-owned, bounded to 500
+entries, and can be cleared without affecting the managed radio session.
+
+The workspace header now renders each advertised frequency target exactly once as a
+distinct VFO card. Cards show formatted MHz plus exact editable Hz, visually identify active RX and
+split-TX roles, and provide application-side step buttons based on the smallest
+advertised frequency step plus common larger increments. All mutations still flow
+through `IRadioSession`. Generated numeric, switch, choice, mode, split, and VFO
+editors expose capability-derived access/range/option tooltips, mark read-only versus
+write-only access, and consistently label mutations as Apply.
+
+Extended controls are grouped by operating purpose (Audio, RF, Transmit, DSP,
+Filtering, CW, Operating, and Other) across numeric, switch, and choice descriptor
+types. This is intentionally an application-owned mapping over generic control IDs;
+there are no manufacturer/model branches, and unclassified future controls fall back
+to Other.
+
+Radio, extended-control, and meter action rows share fixed presentation columns for
+labels, editors, Read, Apply, and access metadata. Boolean switches intentionally omit
+Read/Apply buttons: initial refresh supplies their state and a user toggle writes the
+new value immediately. They render in a strict aligned two-column tile grid. Split
+uses the same immediate-toggle behavior. A UI-update guard prevents refreshes and
+runtime events from echoing switch/split writes, while other action rows retain
+explicit Read/Apply semantics with non-clipping fixed columns.
+
+GUI follow-up fixes make manual serial-port entry explicitly opt-in: the override
+field starts blank/disabled and is used only when its checkbox is selected. Lifecycle
+cleanup detaches references before awaiting disposal, catches failures independently
+for session, managed radio, and CI-V simulator, and keeps exceptions out of Avalonia's
+`async void` event boundary. This addresses the observed application exit after
+disconnecting one radio and attempting to connect another.
+
+The exact exit cause was confirmed from Windows .NET Runtime event 1026: the dynamic
+transport form attempted to add the same ComboBox to a new Grid while the old Grid
+remained its direct visual parent. The shared row builder now detaches reused controls
+from their previous Panel before reparenting them.
+
+The GUI now subscribes to `IRadioSession.WatchEventsAsync` for the lifetime of each
+connection. State events update the displayed VFO frequencies, selected VFO, mode,
+split state, and state summary on the Avalonia dispatcher; typed control/meter events
+update their matching editors. Connection performs an initial serialized refresh of
+state and all advertised readable controls, and **Refresh all** repeats it. Generated
+controls are visually grouped into VFO/core, numeric, switch, choice, and meter cards.
+
+Physical GUI connections now use the reconnectable managed-radio lifecycle with a
+fresh Serial/TCP transport per retry. The GUI reports runtime diagnostic events and
+names the control whose refresh failed instead of overwriting the original terminal
+error with later availability failures. Event application is generation-gated so a
+queued event from a disconnected radio cannot mutate a new radio's controls.
+
+Physical FTDX10 testing exposed two follow-up corrections. Reconnection now disposes
+the failed driver/transport before opening its replacement, which is required for an
+exclusively owned Windows COM port. The FTDX10 `FS0;`/`FS1;` fast-step command is
+write-only: tuning step is now advertised as write-only, is excluded from automatic
+refresh, and successful writes are not followed by the invalid `FS;` query. The
+runtime generically preserves physical readback for readable choices and publishes
+the commanded value for write-only choices. The user physically confirmed that this
+removed the initial-refresh timeout and reconnect cycle.
+
+### Later milestone: legacy Yaesu binary CAT
 
 Implement this as another binary family engine, not as an FTDX10 ASCII extension:
 
@@ -877,6 +989,16 @@ Implement this as another binary family engine, not as an FTDX10 ASCII extension
 
 ### Later roadmap
 
+- Add an application-facing, read-only inbound protocol-frame fan-out after framing
+  and CAT response routing. It must publish immutable/copy-owned complete frames,
+  never expose transport writes, never steal correlated responses, support multiple
+  independently bounded subscribers, avoid blocking the protocol reader, and report
+  dropped frames. Keep `IRadioSession.WatchEventsAsync` as the normal vendor-neutral
+  API; use the raw decoded-frame stream for diagnostics, experimental/model-specific
+  extensions, and high-volume data such as IC-7300 spectrum frames. Follow it with a
+  typed spectrum capability/source API so ordinary applications do not need CI-V
+  decoding. Separate processes must consume a future host relay (for example
+  WebSocket/gRPC/IPC) rather than competing for the physical COM port.
 - Reorganize tests into protocol-focused projects when CI-V or another binary family
   makes the consolidated runtime test project unwieldy.
 - Add fuzz/property-style framing tests for binary decoders and declarative profiles.
@@ -894,6 +1016,7 @@ Read these before related work:
 - `CONTRIBUTING.md`
 - `docs/architecture.md`
 - `docs/architecture/receiver-vfo-model.md`
+- `docs/architecture/typed-connection-settings.md`
 - `docs/concurrency-and-leases.md`
 - `docs/plugin-host.md`
 - `docs/decisions/0004-trusted-plugins.md`
@@ -938,8 +1061,6 @@ dotnet test .\Rig2Cast\tests\Rig2Cast.Runtime.Tests\Rig2Cast.Runtime.Tests.cspro
 dotnet build .\Rig2Cast\samples\Rig2Cast.Console\Rig2Cast.Console.csproj --no-restore
 ```
 
-Then compare the result with the expected 258 tests and inspect changes made after
-this handover. The compiled descriptor vocabulary and external sample are complete.
-Next, either add target applicability only for a concrete receiver-targeted need or
-begin the separate CI-V protocol-family framing work; do not turn the descriptor
-layer into a protocol state machine or restart the architecture from scratch.
+Then compare the result with the expected 306 tests and inspect changes made after
+this handover. Build and interactively validate the capability GUI sample before
+beginning legacy Yaesu binary CAT.

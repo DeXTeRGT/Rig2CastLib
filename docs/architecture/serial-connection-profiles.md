@@ -36,11 +36,15 @@ future explicitly versioned plugin-contract migration.
 
 Driver factories continue to accept an already-created `IRadioTransport`; drivers do
 not select COM ports or construct physical transports. Protocol settings such as
-`icom.civAddress` remain in `RadioConnectionOptions.Settings` and are independent of
-serial framing.
+`icom.civAddress` use the independent typed model schema documented in
+[typed-connection-settings.md](typed-connection-settings.md).
 
 The diagnostic Console exposes `--serial-data-bits`, `--serial-parity`,
 `--serial-stop-bits`, `--serial-handshake`, `--serial-dtr`, `--serial-rts`, and
 read/write timeout options. Every option falls back to the typed model default when
 omitted. `--allow-unsafe-serial-overrides` is required for fixed framing or unsupported
 baud values; the effective configuration is printed before connection.
+
+Hosts may discover ports through `ISerialPortDiscovery`. The production
+`SystemSerialPortDiscovery` implementation returns a cross-platform snapshot while
+leaving refresh timing, selection, persistence, and manual entry to the application.

@@ -570,6 +570,45 @@ public sealed class ManagedRadioTests
     }
 
     [Fact]
+    public async Task ConnectionSupervisorReleasesFailedDriverBeforeOpeningReplacement()
+    {
+        var first = new SimulatedFtdx10Driver();
+        var replacement = new SimulatedFtdx10Driver();
+        int connections = 0;
+        ValueTask<IRadioDriver> ConnectAsync(CancellationToken cancellationToken)
+        {
+            int connection = Interlocked.Increment(ref connections);
+            if (connection == 1)
+                return ValueTask.FromResult<IRadioDriver>(first);
+
+            if (!first.IsDisposed)
+                throw new UnauthorizedAccessException("The simulated serial port is still open.");
+
+            return ValueTask.FromResult<IRadioDriver>(replacement);
+        }
+
+        await using ManagedRadio radio = await ManagedRadio.CreateReconnectableAsync(
+            "exclusive-transport-radio",
+            ConnectAsync,
+            new RadioConnectionSupervisorOptions
+            {
+                InitialRetryDelay = TimeSpan.FromMilliseconds(10),
+                MaximumRetryDelay = TimeSpan.FromMilliseconds(20)
+            });
+        await using IRadioSession session = radio.OpenSession(new ClientIdentity("gui"));
+
+        first.SimulateConnectionFailure();
+
+        await WaitUntilAsync(async () =>
+            connections == 2 &&
+            (await session.GetSnapshotAsync()).State.Connection == ConnectionStatus.Connected,
+            TimeSpan.FromSeconds(2));
+
+        Assert.True(first.IsDisposed);
+        Assert.Equal(2, connections);
+    }
+
+    [Fact]
     public async Task ReconnectForcesReceiveBeforePublishingUnleasedTransmittingReplacement()
     {
         var first = new SimulatedFtdx10Driver();

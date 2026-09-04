@@ -62,6 +62,14 @@ List all registered models:
 dotnet run --project .\samples\Rig2Cast.Console\Rig2Cast.Console.csproj -- --list-models
 ```
 
+List currently available serial ports, or inspect the selected model's dynamically
+advertised protocol settings without opening a connection:
+
+```powershell
+Rig2Cast.Console.exe --list-ports
+Rig2Cast.Console.exe --model icom.ic-7300 --list-connection-settings
+```
+
 If `--model` is omitted, the Console selects `yaesu.ftdx10`. Physical connections
 default to `COM11`; specify the actual port rather than relying on this convenience.
 
@@ -70,7 +78,10 @@ default to `COM11`; specify the actual port rather than relying on this convenie
 | Option | Parameter | Meaning |
 |---|---:|---|
 | `--list-models` | none | Lists registered model IDs and exits. |
+| `--list-ports` | none | Lists serial ports discovered through the transport service and exits. |
 | `--model` | model ID | Selects a built-in or plugin model. |
+| `--list-connection-settings` | none | Prints the selected model's typed setting schema and exits. |
+| `--connection-setting` | `id=value` | Supplies a metadata-validated model setting; repeatable. |
 | `--transport` | `serial`, `tcp`, `simulator` | Selects the connection transport; default is `serial`. |
 | `--port` | port name | Physical serial port, for example `COM7`. Default is `COM11`. |
 | `--baud` | integer | CAT baud rate. If omitted, the selected model's default is used. |
@@ -93,12 +104,26 @@ default to `COM11`; specify the actual port rather than relying on this convenie
 | `--auto-information` | none | Enables supported unsolicited CAT reporting. |
 | `--auto-information-mode` | `0`–`3` | Selects an Elecraft AI mode; specifying it also enables automatic information. |
 | `--civ-address` | hex byte | CI-V radio address; IC-7300 defaults to `94`, G90 to `70`. |
+| `--civ-controller-address` | hex byte | CI-V controller/source address; defaults to `E0`. |
 | `--plugin-config` | path | Loads the strict plugin-host configuration file. |
 | `--plugin-directory` | path | Adds a plugin directory; may be repeated. |
 | `--plugin-development-mode` | none | Bypasses plugin SHA-256 verification for trusted local development only. |
 
 Option names are case-insensitive. Model IDs and serial-port names should be entered
 exactly as displayed by `--list-models` and the operating system.
+
+Model-specific values are resolved in this order: explicit user value, an
+application-supplied default, then the model default. The convenience CI-V and
+automatic-information options use the same typed resolver as the generic option.
+For example, these select the same G90 address:
+
+```powershell
+Rig2Cast.Console.exe --model xiegu.g90 --civ-address 70 --port COM16
+Rig2Cast.Console.exe --model xiegu.g90 --connection-setting icom.civAddress=70 --port COM16
+```
+
+Unknown IDs, malformed values, and values outside advertised ranges are rejected
+before the radio connection is opened.
 
 All serial override options are optional. Omitted values come from the selected
 model's typed serial profile. DTR, RTS, and timeouts are normally configurable;

@@ -42,7 +42,12 @@ public sealed class Ftdx10DriverFactory : IRadioDriverFactory
         {
             SerialProfile = SerialConnectionProfile.Create(
                 stopBits: RadioSerialStopBits.Two,
-                handshake: RadioSerialHandshake.RequestToSend)
+                handshake: RadioSerialHandshake.RequestToSend),
+            ConnectionSettings =
+            [
+                new("yaesu.autoInformation", ConnectionSettingValueType.Boolean, "Automatic information",
+                    "Enables Yaesu AI unsolicited status messages.", DefaultValue: "false")
+            ]
         }]);
 
     public async ValueTask<IRadioDriver> OpenAsync(
@@ -55,8 +60,8 @@ public sealed class Ftdx10DriverFactory : IRadioDriverFactory
             throw new NotSupportedException($"Model '{options.ModelId}' is not supported by this driver factory.");
         }
 
-        bool enableAutomaticInformation = options.Settings.TryGetValue("yaesu.autoInformation", out string? configured) &&
-            bool.TryParse(configured, out bool enabled) && enabled;
+        ResolvedConnectionSettings settings = ConnectionSettingsResolver.ResolveForFactory(options, Descriptor.Models[0]);
+        bool enableAutomaticInformation = settings.Get<bool>("yaesu.autoInformation");
         return await Ftdx10Driver.OpenAsync(
             transport,
             enableAutomaticInformation: enableAutomaticInformation,

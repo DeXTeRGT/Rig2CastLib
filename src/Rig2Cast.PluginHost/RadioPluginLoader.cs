@@ -217,6 +217,20 @@ public sealed class RadioPluginLoader(RadioPluginLoaderOptions? options = null)
                 throw Invalid($"Model '{model.Id}' declares invalid or duplicate baud rates.");
             if (model.DefaultBaudRate is int defaultBaud && !model.SupportedBaudRates.Contains(defaultBaud))
                 throw Invalid($"Model '{model.Id}' default baud rate is not supported.");
+            if (model.ConnectionSettings is null)
+                throw Invalid($"Model '{model.Id}' connection settings cannot be null.");
+            try
+            {
+                foreach (ConnectionSettingDefinition definition in model.ConnectionSettings)
+                    _ = definition.Validate();
+                if (model.ConnectionSettings.Select(definition => definition.Id)
+                    .Distinct(StringComparer.OrdinalIgnoreCase).Count() != model.ConnectionSettings.Count)
+                    throw Invalid($"Model '{model.Id}' declares duplicate connection-setting IDs.");
+            }
+            catch (ArgumentException exception)
+            {
+                throw Invalid($"Model '{model.Id}' has invalid connection-setting metadata: {exception.Message}");
+            }
         }
     }
 
@@ -226,7 +240,25 @@ public sealed class RadioPluginLoader(RadioPluginLoaderOptions? options = null)
         declared.SupportedTransports.ToHashSet().SetEquals(actual.SupportedTransports) &&
         declared.SupportedBaudRates.SequenceEqual(actual.SupportedBaudRates) &&
         declared.DefaultBaudRate == actual.DefaultBaudRate &&
-        DictionaryEquals(declared.DefaultConnectionSettings, actual.DefaultConnectionSettings);
+        DictionaryEquals(declared.DefaultConnectionSettings, actual.DefaultConnectionSettings) &&
+        ConnectionDefinitionsEqual(declared.ConnectionSettings, actual.ConnectionSettings);
+
+    private static bool ConnectionDefinitionsEqual(
+        IReadOnlyList<ConnectionSettingDefinition> left,
+        IReadOnlyList<ConnectionSettingDefinition> right)
+    {
+        if (left.Count != right.Count) return false;
+        var rightById = right.ToDictionary(definition => definition.Id, StringComparer.OrdinalIgnoreCase);
+        return left.All(definition => rightById.TryGetValue(definition.Id, out ConnectionSettingDefinition? other) &&
+            definition.ValueType == other.ValueType &&
+            StringComparer.Ordinal.Equals(definition.DisplayName, other.DisplayName) &&
+            StringComparer.Ordinal.Equals(definition.Description, other.Description) &&
+            definition.IsRequired == other.IsRequired &&
+            StringComparer.Ordinal.Equals(definition.DefaultValue, other.DefaultValue) &&
+            definition.Format == other.Format && definition.Minimum == other.Minimum &&
+            definition.Maximum == other.Maximum &&
+            (definition.Choices ?? []).SequenceEqual(other.Choices ?? [], StringComparer.OrdinalIgnoreCase));
+    }
 
     private static bool DictionaryEquals(
         IReadOnlyDictionary<string, string>? left,

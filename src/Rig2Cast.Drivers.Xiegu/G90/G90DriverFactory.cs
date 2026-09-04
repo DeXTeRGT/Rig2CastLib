@@ -1,4 +1,3 @@
-using System.Globalization;
 using Rig2Cast.Abstractions.Drivers;
 using Rig2Cast.Abstractions.Transports;
 
@@ -39,7 +38,16 @@ public sealed class G90DriverFactory : IRadioDriverFactory
                 ["icom.controllerAddress"] = "E0"
             })
         {
-            SerialProfile = SerialConnectionProfile.Create()
+            SerialProfile = SerialConnectionProfile.Create(),
+            ConnectionSettings =
+            [
+                new("icom.civAddress", ConnectionSettingValueType.Byte, "CI-V radio address",
+                    "Destination address assigned to the transceiver.", true, "70",
+                    ConnectionSettingFormat.Hexadecimal, 0, 255),
+                new("icom.controllerAddress", ConnectionSettingValueType.Byte, "CI-V controller address",
+                    "Source address used by Rig2Cast when communicating with the transceiver.", true, "E0",
+                    ConnectionSettingFormat.Hexadecimal, 0, 255)
+            ]
         }]);
 
     public async ValueTask<IRadioDriver> OpenAsync(
@@ -50,22 +58,12 @@ public sealed class G90DriverFactory : IRadioDriverFactory
         if (!StringComparer.OrdinalIgnoreCase.Equals(options.ModelId, G90Profile.ModelId))
             throw new NotSupportedException($"Model '{options.ModelId}' is not supported by the Xiegu G90 driver.");
 
-        byte radioAddress = ReadHexAddress(options.Settings, "icom.civAddress", G90Profile.DefaultRadioAddress);
-        byte controllerAddress = ReadHexAddress(options.Settings, "icom.controllerAddress", G90Profile.DefaultControllerAddress);
+        RadioModelDescriptor model = Descriptor.Models[0];
+        ResolvedConnectionSettings settings = ConnectionSettingsResolver.ResolveForFactory(options, model);
+        byte radioAddress = settings.Get<byte>("icom.civAddress");
+        byte controllerAddress = settings.Get<byte>("icom.controllerAddress");
         return await G90Driver.OpenAsync(
             transport, radioAddress, controllerAddress, timeProvider: _timeProvider,
             cancellationToken: cancellationToken).ConfigureAwait(false);
-    }
-
-    private static byte ReadHexAddress(IReadOnlyDictionary<string, string> settings, string key, byte fallback)
-    {
-        if (!settings.TryGetValue(key, out string? text))
-            return fallback;
-        ReadOnlySpan<char> value = text.AsSpan();
-        if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
-            value = value[2..];
-        if (!byte.TryParse(value, NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out byte address))
-            throw new ArgumentException($"Setting '{key}' must be a CI-V hexadecimal byte address.", key);
-        return address;
     }
 }

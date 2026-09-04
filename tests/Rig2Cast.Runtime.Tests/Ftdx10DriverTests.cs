@@ -653,19 +653,20 @@ public sealed class Ftdx10DriverTests
     }
 
     [Fact]
-    public async Task TuningStepUsesModeAwareFastStepCommand()
+    public async Task TuningStepIsWriteOnlyAndUsesModeAwareFastStepCommand()
     {
         var transport = new ScriptedRadioTransport();
         transport.Add("ID;", "ID0761;");
         transport.Add("VS;", "VS0;");
         transport.Add("MD0;", "MD02;");
-        transport.Add("FS;", "FS1;");
-        transport.Add("VS;", "VS0;");
-        transport.Add("MD0;", "MD02;");
         transport.Add("FS0;");
         await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
 
-        Assert.Equal("100hz", (await driver.ReadChoiceAsync(RadioChoiceId.TuningStep)).Value);
+        Assert.Equal(
+            Capabilities.FeatureAccess.Write,
+            driver.Capabilities.Choices[RadioChoiceId.TuningStep].Feature.Access);
+        await Assert.ThrowsAsync<NotSupportedException>(
+            () => driver.ReadChoiceAsync(RadioChoiceId.TuningStep).AsTask());
         await driver.WriteChoiceAsync(RadioChoiceId.TuningStep, "10hz");
 
         RadioChoiceOption option = driver.Capabilities.Choices[RadioChoiceId.TuningStep].Options["1khz"];
@@ -675,6 +676,30 @@ public sealed class Ftdx10DriverTests
             driver.Capabilities.Choices[RadioChoiceId.TuningStep].Options;
         foreach (RadioMode mode in Ftdx10CatProfile.Modes.Values.Distinct())
             Assert.Equal(2, options.Values.Count(candidate => candidate.ApplicableModes!.Contains(mode)));
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task ManagedRadioDoesNotReadBackWriteOnlyTuningStep()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("FA;", "FA014200000;");
+        transport.Add("FB;", "FB007100000;");
+        transport.Add("VS;", "VS0;");
+        transport.Add("MD0;", "MD02;");
+        transport.Add("ST;", "ST0;");
+        transport.Add("TX;", "TX0;");
+        transport.Add("VS;", "VS0;");
+        transport.Add("MD0;", "MD02;");
+        transport.Add("FS0;");
+        Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+        await using ManagedRadio radio = await ManagedRadio.CreateAsync("ftdx10-write-only", driver);
+        await using IRadioSession session = radio.OpenSession(
+            new ClientIdentity("operator"), ClientRole.Operator);
+
+        await session.WriteChoiceAsync(RadioChoiceId.TuningStep, "10hz");
+
         transport.AssertComplete();
     }
 }

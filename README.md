@@ -123,6 +123,16 @@ A desktop or web interface can configure itself from these capabilities instead
 of hard-coding every model. If a radio supports VFO B, the interface can expose
 it; otherwise, the same interface can hide or disable it.
 
+The cross-platform Avalonia sample demonstrates this behavior directly. It creates
+model-specific connection fields from typed descriptor metadata before connection,
+then creates operational controls from the connected driver's capabilities:
+
+```powershell
+dotnet run --project samples\Rig2Cast.CapabilityGui\Rig2Cast.CapabilityGui.csproj
+```
+
+See the [capability GUI guide](samples/Rig2Cast.CapabilityGui/README.md).
+
 ### Modular and pluggable radio drivers
 
 Radio models use stable identifiers such as `yaesu.ftdx10`. Each factory

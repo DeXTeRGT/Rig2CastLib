@@ -525,7 +525,9 @@ public sealed class ManagedRadio : IAsyncDisposable
                 throw new InvalidOperationException($"Choice '{value}' is not applicable in {_state.Mode} mode.");
 
             await choiceDriver.WriteChoiceAsync(control, value, token).ConfigureAwait(false);
-            RadioChoiceValue confirmed = await choiceDriver.ReadChoiceAsync(control, token).ConfigureAwait(false);
+            RadioChoiceValue confirmed = descriptor.Feature.Access.HasFlag(FeatureAccess.Read)
+                ? await choiceDriver.ReadChoiceAsync(control, token).ConfigureAwait(false)
+                : new RadioChoiceValue(control, value, _timeProvider.GetUtcNow());
             _events.Publish(RadioEventKind.ControlChanged, confirmed);
         }, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
@@ -556,8 +558,10 @@ public sealed class ManagedRadio : IAsyncDisposable
                 throw new InvalidOperationException($"Choice '{value}' is not applicable in {targetMode} mode.");
             IRadioTargetedChoiceDriver driver = GetTargetedChoiceDriver(control);
             await driver.WriteChoiceAsync(control, target, value, token).ConfigureAwait(false);
-            _events.Publish(RadioEventKind.ControlChanged,
-                await driver.ReadChoiceAsync(control, target, token).ConfigureAwait(false));
+            RadioChoiceValue confirmed = descriptor.Feature.Access.HasFlag(FeatureAccess.Read)
+                ? await driver.ReadChoiceAsync(control, target, token).ConfigureAwait(false)
+                : new RadioChoiceValue(control, value, _timeProvider.GetUtcNow(), target);
+            _events.Publish(RadioEventKind.ControlChanged, confirmed);
         }, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
@@ -587,8 +591,10 @@ public sealed class ManagedRadio : IAsyncDisposable
                 throw new InvalidOperationException($"Choice '{value}' is not applicable in {receiverMode} mode.");
             IRadioReceiverChoiceDriver driver = GetReceiverChoiceDriver(control);
             await driver.WriteChoiceAsync(control, receiver, value, token).ConfigureAwait(false);
-            _events.Publish(RadioEventKind.ControlChanged,
-                await driver.ReadChoiceAsync(control, receiver, token).ConfigureAwait(false));
+            RadioChoiceValue confirmed = descriptor.Feature.Access.HasFlag(FeatureAccess.Read)
+                ? await driver.ReadChoiceAsync(control, receiver, token).ConfigureAwait(false)
+                : new RadioChoiceValue(control, value, _timeProvider.GetUtcNow()) { Receiver = receiver };
+            _events.Publish(RadioEventKind.ControlChanged, confirmed);
         }, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
@@ -1197,6 +1203,23 @@ public sealed class ManagedRadio : IAsyncDisposable
     private async Task ReconnectAsync(IRadioDriver failedDriver)
     {
         await MarkConnectionStateAsync(failedDriver, ConnectionStatus.Reconnecting).ConfigureAwait(false);
+
+        // Serial transports are normally opened exclusively. Release the failed
+        // driver before asking the connector to acquire the same port again.
+        // The previous ordering kept the failed transport alive until after a
+        // replacement was opened, which makes every Windows serial reconnect
+        // fail with "Access to the path 'COMx' is denied."
+        try
+        {
+            await failedDriver.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception)
+        {
+            _events.Publish(
+                RadioEventKind.Diagnostic,
+                new RadioReconnectAttempt(0, TimeSpan.Zero, $"Failed-driver cleanup: {exception.Message}"));
+        }
+
         TimeSpan delay = _connectionOptions!.InitialRetryDelay;
         int attempt = 0;
 
@@ -1250,10 +1273,6 @@ public sealed class ManagedRadio : IAsyncDisposable
                 if (replaced is null)
                 {
                     await replacement.DisposeAsync().ConfigureAwait(false);
-                }
-                else
-                {
-                    await replaced.DisposeAsync().ConfigureAwait(false);
                 }
                 return;
             }
