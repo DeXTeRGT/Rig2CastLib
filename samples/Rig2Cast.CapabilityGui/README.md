@@ -78,6 +78,19 @@ Split uses the same immediate-toggle behavior and update guard. Other actions re
 explicit Read/Apply semantics in a shared grid with columns wide enough for complete
 button labels.
 
+Mode applicability is also capability-driven. The GUI disables protocol-invalid or
+operationally irrelevant controls, excludes them from **Refresh all**, and performs a
+one-time targeted refresh when a mode transition makes a control newly readable.
+Tooltips list restricted read, write, and operational modes. These facts come from
+driver descriptors; the GUI contains no model-specific mode table.
+
+The connection-time **Mode restrictions** selector aligns presentation with the
+runtime policy. **Enforce** disables and skips inapplicable controls and configures
+`ManagedRadio` to reject those operations before CAT I/O. **Advisory** retains the
+advertised metadata and tooltips but leaves controls enabled and includes them in
+refresh/write operations. The selector is locked while connected so presentation and
+runtime behavior cannot diverge during a session.
+
 Physical serial and TCP sessions use `ManagedRadio.CreateReconnectableAsync` and
 capture immutable connection values before starting recovery, so every retry creates
 a fresh transport without accessing UI controls from a background thread. Diagnostic

@@ -14,7 +14,7 @@ Status meanings:
 | Native feature | CAT | Software | Physical FTDX10 | Next action |
 |---|---|---|---|---|
 | Identification | `ID` | Complete | Read validated | None |
-| USB automatic information | `AI`, `IF`, `FA`, `FB`, `MD`, `VS`, `ST`, `TX` | Complete, opt-in with confirmation and shutdown cleanup | Front-panel reporting and disconnect/reconnect recovery validated | Continue expanding typed handling for useful announced controls |
+| USB automatic information | `AI`, `IF`, `OI`, `FA`, `FB`, `MD`, `VS`, `ST`, `TX` | Complete, opt-in with confirmation and shutdown cleanup | Front-panel reporting and disconnect/reconnect recovery validated | Continue expanding typed handling for useful announced controls |
 | VFO A/B frequency | `FA`, `FB` | Complete | Read validated; interactive setter testing passed | None |
 | Active VFO | `VS` | Complete | Read validated; interactive setter testing passed | None |
 | Operating mode | `MD` | Complete | Read validated; interactive setter testing passed | None |
@@ -54,7 +54,7 @@ CW pitch, keyer speed, VOX delay, APF parameters, and mode-aware tuning step.
 |---|---|
 | Identification | `ID` |
 | USB automatic information | `AI` |
-| VFO A/B frequency | `FA`, `FB` |
+| VFO A/B frequency and mode state | `IF`, `OI`; `FA`, `FB` remain direct frequency operations |
 | Active VFO | `VS` |
 | Operating mode | `MD` |
 | Split | `ST` |

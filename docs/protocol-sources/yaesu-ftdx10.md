@@ -45,6 +45,15 @@ The manual revision above documents the `PR` speech-processor state as `1` for o
   - No set, tuning, or transmit command was sent during validation
 - Subsequent interactive hardware validation:
   - VFO frequency, active-VFO, mode, and split setters passed through the diagnostic console
+  - Full state reads now use the manual's VFO-qualified information commands: `IF`
+    for VFO A and `OI` for VFO B. Their independent modes are retained and the
+    active mode is selected through `VS`. `MD0`/`MD1` identify MAIN/SUB bands and
+    are not treated as direct A/B identities in unsolicited observation handling.
+  - Physical tracing established that `MD0` follows the foreground/operated VFO and
+    `MD1` the background/opposite VFO. During selection the new `MD0`/`MD1` pair may
+    precede `VS1`, so mapping it through the previously cached selection is unsafe.
+    An `MD0` announcement therefore requests a serialized authoritative `IF`/`OI`/`VS`
+    state refresh; `MD1` is recognized but does not directly mutate state.
   - On 2026-08-31, rigctld mode/passband reads and atomic setters passed; native `SH0` width selection was confirmed on the physical radio
   - On 2026-08-31, automatic-information traffic was observed to emit undocumented
     `FDxxx#########;` frames only when VFO tuning reached a visible spectrum edge and

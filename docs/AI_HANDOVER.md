@@ -1,6 +1,6 @@
 # Rig2Cast AI development handover
 
-Last updated: 2026-09-03 (Europe/Bucharest)
+Last updated: 2026-09-05 (Europe/Bucharest)
 
 This document is the continuity source for an AI agent resuming development of
 Rig2Cast. Read it before modifying code. Then read the architecture and decision
@@ -49,7 +49,7 @@ categories later, but do not generalize prematurely.
 - Target framework: .NET 8
 - Shell: PowerShell
 - Current baseline commit when this handover was written: `49eed20`
-- Current automated suite: **258 passing tests**.
+- Current expected automated suite: **316 passing tests**.
 
 Git may report dubious ownership because Codex and the interactive Windows user
 have different SIDs. Do not modify the user's global Git configuration. For
@@ -883,7 +883,7 @@ snapshots without putting UI concerns in the library. The Console exposes
 `--list-ports`, `--list-connection-settings`, repeatable
 `--connection-setting <id=value>`, and `--civ-controller-address`; older convenience
 options still feed the same resolver. See
-`docs/architecture/typed-connection-settings.md`. Automated coverage is 306 passing
+`docs/architecture/typed-connection-settings.md`. Automated coverage is 316 passing
 tests, and Console metadata output plus local COM discovery were manually checked.
 
 The next milestone was a small Avalonia sample that dynamically renders transport
@@ -938,6 +938,48 @@ new value immediately. They render in a strict aligned two-column tile grid. Spl
 uses the same immediate-toggle behavior. A UI-update guard prevents refreshes and
 runtime events from echoing switch/split writes, while other action rows retain
 explicit Read/Apply semantics with non-clipping fixed columns.
+
+`ModeApplicabilityDescriptor` now gives numeric, switch, choice, and meter capability
+descriptors optional hard read/write mode sets plus advisory operational modes. Null
+sets are unrestricted, so existing Icom, Elecraft, Xiegu, and simulator behavior is
+unchanged. `ManagedRadioOptions.ModeApplicabilityPolicy` lets applications choose
+`Enforce` (the compatibility default) or `Advisory` globally by reusing an options
+instance, with a separate instance available as a per-radio override. Enforcement
+covers base, VFO-targeted, and receiver-targeted reads/writes before CAT I/O; advisory
+mode retains all capability metadata without blocking CAT operations. The runtime
+avoids invalid readback when an enforced write is legal but a read is not. The GUI
+disables/filters both hard-invalid and
+operationally irrelevant controls and refreshes newly readable controls after a mode
+transition. The FTDX10 APF family is declared CW/CW-R-only and microphone gain is
+declared non-CW; physical testing shows that dual-VFO mode combinations can keep these
+commands responsive, so advisory policy is appropriate where strict single-mode
+metadata would be too conservative. Do not guess additional tables. See
+`docs/architecture/mode-applicability.md`.
+
+The capability GUI exposes this choice as a connection-time **Mode restrictions**
+selector. `Enforce` configures both `ManagedRadio` rejection and GUI disabling/refresh
+filtering; `Advisory` retains metadata/tooltips while leaving controls enabled and
+allowing refresh/write attempts. The selected value is captured into
+`ManagedRadioOptions` and the selector is disabled for the lifetime of the connection.
+
+Physical FTDX10 A/B mode testing exposed a serious identity error: `MD0`/`MD1` are
+MAIN/SUB selectors, not stable VFO-A/VFO-B selectors. FTDX10 full-state acquisition
+now decodes `IF` as authoritative VFO-A frequency/mode and `OI` as authoritative
+VFO-B frequency/mode, then uses `VS` to choose the active global mode. Both modes are
+stored in `RadioState.Vfos`. Unsolicited `IF`/`OI` observations update only their
+qualified VFO and update global/receiver mode only when that VFO is active; ambiguous
+unsolicited `MD` frames are recognized and ignored rather than corrupting A/B state.
+An active-VFO observation selects the newly active VFO's cached mode. Per-VFO mode
+freshness prevents stale information from overwriting newer state.
+
+Further physical AI tracing showed `MD0` is foreground/operated mode and `MD1` is
+background/opposite mode, but the radio can emit both before the corresponding `VS1`
+selection announcement. The driver therefore emits the generic
+`StateRefreshRequestedObservation` for valid `MD0` announcements instead of guessing
+an A/B target. `ManagedRadio` invalidates freshness and performs a serialized full
+state read; the resulting `IF`/`OI`/`VS` snapshot drives the normal state event and GUI
+update. Valid `MD1` announcements remain recognized/ignored. This restores automatic
+front-panel mode updates without corrupting per-VFO identity.
 
 GUI follow-up fixes make manual serial-port entry explicitly opt-in: the override
 field starts blank/disabled and is used only when its checkbox is selected. Lifecycle
@@ -1014,6 +1056,11 @@ Read these before related work:
 
 - `README.md`
 - `CONTRIBUTING.md`
+- `docs/developer/README.md` (third-party developer portal and assembly map)
+- `docs/developer/using-rig2cast.md` (application integration guide)
+- `docs/developer/api-reference.md` (native namespace/type contract map)
+- `docs/developer/driver-development.md` (comprehensive driver authoring guide)
+- `docs/developer/driver-testing.md` (driver validation and release checklist)
 - `docs/architecture.md`
 - `docs/architecture/receiver-vfo-model.md`
 - `docs/architecture/typed-connection-settings.md`
@@ -1061,6 +1108,6 @@ dotnet test .\Rig2Cast\tests\Rig2Cast.Runtime.Tests\Rig2Cast.Runtime.Tests.cspro
 dotnet build .\Rig2Cast\samples\Rig2Cast.Console\Rig2Cast.Console.csproj --no-restore
 ```
 
-Then compare the result with the expected 306 tests and inspect changes made after
+Then compare the result with the expected 316 tests and inspect changes made after
 this handover. Build and interactively validate the capability GUI sample before
 beginning legacy Yaesu binary CAT.

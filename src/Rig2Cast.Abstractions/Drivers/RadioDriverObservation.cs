@@ -21,7 +21,8 @@ public enum RadioDriverObservationKind
     ReceiverModeChanged,
     ReceiverVfoChanged,
     ReceivePathsChanged,
-    TransmitPathChanged
+    TransmitPathChanged,
+    StateRefreshRequested
 }
 
 public abstract record RadioDriverObservation(DateTimeOffset ObservedAt, string RawFrame)
@@ -62,6 +63,14 @@ public sealed record ModeChangedObservation(
     RadioMode Mode) : RadioDriverObservation(ObservedAt, RawFrame)
 {
     public override RadioDriverObservationKind Kind => RadioDriverObservationKind.ModeChanged;
+}
+
+public sealed record StateRefreshRequestedObservation(
+    DateTimeOffset ObservedAt,
+    string RawFrame,
+    string Reason) : RadioDriverObservation(ObservedAt, RawFrame)
+{
+    public override RadioDriverObservationKind Kind => RadioDriverObservationKind.StateRefreshRequested;
 }
 
 public sealed record ReceiverModeChangedObservation(

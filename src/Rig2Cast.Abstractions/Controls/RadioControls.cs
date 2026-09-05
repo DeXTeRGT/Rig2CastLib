@@ -34,6 +34,8 @@ public sealed record NumericControlDescriptor(
     int Step,
     string Unit)
 {
+    public ModeApplicabilityDescriptor ModeApplicability { get; init; } = new();
+
     public IReadOnlySet<Rig2Cast.Abstractions.Radios.VfoId> Targets { get; init; } =
         new HashSet<Rig2Cast.Abstractions.Radios.VfoId>();
 

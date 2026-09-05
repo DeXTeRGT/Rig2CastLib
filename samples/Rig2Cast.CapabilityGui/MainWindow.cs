@@ -44,6 +44,7 @@ public sealed class MainWindow : Window, IAsyncDisposable
     private readonly TextBox _tcpHost = new() { Text = "127.0.0.1", MinWidth = 180 };
     private readonly NumericUpDown _tcpPort = new() { Value = 5555, Minimum = 1, Maximum = 65535, MinWidth = 110 };
     private readonly CheckBox _allowWrites = new() { Content = "Enable non-PTT writes" };
+    private readonly ComboBox _modeApplicabilityPolicy = new() { MinWidth = 150 };
     private readonly StackPanel _transportFields = new() { Spacing = 8 };
     private readonly StackPanel _protocolFields = new() { Spacing = 8 };
     private readonly StackPanel _radioContent = new() { Spacing = 12 };
@@ -67,7 +68,8 @@ public sealed class MainWindow : Window, IAsyncDisposable
     private readonly Button _refreshPorts = new() { Content = "Refresh ports" };
     private readonly Button _refreshState = new() { Content = "Refresh all", IsEnabled = false };
     private readonly Dictionary<string, Control> _settingEditors = new(StringComparer.OrdinalIgnoreCase);
-    private readonly List<(string Name, Func<Task> Refresh)> _controlRefreshers = [];
+    private readonly List<(string Name, ModeApplicabilityDescriptor Applicability, Func<Task> Refresh)> _controlRefreshers = [];
+    private readonly List<Action<RadioMode>> _applicabilityUpdates = [];
     private readonly Dictionary<RadioControlId, NumericUpDown> _numericEditors = [];
     private readonly Dictionary<RadioSwitchId, CheckBox> _switchEditors = [];
     private readonly Dictionary<RadioChoiceId, ComboBox> _choiceEditors = [];
@@ -89,6 +91,7 @@ public sealed class MainWindow : Window, IAsyncDisposable
     private Task? _watchTask;
     private long _connectionGeneration;
     private bool _updatingEditors;
+    private RadioMode? _currentMode;
 
     public MainWindow()
     {
@@ -103,6 +106,13 @@ public sealed class MainWindow : Window, IAsyncDisposable
         _catalog.Register(new ElecraftK3DriverFactory());
         _catalog.Register(new Ic7300DriverFactory());
         _catalog.Register(new G90DriverFactory());
+
+        _modeApplicabilityPolicy.ItemsSource = Enum.GetValues<ModeApplicabilityPolicy>();
+        _modeApplicabilityPolicy.SelectedItem = ModeApplicabilityPolicy.Enforce;
+        ToolTip.SetTip(
+            _modeApplicabilityPolicy,
+            "Enforce blocks mode-inapplicable operations before CAT I/O. " +
+            "Advisory keeps the metadata visible but permits those operations.");
 
         _model.ItemsSource = _catalog.Models;
         _model.ItemTemplate = new Avalonia.Controls.Templates.FuncDataTemplate<RadioModelRegistration>(
@@ -147,6 +157,7 @@ public sealed class MainWindow : Window, IAsyncDisposable
                 Heading("MODEL SETTINGS", 13, Brush.Parse("#94A3B8")),
                 _protocolFields,
                 _allowWrites,
+                Row("Mode restrictions", _modeApplicabilityPolicy),
                 new StackPanel
                 {
                     Orientation = Orientation.Horizontal,
@@ -394,17 +405,22 @@ public sealed class MainWindow : Window, IAsyncDisposable
             Dictionary<string, string> userValues = ReadConnectionSettings();
             ResolvedConnectionSettings resolved = ConnectionSettingsResolver.Resolve(
                 registration.Model, userValues);
+            var managedOptions = new ManagedRadioOptions
+            {
+                ModeApplicabilityPolicy = SelectedModeApplicabilityPolicy
+            };
             if (transportKind == RadioTransportKind.Simulator)
             {
                 openedDriver = await OpenSimulatorDriverAsync(registration, userValues, resolved);
-                _radio = await ManagedRadio.CreateAsync("gui-radio", openedDriver);
+                _radio = await ManagedRadio.CreateAsync("gui-radio", openedDriver, managedOptions);
                 openedDriver = null;
             }
             else
             {
                 RadioDriverConnector connector = CreatePhysicalConnector(
                     registration, transportKind, userValues, resolved);
-                _radio = await ManagedRadio.CreateReconnectableAsync("gui-radio", connector);
+                _radio = await ManagedRadio.CreateReconnectableAsync(
+                    "gui-radio", connector, managedOptions);
             }
             ClientRole role = _allowWrites.IsChecked == true ? ClientRole.Operator : ClientRole.Observer;
             _session = _radio.OpenSession(
@@ -544,6 +560,7 @@ public sealed class MainWindow : Window, IAsyncDisposable
     {
         ClearCapabilityContent();
         _controlRefreshers.Clear();
+        _applicabilityUpdates.Clear();
         _numericEditors.Clear();
         _switchEditors.Clear();
         _choiceEditors.Clear();
@@ -792,7 +809,8 @@ public sealed class MainWindow : Window, IAsyncDisposable
                 MinWidth = 120
             };
             ToolTip.SetTip(value, FeatureTip(descriptor.DisplayName, descriptor.Feature,
-                $"Range: {descriptor.Minimum}..{descriptor.Maximum}; step {descriptor.Step}; unit {descriptor.Unit}"));
+                $"Range: {descriptor.Minimum}..{descriptor.Maximum}; step {descriptor.Step}; unit {descriptor.Unit}" +
+                ModeApplicabilityTip(descriptor.ModeApplicability)));
             var read = ReadButton(CanRead(descriptor.Feature), async () =>
             {
                 RadioControlValue result = await _session!.ReadControlAsync(descriptor.Id);
@@ -801,7 +819,7 @@ public sealed class MainWindow : Window, IAsyncDisposable
             });
             _numericEditors[descriptor.Id] = value;
             if (CanRead(descriptor.Feature))
-                _controlRefreshers.Add((descriptor.DisplayName,
+                _controlRefreshers.Add((descriptor.DisplayName, descriptor.ModeApplicability,
                     async () => _ = await ReadNumericAsync(descriptor, value)));
             var write = new Button
             {
@@ -811,6 +829,14 @@ public sealed class MainWindow : Window, IAsyncDisposable
             write.Click += async (_, _) => await RunUiOperationAsync(async () =>
             {
                 await _session!.WriteControlAsync(descriptor.Id, decimal.ToInt32(value.Value ?? 0));
+            });
+            _applicabilityUpdates.Add(mode =>
+            {
+                read.IsEnabled = CanRead(descriptor.Feature) && IsModeReadable(descriptor.ModeApplicability, mode);
+                bool canWrite = writesAuthorized && CanWrite(descriptor.Feature) &&
+                                IsModeWritable(descriptor.ModeApplicability, mode);
+                write.IsEnabled = canWrite;
+                value.IsEnabled = canWrite;
             });
             GetControlCategory(ControlCategory(descriptor.Id)).Children.Add(
                 EditorRow(descriptor.DisplayName, value, read, write, descriptor.Feature));
@@ -827,17 +853,21 @@ public sealed class MainWindow : Window, IAsyncDisposable
                 Content = "Enabled",
                 IsEnabled = writesAuthorized && CanWrite(descriptor.Feature)
             };
-            ToolTip.SetTip(value, FeatureTip(descriptor.DisplayName, descriptor.Feature));
+            ToolTip.SetTip(value, FeatureTip(
+                descriptor.DisplayName, descriptor.Feature, ModeApplicabilityTip(descriptor.ModeApplicability)));
             _switchEditors[descriptor.Id] = value;
             if (CanRead(descriptor.Feature))
-                _controlRefreshers.Add((descriptor.DisplayName,
+                _controlRefreshers.Add((descriptor.DisplayName, descriptor.ModeApplicability,
                     async () => _ = await ReadSwitchAsync(descriptor, value)));
             value.IsCheckedChanged += async (_, _) =>
             {
-                if (_updatingEditors || _session is null || !CanWrite(descriptor.Feature)) return;
+                if (_updatingEditors || _session is null || !CanWrite(descriptor.Feature) ||
+                    _currentMode is not RadioMode mode || !IsModeWritable(descriptor.ModeApplicability, mode)) return;
                 await RunUiOperationAsync(async () =>
                     await _session.WriteSwitchAsync(descriptor.Id, value.IsChecked == true));
             };
+            _applicabilityUpdates.Add(mode => value.IsEnabled = writesAuthorized &&
+                CanWrite(descriptor.Feature) && IsModeWritable(descriptor.ModeApplicability, mode));
 
             var tile = new Grid
             {
@@ -871,7 +901,8 @@ public sealed class MainWindow : Window, IAsyncDisposable
                 MinWidth = 150
             };
             ToolTip.SetTip(value, FeatureTip(descriptor.DisplayName, descriptor.Feature,
-                $"Options: {string.Join(", ", descriptor.Options.Keys)}"));
+                $"Options: {string.Join(", ", descriptor.Options.Keys)}" +
+                ModeApplicabilityTip(descriptor.ModeApplicability)));
             var read = ReadButton(CanRead(descriptor.Feature), async () =>
             {
                 RadioChoiceValue result = await _session!.ReadChoiceAsync(descriptor.Id);
@@ -880,7 +911,7 @@ public sealed class MainWindow : Window, IAsyncDisposable
             });
             _choiceEditors[descriptor.Id] = value;
             if (CanRead(descriptor.Feature))
-                _controlRefreshers.Add((descriptor.DisplayName,
+                _controlRefreshers.Add((descriptor.DisplayName, descriptor.ModeApplicability,
                     async () => _ = await ReadChoiceAsync(descriptor, value)));
             var write = new Button
             {
@@ -891,6 +922,14 @@ public sealed class MainWindow : Window, IAsyncDisposable
             {
                 string selected = value.SelectedItem?.ToString() ?? throw new ArgumentException("Select a value.");
                 await _session!.WriteChoiceAsync(descriptor.Id, selected);
+            });
+            _applicabilityUpdates.Add(mode =>
+            {
+                read.IsEnabled = CanRead(descriptor.Feature) && IsModeReadable(descriptor.ModeApplicability, mode);
+                bool canWrite = writesAuthorized && CanWrite(descriptor.Feature) &&
+                                IsModeWritable(descriptor.ModeApplicability, mode);
+                write.IsEnabled = canWrite;
+                value.IsEnabled = canWrite;
             });
             GetControlCategory(ControlCategory(descriptor.Id)).Children.Add(
                 EditorRow(descriptor.DisplayName, value, read, write, descriptor.Feature));
@@ -987,6 +1026,8 @@ public sealed class MainWindow : Window, IAsyncDisposable
         foreach (RadioMeterDescriptor descriptor in capabilities.Meters.Values)
         {
             var value = new TextBlock { MinWidth = 160, Text = "not read" };
+            ToolTip.SetTip(value, $"Raw range: {descriptor.RawMinimum}..{descriptor.RawMaximum} {descriptor.RawUnit}" +
+                ModeApplicabilityTip(descriptor.ModeApplicability));
             var read = ReadButton(true, async () =>
             {
                 RadioMeterReading result = await _session!.ReadMeterAsync(descriptor.Id);
@@ -994,8 +1035,10 @@ public sealed class MainWindow : Window, IAsyncDisposable
                 return $"{descriptor.DisplayName} raw = {result.RawValue}";
             });
             _meterEditors[descriptor.Id] = value;
-            _controlRefreshers.Add((descriptor.DisplayName,
+            _controlRefreshers.Add((descriptor.DisplayName, descriptor.ModeApplicability,
                 async () => _ = await ReadMeterAsync(descriptor, value)));
+            _applicabilityUpdates.Add(mode =>
+                read.IsEnabled = IsModeReadable(descriptor.ModeApplicability, mode));
             section.Children.Add(EditorRow(
                 descriptor.DisplayName,
                 value,
@@ -1119,8 +1162,10 @@ public sealed class MainWindow : Window, IAsyncDisposable
         {
             RenderState(await _session.RefreshStateAsync());
             var failures = new List<string>();
-            foreach ((string name, Func<Task> refresh) in _controlRefreshers)
+            RadioMode mode = _currentMode ?? (await _session.GetSnapshotAsync()).State.Mode;
+            foreach ((string name, ModeApplicabilityDescriptor applicability, Func<Task> refresh) in _controlRefreshers)
             {
+                if (!IsModeReadable(applicability, mode)) continue;
                 try
                 {
                     _status.Text = $"Reading {name}...";
@@ -1148,6 +1193,12 @@ public sealed class MainWindow : Window, IAsyncDisposable
 
     private void RenderState(RadioState state)
     {
+        RadioMode? previousMode = _currentMode;
+        _currentMode = state.Mode;
+        foreach (Action<RadioMode> update in _applicabilityUpdates)
+            update(state.Mode);
+        if (previousMode is RadioMode previous && previous != state.Mode)
+            _ = RefreshNewlyApplicableAsync(previous, state.Mode, _connectionGeneration);
         foreach ((VfoId vfo, long frequency) in state.FrequenciesHz)
         {
             if (_frequencyEditors.TryGetValue(vfo, out TextBox? editor))
@@ -1210,6 +1261,29 @@ public sealed class MainWindow : Window, IAsyncDisposable
             $"Split {(state.IsSplit ? "ON" : "OFF")}  ·  {(state.IsTransmitting ? "TX" : "RX")}";
     }
 
+    private async Task RefreshNewlyApplicableAsync(
+        RadioMode previousMode,
+        RadioMode currentMode,
+        long generation)
+    {
+        foreach ((string name, ModeApplicabilityDescriptor applicability, Func<Task> refresh) in _controlRefreshers)
+        {
+            if (IsModeReadable(applicability, previousMode) || !IsModeReadable(applicability, currentMode))
+                continue;
+            if (generation != _connectionGeneration || _session is null || _currentMode != currentMode)
+                return;
+            try
+            {
+                await refresh();
+                AppendDiagnostic("INFO", $"Mode {currentMode}: refreshed newly available {name}.");
+            }
+            catch (Exception exception)
+            {
+                AppendDiagnostic("WARNING", $"Could not refresh {name} in {currentMode}: {exception.Message}");
+            }
+        }
+    }
+
     private async Task RunUiOperationAsync(Func<Task> operation)
     {
         try
@@ -1253,6 +1327,7 @@ public sealed class MainWindow : Window, IAsyncDisposable
         _connectionBadge.Text = "OFFLINE";
         _connectionBadge.Foreground = Brush.Parse("#94A3B8");
         _radioSummary.Text = string.Empty;
+        _modeApplicabilityPolicy.IsEnabled = true;
 
         var errors = new List<string>();
         if (watchStopping is not null)
@@ -1318,6 +1393,7 @@ public sealed class MainWindow : Window, IAsyncDisposable
     private void SetBusy(bool busy, string? status = null)
     {
         _connect.IsEnabled = !busy;
+        _modeApplicabilityPolicy.IsEnabled = !busy && _radio is null;
         if (status is not null) _status.Text = status;
     }
 
@@ -1365,6 +1441,19 @@ public sealed class MainWindow : Window, IAsyncDisposable
     private static bool CanWrite(FeatureDescriptor descriptor) =>
         descriptor.Support == CapabilitySupport.Supported && descriptor.Access.HasFlag(FeatureAccess.Write);
 
+    private ModeApplicabilityPolicy SelectedModeApplicabilityPolicy =>
+        _modeApplicabilityPolicy.SelectedItem is ModeApplicabilityPolicy policy
+            ? policy
+            : ModeApplicabilityPolicy.Enforce;
+
+    private bool IsModeReadable(ModeApplicabilityDescriptor applicability, RadioMode mode) =>
+        SelectedModeApplicabilityPolicy == ModeApplicabilityPolicy.Advisory ||
+        applicability.CanRead(mode) && applicability.IsOperationallyRelevant(mode);
+
+    private bool IsModeWritable(ModeApplicabilityDescriptor applicability, RadioMode mode) =>
+        SelectedModeApplicabilityPolicy == ModeApplicabilityPolicy.Advisory ||
+        applicability.CanWrite(mode) && applicability.IsOperationallyRelevant(mode);
+
     private static string FormatFeature(FeatureDescriptor descriptor) =>
         $"{descriptor.Support}, {descriptor.Access}";
 
@@ -1374,6 +1463,18 @@ public sealed class MainWindow : Window, IAsyncDisposable
         string? detail = null) =>
         $"{name}\nSupport: {descriptor.Support}\nAccess: {descriptor.Access}" +
         (string.IsNullOrWhiteSpace(detail) ? string.Empty : $"\n{detail}");
+
+    private static string ModeApplicabilityTip(ModeApplicabilityDescriptor applicability)
+    {
+        var lines = new List<string>();
+        if (applicability.ReadModes is not null)
+            lines.Add($"Read modes: {string.Join(", ", applicability.ReadModes)}");
+        if (applicability.WriteModes is not null)
+            lines.Add($"Write modes: {string.Join(", ", applicability.WriteModes)}");
+        if (applicability.OperationalModes is not null)
+            lines.Add($"Operational modes: {string.Join(", ", applicability.OperationalModes)}");
+        return lines.Count == 0 ? string.Empty : "\n" + string.Join("\n", lines);
+    }
 
     private static TextBlock AccessLabel(FeatureDescriptor descriptor) => new()
     {

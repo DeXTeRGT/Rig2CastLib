@@ -1,4 +1,5 @@
 using Rig2Cast.Abstractions.Radios;
+using Rig2Cast.Abstractions.Capabilities;
 
 namespace Rig2Cast.Abstractions.Meters;
 
@@ -21,6 +22,8 @@ public sealed record RadioMeterDescriptor(
     string RawUnit,
     bool CalibrationAvailable)
 {
+    public ModeApplicabilityDescriptor ModeApplicability { get; init; } = new();
+
     public bool RequiresTransmit { get; init; }
 
     public IReadOnlyDictionary<VfoId, RadioMeterRange>? RangesByTarget { get; init; }

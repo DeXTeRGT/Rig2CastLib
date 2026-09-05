@@ -20,9 +20,12 @@ public sealed class ManagedRadio : IAsyncDisposable
     private readonly RadioLeaseManager _leases;
     private readonly RadioEventHub _events;
     private readonly TimeProvider _timeProvider;
+    private readonly ModeApplicabilityPolicy _modeApplicabilityPolicy;
     private readonly object _refreshGate = new();
     private readonly Dictionary<VfoId, DateTimeOffset> _frequencyFreshAt = [];
     private readonly Dictionary<VfoId, DateTimeOffset> _frequencyAppliedAt = [];
+    private readonly Dictionary<VfoId, DateTimeOffset> _vfoModeFreshAt = [];
+    private readonly Dictionary<VfoId, DateTimeOffset> _vfoModeAppliedAt = [];
     private readonly Dictionary<ReceiverId, DateTimeOffset> _receiverFrequencyFreshAt = [];
     private readonly Dictionary<ReceiverId, DateTimeOffset> _receiverFrequencyAppliedAt = [];
     private readonly Dictionary<ReceiverId, DateTimeOffset> _receiverModeFreshAt = [];
@@ -68,6 +71,7 @@ public sealed class ManagedRadio : IAsyncDisposable
         RadioLeaseManager leases,
         RadioState initialState,
         TimeProvider timeProvider,
+        ManagedRadioOptions options,
         RadioDriverConnector? connector = null,
         RadioConnectionSupervisorOptions? connectionOptions = null)
     {
@@ -77,6 +81,7 @@ public sealed class ManagedRadio : IAsyncDisposable
         _leases = leases;
         _state = SynchronizeSignalPaths(initialState);
         _timeProvider = timeProvider;
+        _modeApplicabilityPolicy = options.ModeApplicabilityPolicy;
         _events = new RadioEventHub(timeProvider);
         MarkFullStateFresh(timeProvider.GetUtcNow());
         _connector = connector;
@@ -92,8 +97,19 @@ public sealed class ManagedRadio : IAsyncDisposable
         string radioId,
         IRadioDriver driver,
         TimeProvider? timeProvider = null,
+        CancellationToken cancellationToken = default) =>
+        await CreateAsync(
+            radioId, driver, new ManagedRadioOptions(), timeProvider, cancellationToken).ConfigureAwait(false);
+
+    public static async ValueTask<ManagedRadio> CreateAsync(
+        string radioId,
+        IRadioDriver driver,
+        ManagedRadioOptions options,
+        TimeProvider? timeProvider = null,
         CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(options);
+        options.Validate();
         TimeProvider clock = timeProvider ?? TimeProvider.System;
         var scheduler = new RadioCommandScheduler();
         try
@@ -101,7 +117,8 @@ public sealed class ManagedRadio : IAsyncDisposable
             RadioState state = await scheduler.ExecuteAsync(
                 driver.ReadStateAsync,
                 cancellationToken: cancellationToken).ConfigureAwait(false);
-            return new ManagedRadio(radioId, driver, scheduler, new RadioLeaseManager(clock), state, clock);
+            return new ManagedRadio(
+                radioId, driver, scheduler, new RadioLeaseManager(clock), state, clock, options);
         }
         catch
         {
@@ -115,10 +132,28 @@ public sealed class ManagedRadio : IAsyncDisposable
         RadioDriverConnector connector,
         RadioConnectionSupervisorOptions? connectionOptions = null,
         TimeProvider? timeProvider = null,
+        CancellationToken cancellationToken = default) =>
+        await CreateReconnectableAsync(
+            radioId,
+            connector,
+            new ManagedRadioOptions(),
+            connectionOptions,
+            timeProvider,
+            cancellationToken).ConfigureAwait(false);
+
+    public static async ValueTask<ManagedRadio> CreateReconnectableAsync(
+        string radioId,
+        RadioDriverConnector connector,
+        ManagedRadioOptions options,
+        RadioConnectionSupervisorOptions? connectionOptions = null,
+        TimeProvider? timeProvider = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(connector);
-        RadioConnectionSupervisorOptions options = connectionOptions ?? new RadioConnectionSupervisorOptions();
+        ArgumentNullException.ThrowIfNull(options);
+        RadioConnectionSupervisorOptions supervisorOptions =
+            connectionOptions ?? new RadioConnectionSupervisorOptions();
+        supervisorOptions.Validate();
         options.Validate();
         TimeProvider clock = timeProvider ?? TimeProvider.System;
         IRadioDriver driver = await connector(cancellationToken).ConfigureAwait(false);
@@ -135,8 +170,9 @@ public sealed class ManagedRadio : IAsyncDisposable
                 new RadioLeaseManager(clock),
                 state,
                 clock,
+                options,
                 connector,
-                options);
+                supervisorOptions);
         }
         catch
         {
@@ -347,9 +383,12 @@ public sealed class ManagedRadio : IAsyncDisposable
     internal ValueTask<RadioControlValue> ReadControlAsync(
         RadioControlId control,
         CancellationToken cancellationToken) =>
-        ExecuteHardwareAsync(
-            token => GetControlDriver(control).ReadControlAsync(control, token),
-            cancellationToken: cancellationToken);
+        ExecuteHardwareAsync(token =>
+        {
+            NumericControlDescriptor descriptor = _driver.Capabilities.Controls[control];
+            EnsureModeReadable(descriptor.ModeApplicability, _state.Mode, control.ToString());
+            return GetControlDriver(control).ReadControlAsync(control, token);
+        }, cancellationToken: cancellationToken);
 
     internal async ValueTask WriteControlAsync(
         ClientAuthorization authorization,
@@ -362,12 +401,16 @@ public sealed class ManagedRadio : IAsyncDisposable
         {
             IRadioControlDriver controlDriver = GetControlDriver(control);
             NumericControlDescriptor descriptor = _driver.Capabilities.Controls[control];
+            EnsureModeWritable(descriptor.ModeApplicability, _state.Mode, control.ToString());
             if (value < descriptor.Minimum || value > descriptor.Maximum ||
                 (value - descriptor.Minimum) % descriptor.Step != 0)
                 throw new ArgumentOutOfRangeException(nameof(value));
 
             await controlDriver.WriteControlAsync(control, value, token).ConfigureAwait(false);
-            RadioControlValue confirmed = await controlDriver.ReadControlAsync(control, token).ConfigureAwait(false);
+            RadioControlValue confirmed = descriptor.Feature.Access.HasFlag(FeatureAccess.Read) &&
+                                          CanReadInMode(descriptor.ModeApplicability, _state.Mode)
+                ? await controlDriver.ReadControlAsync(control, token).ConfigureAwait(false)
+                : new RadioControlValue(control, value, _timeProvider.GetUtcNow());
             _events.Publish(RadioEventKind.ControlChanged, confirmed);
         }, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
@@ -376,7 +419,9 @@ public sealed class ManagedRadio : IAsyncDisposable
         RadioControlId control, VfoId target, CancellationToken cancellationToken) =>
         ExecuteHardwareAsync(token =>
         {
-            ValidateTarget(_driver.Capabilities.Controls[control].Targets, target, control.ToString());
+            NumericControlDescriptor descriptor = _driver.Capabilities.Controls[control];
+            ValidateTarget(descriptor.Targets, target, control.ToString());
+            EnsureModeReadable(descriptor.ModeApplicability, () => ResolveMode(target), control.ToString());
             return GetTargetedControlDriver(control).ReadControlAsync(control, target, token);
         }, cancellationToken: cancellationToken);
 
@@ -389,13 +434,18 @@ public sealed class ManagedRadio : IAsyncDisposable
         {
             NumericControlDescriptor descriptor = _driver.Capabilities.Controls[control];
             ValidateTarget(descriptor.Targets, target, control.ToString());
+            RadioMode targetMode = ResolveModeForWrite(descriptor.ModeApplicability, () => ResolveMode(target));
+            EnsureModeWritable(descriptor.ModeApplicability, targetMode, control.ToString());
             if (value < descriptor.Minimum || value > descriptor.Maximum ||
                 (value - descriptor.Minimum) % descriptor.Step != 0)
                 throw new ArgumentOutOfRangeException(nameof(value));
             IRadioTargetedControlDriver driver = GetTargetedControlDriver(control);
             await driver.WriteControlAsync(control, target, value, token).ConfigureAwait(false);
-            _events.Publish(RadioEventKind.ControlChanged,
-                await driver.ReadControlAsync(control, target, token).ConfigureAwait(false));
+            RadioControlValue confirmed = descriptor.Feature.Access.HasFlag(FeatureAccess.Read) &&
+                                          CanReadInMode(descriptor.ModeApplicability, targetMode)
+                ? await driver.ReadControlAsync(control, target, token).ConfigureAwait(false)
+                : new RadioControlValue(control, value, _timeProvider.GetUtcNow(), target);
+            _events.Publish(RadioEventKind.ControlChanged, confirmed);
         }, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
@@ -403,7 +453,9 @@ public sealed class ManagedRadio : IAsyncDisposable
         RadioControlId control, ReceiverId receiver, CancellationToken cancellationToken) =>
         ExecuteHardwareAsync(token =>
         {
-            ValidateTarget(_driver.Capabilities.Controls[control].ReceiverTargets, receiver, control.ToString());
+            NumericControlDescriptor descriptor = _driver.Capabilities.Controls[control];
+            ValidateTarget(descriptor.ReceiverTargets, receiver, control.ToString());
+            EnsureModeReadable(descriptor.ModeApplicability, () => ResolveMode(receiver), control.ToString());
             return GetReceiverControlDriver(control).ReadControlAsync(control, receiver, token);
         }, cancellationToken: cancellationToken);
 
@@ -416,22 +468,30 @@ public sealed class ManagedRadio : IAsyncDisposable
         {
             NumericControlDescriptor descriptor = _driver.Capabilities.Controls[control];
             ValidateTarget(descriptor.ReceiverTargets, receiver, control.ToString());
+            RadioMode receiverMode = ResolveModeForWrite(descriptor.ModeApplicability, () => ResolveMode(receiver));
+            EnsureModeWritable(descriptor.ModeApplicability, receiverMode, control.ToString());
             if (value < descriptor.Minimum || value > descriptor.Maximum ||
                 (value - descriptor.Minimum) % descriptor.Step != 0)
                 throw new ArgumentOutOfRangeException(nameof(value));
             IRadioReceiverControlDriver driver = GetReceiverControlDriver(control);
             await driver.WriteControlAsync(control, receiver, value, token).ConfigureAwait(false);
-            _events.Publish(RadioEventKind.ControlChanged,
-                await driver.ReadControlAsync(control, receiver, token).ConfigureAwait(false));
+            RadioControlValue confirmed = descriptor.Feature.Access.HasFlag(FeatureAccess.Read) &&
+                                          CanReadInMode(descriptor.ModeApplicability, receiverMode)
+                ? await driver.ReadControlAsync(control, receiver, token).ConfigureAwait(false)
+                : new RadioControlValue(control, value, _timeProvider.GetUtcNow()) { Receiver = receiver };
+            _events.Publish(RadioEventKind.ControlChanged, confirmed);
         }, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     internal ValueTask<RadioMeterReading> ReadMeterAsync(
         RadioMeterId meter,
         CancellationToken cancellationToken) =>
-        ExecuteHardwareAsync(
-            token => GetMeterDriver(meter).ReadMeterAsync(meter, token),
-            cancellationToken: cancellationToken);
+        ExecuteHardwareAsync(token =>
+        {
+            RadioMeterDescriptor descriptor = _driver.Capabilities.Meters[meter];
+            EnsureModeReadable(descriptor.ModeApplicability, _state.Mode, meter.ToString());
+            return GetMeterDriver(meter).ReadMeterAsync(meter, token);
+        }, cancellationToken: cancellationToken);
 
     internal ValueTask<RadioMeterReading> ReadMeterAsync(
         RadioMeterId meter, VfoId target, CancellationToken cancellationToken) =>
@@ -441,6 +501,7 @@ public sealed class ManagedRadio : IAsyncDisposable
             if (descriptor.RangesByTarget is null)
                 throw new NotSupportedException($"Meter '{meter}' is not target-aware.");
             ValidateTarget(descriptor.RangesByTarget.Keys.ToHashSet(), target, meter.ToString());
+            EnsureModeReadable(descriptor.ModeApplicability, () => ResolveMode(target), meter.ToString());
             return GetTargetedMeterDriver(meter).ReadMeterAsync(meter, target, token);
         }, cancellationToken: cancellationToken);
 
@@ -452,15 +513,19 @@ public sealed class ManagedRadio : IAsyncDisposable
             if (descriptor.RangesByReceiver is null)
                 throw new NotSupportedException($"Meter '{meter}' is not receiver-aware.");
             ValidateTarget(descriptor.RangesByReceiver.Keys.ToHashSet(), receiver, meter.ToString());
+            EnsureModeReadable(descriptor.ModeApplicability, () => ResolveMode(receiver), meter.ToString());
             return GetReceiverMeterDriver(meter).ReadMeterAsync(meter, receiver, token);
         }, cancellationToken: cancellationToken);
 
     internal ValueTask<RadioSwitchValue> ReadSwitchAsync(
         RadioSwitchId control,
         CancellationToken cancellationToken) =>
-        ExecuteHardwareAsync(
-            token => GetSwitchDriver(control).ReadSwitchAsync(control, token),
-            cancellationToken: cancellationToken);
+        ExecuteHardwareAsync(token =>
+        {
+            SwitchControlDescriptor descriptor = _driver.Capabilities.Switches[control];
+            EnsureModeReadable(descriptor.ModeApplicability, _state.Mode, control.ToString());
+            return GetSwitchDriver(control).ReadSwitchAsync(control, token);
+        }, cancellationToken: cancellationToken);
 
     internal async ValueTask WriteSwitchAsync(
         ClientAuthorization authorization,
@@ -471,9 +536,14 @@ public sealed class ManagedRadio : IAsyncDisposable
         EnsureCanControl(authorization);
         await ExecuteHardwareAsync(async token =>
         {
+            SwitchControlDescriptor descriptor = _driver.Capabilities.Switches[control];
+            EnsureModeWritable(descriptor.ModeApplicability, _state.Mode, control.ToString());
             IRadioSwitchDriver switchDriver = GetSwitchDriver(control);
             await switchDriver.WriteSwitchAsync(control, enabled, token).ConfigureAwait(false);
-            RadioSwitchValue confirmed = await switchDriver.ReadSwitchAsync(control, token).ConfigureAwait(false);
+            RadioSwitchValue confirmed = descriptor.Feature.Access.HasFlag(FeatureAccess.Read) &&
+                                         CanReadInMode(descriptor.ModeApplicability, _state.Mode)
+                ? await switchDriver.ReadSwitchAsync(control, token).ConfigureAwait(false)
+                : new RadioSwitchValue(control, enabled, _timeProvider.GetUtcNow());
             _events.Publish(RadioEventKind.ControlChanged, confirmed);
         }, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
@@ -482,7 +552,9 @@ public sealed class ManagedRadio : IAsyncDisposable
         RadioSwitchId control, ReceiverId receiver, CancellationToken cancellationToken) =>
         ExecuteHardwareAsync(token =>
         {
-            ValidateTarget(_driver.Capabilities.Switches[control].ReceiverTargets, receiver, control.ToString());
+            SwitchControlDescriptor descriptor = _driver.Capabilities.Switches[control];
+            ValidateTarget(descriptor.ReceiverTargets, receiver, control.ToString());
+            EnsureModeReadable(descriptor.ModeApplicability, () => ResolveMode(receiver), control.ToString());
             return GetReceiverSwitchDriver(control).ReadSwitchAsync(control, receiver, token);
         }, cancellationToken: cancellationToken);
 
@@ -493,20 +565,29 @@ public sealed class ManagedRadio : IAsyncDisposable
         EnsureCanControl(authorization);
         await ExecuteHardwareAsync(async token =>
         {
-            ValidateTarget(_driver.Capabilities.Switches[control].ReceiverTargets, receiver, control.ToString());
+            SwitchControlDescriptor descriptor = _driver.Capabilities.Switches[control];
+            ValidateTarget(descriptor.ReceiverTargets, receiver, control.ToString());
+            RadioMode receiverMode = ResolveModeForWrite(descriptor.ModeApplicability, () => ResolveMode(receiver));
+            EnsureModeWritable(descriptor.ModeApplicability, receiverMode, control.ToString());
             IRadioReceiverSwitchDriver driver = GetReceiverSwitchDriver(control);
             await driver.WriteSwitchAsync(control, receiver, enabled, token).ConfigureAwait(false);
-            _events.Publish(RadioEventKind.ControlChanged,
-                await driver.ReadSwitchAsync(control, receiver, token).ConfigureAwait(false));
+            RadioSwitchValue confirmed = descriptor.Feature.Access.HasFlag(FeatureAccess.Read) &&
+                                         CanReadInMode(descriptor.ModeApplicability, receiverMode)
+                ? await driver.ReadSwitchAsync(control, receiver, token).ConfigureAwait(false)
+                : new RadioSwitchValue(control, enabled, _timeProvider.GetUtcNow()) { Receiver = receiver };
+            _events.Publish(RadioEventKind.ControlChanged, confirmed);
         }, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
     internal ValueTask<RadioChoiceValue> ReadChoiceAsync(
         RadioChoiceId control,
         CancellationToken cancellationToken) =>
-        ExecuteHardwareAsync(
-            token => GetChoiceDriver(control).ReadChoiceAsync(control, token),
-            cancellationToken: cancellationToken);
+        ExecuteHardwareAsync(token =>
+        {
+            ChoiceControlDescriptor descriptor = _driver.Capabilities.Choices[control];
+            EnsureModeReadable(descriptor.ModeApplicability, _state.Mode, control.ToString());
+            return GetChoiceDriver(control).ReadChoiceAsync(control, token);
+        }, cancellationToken: cancellationToken);
 
     internal async ValueTask WriteChoiceAsync(
         ClientAuthorization authorization,
@@ -519,9 +600,11 @@ public sealed class ManagedRadio : IAsyncDisposable
         {
             IRadioChoiceDriver choiceDriver = GetChoiceDriver(control);
             ChoiceControlDescriptor descriptor = _driver.Capabilities.Choices[control];
+            EnsureModeWritable(descriptor.ModeApplicability, _state.Mode, control.ToString());
             if (!descriptor.Options.TryGetValue(value, out RadioChoiceOption? option) || !option.Writable)
                 throw new ArgumentOutOfRangeException(nameof(value));
-            if (option.ApplicableModes is not null && !option.ApplicableModes.Contains(_state.Mode))
+            if (EnforcesModeApplicability && option.ApplicableModes is not null &&
+                !option.ApplicableModes.Contains(_state.Mode))
                 throw new InvalidOperationException($"Choice '{value}' is not applicable in {_state.Mode} mode.");
 
             await choiceDriver.WriteChoiceAsync(control, value, token).ConfigureAwait(false);
@@ -536,7 +619,9 @@ public sealed class ManagedRadio : IAsyncDisposable
         RadioChoiceId control, VfoId target, CancellationToken cancellationToken) =>
         ExecuteHardwareAsync(token =>
         {
-            ValidateTarget(_driver.Capabilities.Choices[control].Targets, target, control.ToString());
+            ChoiceControlDescriptor descriptor = _driver.Capabilities.Choices[control];
+            ValidateTarget(descriptor.Targets, target, control.ToString());
+            EnsureModeReadable(descriptor.ModeApplicability, () => ResolveMode(target), control.ToString());
             return GetTargetedChoiceDriver(control).ReadChoiceAsync(control, target, token);
         }, cancellationToken: cancellationToken);
 
@@ -554,7 +639,9 @@ public sealed class ManagedRadio : IAsyncDisposable
             if (!options.TryGetValue(value, out RadioChoiceOption? option) || !option.Writable)
                 throw new ArgumentOutOfRangeException(nameof(value));
             RadioMode targetMode = ResolveMode(target);
-            if (option.ApplicableModes is not null && !option.ApplicableModes.Contains(targetMode))
+            EnsureModeWritable(descriptor.ModeApplicability, targetMode, control.ToString());
+            if (EnforcesModeApplicability && option.ApplicableModes is not null &&
+                !option.ApplicableModes.Contains(targetMode))
                 throw new InvalidOperationException($"Choice '{value}' is not applicable in {targetMode} mode.");
             IRadioTargetedChoiceDriver driver = GetTargetedChoiceDriver(control);
             await driver.WriteChoiceAsync(control, target, value, token).ConfigureAwait(false);
@@ -569,7 +656,9 @@ public sealed class ManagedRadio : IAsyncDisposable
         RadioChoiceId control, ReceiverId receiver, CancellationToken cancellationToken) =>
         ExecuteHardwareAsync(token =>
         {
-            ValidateTarget(_driver.Capabilities.Choices[control].ReceiverTargets, receiver, control.ToString());
+            ChoiceControlDescriptor descriptor = _driver.Capabilities.Choices[control];
+            ValidateTarget(descriptor.ReceiverTargets, receiver, control.ToString());
+            EnsureModeReadable(descriptor.ModeApplicability, () => ResolveMode(receiver), control.ToString());
             return GetReceiverChoiceDriver(control).ReadChoiceAsync(control, receiver, token);
         }, cancellationToken: cancellationToken);
 
@@ -587,7 +676,9 @@ public sealed class ManagedRadio : IAsyncDisposable
             if (!options.TryGetValue(value, out RadioChoiceOption? option) || !option.Writable)
                 throw new ArgumentOutOfRangeException(nameof(value));
             RadioMode receiverMode = ResolveMode(receiver);
-            if (option.ApplicableModes is not null && !option.ApplicableModes.Contains(receiverMode))
+            EnsureModeWritable(descriptor.ModeApplicability, receiverMode, control.ToString());
+            if (EnforcesModeApplicability && option.ApplicableModes is not null &&
+                !option.ApplicableModes.Contains(receiverMode))
                 throw new InvalidOperationException($"Choice '{value}' is not applicable in {receiverMode} mode.");
             IRadioReceiverChoiceDriver driver = GetReceiverChoiceDriver(control);
             await driver.WriteChoiceAsync(control, receiver, value, token).ConfigureAwait(false);
@@ -766,6 +857,47 @@ public sealed class ManagedRadio : IAsyncDisposable
         if (_state.ActiveVfo == target)
             return ResolveMode(_state.SelectedReceiver);
         throw new InvalidOperationException($"The current mode for VFO '{target}' is unavailable.");
+    }
+
+    private bool EnforcesModeApplicability =>
+        _modeApplicabilityPolicy == ModeApplicabilityPolicy.Enforce;
+
+    private bool CanReadInMode(ModeApplicabilityDescriptor applicability, RadioMode mode) =>
+        !EnforcesModeApplicability || applicability.CanRead(mode);
+
+    private void EnsureModeReadable(
+        ModeApplicabilityDescriptor applicability,
+        RadioMode mode,
+        string feature)
+    {
+        if (EnforcesModeApplicability && !applicability.CanRead(mode))
+            throw new InvalidOperationException($"'{feature}' cannot be read in {mode} mode.");
+    }
+
+    private void EnsureModeReadable(
+        ModeApplicabilityDescriptor applicability,
+        Func<RadioMode> resolveMode,
+        string feature)
+    {
+        if (EnforcesModeApplicability && applicability.ReadModes is not null)
+            EnsureModeReadable(applicability, resolveMode(), feature);
+    }
+
+    private RadioMode ResolveModeForWrite(
+        ModeApplicabilityDescriptor applicability,
+        Func<RadioMode> resolveMode) =>
+        !EnforcesModeApplicability ||
+        applicability.WriteModes is null && applicability.ReadModes is null
+            ? _state.Mode
+            : resolveMode();
+
+    private void EnsureModeWritable(
+        ModeApplicabilityDescriptor applicability,
+        RadioMode mode,
+        string feature)
+    {
+        if (EnforcesModeApplicability && !applicability.CanWrite(mode))
+            throw new InvalidOperationException($"'{feature}' cannot be written in {mode} mode.");
     }
 
     private RadioMode ResolveMode(ReceiverId receiver) =>
@@ -1136,7 +1268,7 @@ public sealed class ManagedRadio : IAsyncDisposable
                             return ValueTask.CompletedTask;
                         },
                         cancellationToken: _stopping.Token).ConfigureAwait(false);
-                    if (observation is DeliveryGapObservation)
+                    if (observation is DeliveryGapObservation or StateRefreshRequestedObservation)
                         await RefreshStateAsync(_stopping.Token).ConfigureAwait(false);
                 }
 
@@ -1348,6 +1480,13 @@ public sealed class ManagedRadio : IAsyncDisposable
             return;
         }
 
+        if (observation is StateRefreshRequestedObservation refresh)
+        {
+            InvalidateStateFreshness();
+            _events.Publish(RadioEventKind.Diagnostic, refresh);
+            return;
+        }
+
         if (observation is IgnoredFrameObservation)
         {
             return;
@@ -1373,15 +1512,7 @@ public sealed class ManagedRadio : IAsyncDisposable
                 },
             ReceiverFrequencyChangedObservation frequency =>
                 ApplyReceiverFrequency(_state, frequency),
-            ActiveVfoChangedObservation active =>
-                _state with
-                {
-                    ActiveVfo = active.Vfo,
-                    TransmitVfo = active.TransmitVfo ?? _state.TransmitVfo,
-                    TransmitPath = CreateTransmitPath(
-                        _state,
-                        _state.IsSplit ? active.TransmitVfo : active.Vfo)
-                },
+            ActiveVfoChangedObservation active => ApplyActiveVfo(_state, active),
             ModeChangedObservation mode => _state with { Mode = mode.Mode },
             ReceiverModeChangedObservation mode => ApplyReceiverMode(_state, mode),
             ReceiverVfoChangedObservation receiverVfo => ApplyReceiverVfo(_state, receiverVfo),
@@ -1409,22 +1540,7 @@ public sealed class ManagedRadio : IAsyncDisposable
                     : _state.TransmitPath
             },
             TransmitChangedObservation transmit => _state with { IsTransmitting = transmit.IsTransmitting },
-            StateInformationObservation information =>
-                _state with
-                {
-                    FrequenciesHz = new Dictionary<VfoId, long>(_state.FrequenciesHz)
-                        { [information.Vfo] = information.FrequencyHz },
-                    Mode = information.Mode,
-                    ActiveVfo = information.ActiveVfo ?? _state.ActiveVfo,
-                    TransmitVfo = information.TransmitVfo ?? _state.TransmitVfo,
-                    TransmitPath = CreateTransmitPath(
-                        _state,
-                        (information.IsSplit ?? _state.IsSplit)
-                            ? information.TransmitVfo ?? _state.TransmitVfo
-                            : information.ActiveVfo ?? _state.ActiveVfo),
-                    IsSplit = information.IsSplit ?? _state.IsSplit,
-                    IsTransmitting = information.IsTransmitting ?? _state.IsTransmitting
-                },
+            StateInformationObservation information => ApplyStateInformation(_state, information),
             _ => _state
         };
         bool receiverOrPathObservation = observation is ReceiverFrequencyChangedObservation or
@@ -1471,6 +1587,59 @@ public sealed class ManagedRadio : IAsyncDisposable
                 observedAt)
         };
         return state with { Vfos = vfos, Receivers = receivers };
+    }
+
+    private static RadioState ApplyStateInformation(
+        RadioState state,
+        StateInformationObservation information)
+    {
+        VfoId activeVfo = information.ActiveVfo ?? state.ActiveVfo;
+        var frequencies = new Dictionary<VfoId, long>(state.FrequenciesHz)
+        {
+            [information.Vfo] = information.FrequencyHz
+        };
+        var vfos = new Dictionary<VfoId, RadioVfoState>(state.Vfos)
+        {
+            [information.Vfo] = new(
+                information.Vfo,
+                information.FrequencyHz,
+                information.Mode,
+                information.ObservedAt)
+        };
+        bool split = information.IsSplit ?? state.IsSplit;
+        VfoId transmitVfo = information.TransmitVfo ?? state.TransmitVfo;
+        return state with
+        {
+            FrequenciesHz = frequencies,
+            Vfos = vfos,
+            Mode = information.Vfo == activeVfo ? information.Mode : state.Mode,
+            ActiveVfo = activeVfo,
+            TransmitVfo = transmitVfo,
+            TransmitPath = CreateTransmitPath(
+                state,
+                split ? transmitVfo : activeVfo),
+            IsSplit = split,
+            IsTransmitting = information.IsTransmitting ?? state.IsTransmitting
+        };
+    }
+
+    private static RadioState ApplyActiveVfo(
+        RadioState state,
+        ActiveVfoChangedObservation observation)
+    {
+        RadioMode mode = state.Vfos.TryGetValue(observation.Vfo, out RadioVfoState? vfo) &&
+                         vfo.Mode is RadioMode vfoMode
+            ? vfoMode
+            : state.Mode;
+        return state with
+        {
+            ActiveVfo = observation.Vfo,
+            Mode = mode,
+            TransmitVfo = observation.TransmitVfo ?? state.TransmitVfo,
+            TransmitPath = CreateTransmitPath(
+                state,
+                state.IsSplit ? observation.TransmitVfo : observation.Vfo)
+        };
     }
 
     private static RadioState ApplyReceiverFrequency(
@@ -1608,6 +1777,8 @@ public sealed class ManagedRadio : IAsyncDisposable
             {
                 _frequencyFreshAt[vfo] = observedAt;
                 _frequencyAppliedAt[vfo] = observedAt;
+                _vfoModeFreshAt[vfo] = observedAt;
+                _vfoModeAppliedAt[vfo] = observedAt;
             }
             foreach (ReceiverId receiver in _state.Receivers.Keys)
             {
@@ -1661,7 +1832,9 @@ public sealed class ManagedRadio : IAsyncDisposable
                 TransmitVfoChangedObservation => _transmitVfoAppliedAt > at,
                 TransmitChangedObservation => _transmitAppliedAt > at,
                 StateInformationObservation information =>
-                    _frequencyAppliedAt.GetValueOrDefault(information.Vfo) > at || _modeAppliedAt > at ||
+                    _frequencyAppliedAt.GetValueOrDefault(information.Vfo) > at ||
+                    _vfoModeAppliedAt.GetValueOrDefault(information.Vfo) > at ||
+                    InformationUpdatesActiveMode(information) && _modeAppliedAt > at ||
                     information.ActiveVfo is not null && _activeVfoAppliedAt > at ||
                     information.TransmitVfo is not null && _transmitVfoAppliedAt > at ||
                     information.IsSplit is not null && _splitAppliedAt > at ||
@@ -1710,7 +1883,8 @@ public sealed class ManagedRadio : IAsyncDisposable
                     break;
                 case StateInformationObservation information:
                     _frequencyAppliedAt[information.Vfo] = at;
-                    _modeAppliedAt = at;
+                    _vfoModeAppliedAt[information.Vfo] = at;
+                    if (InformationUpdatesActiveMode(information)) _modeAppliedAt = at;
                     if (information.ActiveVfo is not null) _activeVfoAppliedAt = at;
                     if (information.TransmitVfo is not null) _transmitVfoAppliedAt = at;
                     if (information.IsSplit is not null) _splitAppliedAt = at;
@@ -1766,7 +1940,8 @@ public sealed class ManagedRadio : IAsyncDisposable
                     break;
                 case StateInformationObservation information:
                     _frequencyFreshAt[information.Vfo] = observedAt;
-                    _modeFreshAt = observedAt;
+                    _vfoModeFreshAt[information.Vfo] = observedAt;
+                    if (InformationUpdatesActiveMode(information)) _modeFreshAt = observedAt;
                     if (information.ActiveVfo is not null)
                         _activeVfoFreshAt = observedAt;
                     if (information.TransmitVfo is not null)
@@ -1787,6 +1962,9 @@ public sealed class ManagedRadio : IAsyncDisposable
             _stateCacheValid = false;
         }
     }
+
+    private bool InformationUpdatesActiveMode(StateInformationObservation information) =>
+        information.Vfo == (information.ActiveVfo ?? _state.ActiveVfo);
 
     private RadioAvailability CreateAvailability(ClientAuthorization authorization) =>
         new(

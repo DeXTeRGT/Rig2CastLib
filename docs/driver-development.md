@@ -1,4 +1,9 @@
-# Driver development
+# Driver development (legacy overview)
+
+The comprehensive third-party guide is now [Creating a Rig2Cast radio
+driver](developer/driver-development.md), with a separate [test and release
+checklist](developer/driver-testing.md). This page remains as a concise historical
+overview and compatibility note.
 
 ## Model discovery
 

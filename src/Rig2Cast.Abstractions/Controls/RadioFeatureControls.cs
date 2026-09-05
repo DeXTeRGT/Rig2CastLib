@@ -27,6 +27,8 @@ public sealed record SwitchControlDescriptor(
     string DisplayName,
     FeatureDescriptor Feature)
 {
+    public ModeApplicabilityDescriptor ModeApplicability { get; init; } = new();
+
     public IReadOnlySet<ReceiverId> ReceiverTargets { get; init; } = new HashSet<ReceiverId>();
 }
 
@@ -62,6 +64,8 @@ public sealed record ChoiceControlDescriptor(
     FeatureDescriptor Feature,
     IReadOnlyDictionary<string, RadioChoiceOption> Options)
 {
+    public ModeApplicabilityDescriptor ModeApplicability { get; init; } = new();
+
     public IReadOnlySet<VfoId> Targets { get; init; } = new HashSet<VfoId>();
 
     public IReadOnlySet<ReceiverId> ReceiverTargets { get; init; } = new HashSet<ReceiverId>();

@@ -201,11 +201,16 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
     public async ValueTask<RadioState> ReadStateAsync(CancellationToken cancellationToken = default)
     {
         EnsureActive();
-        long frequencyA = ParseFrequency(await QueryParsedAsync("FA", "FA", ParseFrequency, cancellationToken).ConfigureAwait(false));
-        long frequencyB = ParseFrequency(await QueryParsedAsync("FB", "FB", ParseFrequency, cancellationToken).ConfigureAwait(false));
+        BandInformation informationA = ParseBandInformation(
+            await QueryParsedAsync("IF", "IF", response => ParseBandInformation(response, "IF"), cancellationToken)
+                .ConfigureAwait(false),
+            "IF");
+        BandInformation informationB = ParseBandInformation(
+            await QueryParsedAsync("OI", "OI", response => ParseBandInformation(response, "OI"), cancellationToken)
+                .ConfigureAwait(false),
+            "OI");
         VfoId activeVfo = ParseVfo(await QueryParsedAsync("VS", "VS", ParseVfo, cancellationToken).ConfigureAwait(false));
-        string modeQuery = activeVfo == VfoId.A ? "MD0" : "MD1";
-        RadioMode mode = ParseMode(await QueryParsedAsync(modeQuery, modeQuery, ParseMode, cancellationToken).ConfigureAwait(false));
+        RadioMode mode = activeVfo == VfoId.A ? informationA.Mode : informationB.Mode;
         bool split = ParseBoolean(await QueryParsedAsync("ST", "ST", ParseBoolean, cancellationToken).ConfigureAwait(false));
         bool transmitting = ParseTransmit(await QueryParsedAsync("TX", "TX", ParseTransmit, cancellationToken).ConfigureAwait(false));
         DateTimeOffset observedAt = _timeProvider.GetUtcNow();
@@ -215,7 +220,11 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         return new RadioState(
             1,
             ConnectionStatus.Connected,
-            new Dictionary<VfoId, long> { [VfoId.A] = frequencyA, [VfoId.B] = frequencyB },
+            new Dictionary<VfoId, long>
+            {
+                [VfoId.A] = informationA.FrequencyHz,
+                [VfoId.B] = informationB.FrequencyHz
+            },
             activeVfo,
             mode,
             split,
@@ -228,14 +237,15 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             TransmitVfo = splitTransmitVfo,
             Vfos = new Dictionary<VfoId, RadioVfoState>
             {
-                [VfoId.A] = new(VfoId.A, frequencyA, activeVfo == VfoId.A ? mode : null, observedAt),
-                [VfoId.B] = new(VfoId.B, frequencyB, activeVfo == VfoId.B ? mode : null, observedAt)
+                [VfoId.A] = new(VfoId.A, informationA.FrequencyHz, informationA.Mode, observedAt),
+                [VfoId.B] = new(VfoId.B, informationB.FrequencyHz, informationB.Mode, observedAt)
             },
             Receivers = new Dictionary<ReceiverId, RadioReceiverState>
             {
                 [ReceiverId.Main] = new(
                     ReceiverId.Main, true, activeVfo,
-                    activeVfo == VfoId.A ? frequencyA : frequencyB, mode, null, observedAt)
+                    activeVfo == VfoId.A ? informationA.FrequencyHz : informationB.FrequencyHz,
+                    mode, null, observedAt)
             },
             SelectedReceiver = ReceiverId.Main,
             TransmitReceiver = ReceiverId.Main,
@@ -786,6 +796,20 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         _ => throw new YaesuProtocolException($"Invalid VFO selection response '{response}'.")
     };
 
+    private static BandInformation ParseBandInformation(string response, string prefix)
+    {
+        if (response.Length != 28 || response[^1] != ';' ||
+            !response.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) ||
+            !long.TryParse(response.AsSpan(5, 9), NumberStyles.None,
+                CultureInfo.InvariantCulture, out long frequency) ||
+            !Ftdx10CatProfile.Modes.TryGetValue(response[21], out RadioMode mode))
+        {
+            throw new YaesuProtocolException($"Invalid {prefix} information response '{response}'.");
+        }
+
+        return new BandInformation(frequency, mode);
+    }
+
     private static RadioMode ParseMode(string response)
     {
         if (response.Length != 5 || !Ftdx10CatProfile.Modes.TryGetValue(response[3], out RadioMode mode))
@@ -829,26 +853,32 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
                     OppositeVfo(activeVfo));
             }
             if (frame.StartsWith("MD", StringComparison.OrdinalIgnoreCase))
-                return new ModeChangedObservation(observedAt, frame, ParseMode(frame));
+            {
+                // MD is MAIN/SUB-qualified, not VFO-A/VFO-B-qualified. Without
+                // contemporaneous band routing it cannot safely update a VFO.
+                // IF/OI announcements provide the authoritative VFO identity.
+                _ = ParseMode(frame);
+                return frame[2] == '0'
+                    ? new StateRefreshRequestedObservation(
+                        observedAt, frame, "FTDX10 MAIN-band mode announcement")
+                    : new IgnoredFrameObservation(observedAt, frame);
+            }
             if (frame.StartsWith("ST", StringComparison.OrdinalIgnoreCase))
                 return new SplitChangedObservation(observedAt, frame, ParseBoolean(frame));
             if (frame.StartsWith("TX", StringComparison.OrdinalIgnoreCase))
                 return new TransmitChangedObservation(observedAt, frame, ParseTransmit(frame));
-            if (frame.StartsWith("IF", StringComparison.OrdinalIgnoreCase))
+            if (frame.StartsWith("IF", StringComparison.OrdinalIgnoreCase) ||
+                frame.StartsWith("OI", StringComparison.OrdinalIgnoreCase))
             {
-                if (frame.Length != 28 || frame[^1] != ';' ||
-                    !long.TryParse(frame.AsSpan(5, 9), NumberStyles.None, CultureInfo.InvariantCulture, out long frequency) ||
-                    !Ftdx10CatProfile.Modes.TryGetValue(frame[21], out RadioMode mode))
-                {
-                    throw new YaesuProtocolException($"Invalid information response '{frame}'.");
-                }
+                string prefix = frame[..2].ToUpperInvariant();
+                BandInformation information = ParseBandInformation(frame, prefix);
 
                 return new StateInformationObservation(
                     observedAt,
                     frame,
-                    VfoId.A,
-                    frequency,
-                    mode);
+                    prefix == "IF" ? VfoId.A : VfoId.B,
+                    information.FrequencyHz,
+                    information.Mode);
             }
             if (frame.StartsWith("RM0", StringComparison.OrdinalIgnoreCase))
                 return new IgnoredFrameObservation(observedAt, frame);
@@ -935,7 +965,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
     private static Dictionary<RadioControlId, NumericControlDescriptor> CreateControlCapabilities()
     {
         var feature = new FeatureDescriptor(CapabilitySupport.Supported, FeatureAccess.Read | FeatureAccess.Write);
-        return ControlCommands.ToDictionary(
+        Dictionary<RadioControlId, NumericControlDescriptor> controls = ControlCommands.ToDictionary(
             pair => pair.Key,
             pair => new NumericControlDescriptor(
                 pair.Key,
@@ -948,6 +978,11 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             {
                 ReceiverTargets = MainReceiverTargets()
             });
+        controls[RadioControlId.AudioPeakFilterOffsetHz] =
+            controls[RadioControlId.AudioPeakFilterOffsetHz] with { ModeApplicability = CwOnlyApplicability() };
+        controls[RadioControlId.MicrophoneGain] =
+            controls[RadioControlId.MicrophoneGain] with { ModeApplicability = NonCwApplicability() };
+        return controls;
     }
 
     private static Dictionary<RadioMeterId, RadioMeterDescriptor> CreateMeterCapabilities() =>
@@ -970,12 +1005,15 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
     private static Dictionary<RadioSwitchId, SwitchControlDescriptor> CreateSwitchCapabilities()
     {
         var feature = new FeatureDescriptor(CapabilitySupport.Supported, FeatureAccess.Read | FeatureAccess.Write);
-        return SwitchCommands.ToDictionary(
+        Dictionary<RadioSwitchId, SwitchControlDescriptor> switches = SwitchCommands.ToDictionary(
             pair => pair.Key,
             pair => new SwitchControlDescriptor(pair.Key, pair.Value.DisplayName, feature)
             {
                 ReceiverTargets = MainReceiverTargets()
             });
+        switches[RadioSwitchId.AudioPeakFilter] =
+            switches[RadioSwitchId.AudioPeakFilter] with { ModeApplicability = CwOnlyApplicability() };
+        return switches;
     }
 
     private static Dictionary<RadioChoiceId, ChoiceControlDescriptor> CreateChoiceCapabilities()
@@ -997,9 +1035,37 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         choices[RadioChoiceId.VoxDelay] = CreateVoxDelayCapability(feature);
         choices[RadioChoiceId.TuningStep] = CreateTuningStepCapability(
             new FeatureDescriptor(CapabilitySupport.Supported, FeatureAccess.Write));
+        choices[RadioChoiceId.AudioPeakFilterWidth] = choices[RadioChoiceId.AudioPeakFilterWidth] with
+        {
+            ModeApplicability = CwOnlyApplicability()
+        };
         return choices.ToDictionary(
             pair => pair.Key,
             pair => pair.Value with { ReceiverTargets = MainReceiverTargets() });
+    }
+
+    private static ModeApplicabilityDescriptor CwOnlyApplicability()
+    {
+        IReadOnlySet<RadioMode> modes = new HashSet<RadioMode> { RadioMode.Cw, RadioMode.CwReverse };
+        return new ModeApplicabilityDescriptor
+        {
+            ReadModes = modes,
+            WriteModes = modes,
+            OperationalModes = modes
+        };
+    }
+
+    private static ModeApplicabilityDescriptor NonCwApplicability()
+    {
+        IReadOnlySet<RadioMode> modes = Ftdx10CatProfile.Modes.Values
+            .Where(mode => mode is not RadioMode.Cw and not RadioMode.CwReverse)
+            .ToHashSet();
+        return new ModeApplicabilityDescriptor
+        {
+            ReadModes = modes,
+            WriteModes = modes,
+            OperationalModes = modes
+        };
     }
 
     private static ChoiceControlDescriptor CreateVoxDelayCapability(FeatureDescriptor feature)
@@ -1225,6 +1291,8 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         IReadOnlyDictionary<string, ChoiceCode> Options);
 
     private sealed record ChoiceCode(char Code, string DisplayName, bool Writable = true, char? ReadCode = null);
+
+    private readonly record struct BandInformation(long FrequencyHz, RadioMode Mode);
 
     private static AsciiQueryDescriptor Meter(string displayName, string command, int responseLength) =>
         new(displayName, command, command, responseLength,

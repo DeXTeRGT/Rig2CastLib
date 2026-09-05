@@ -179,10 +179,9 @@ public sealed class Ftdx10DriverTests
     {
         var transport = new ScriptedRadioTransport();
         transport.Add("ID;", "ID0761;");
-        transport.Add("FA;", "FA014250000;");
-        transport.Add("FB;", "FB007100000;");
+        transport.Add("IF;", "IF001014250000+000000200000;");
+        transport.Add("OI;", "OI001007100000+000000200000;");
         transport.Add("VS;", "VS0;");
-        transport.Add("MD0;", "MD02;");
         transport.Add("ST;", "ST0;");
         transport.Add("TX;", "TX0;");
         Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
@@ -210,10 +209,9 @@ public sealed class Ftdx10DriverTests
     {
         var transport = new ScriptedRadioTransport();
         transport.Add("ID;", "ID0761;");
-        transport.Add("FA;", "FA014250000;");
-        transport.Add("FB;", "FB007100000;");
+        transport.Add("IF;", "IF001014250000+000000200000;");
+        transport.Add("OI;", "OI001007100000+000000300000;");
         transport.Add("VS;", "VS0;");
-        transport.Add("MD0;", "MD02;");
         transport.Add("ST;", "ST1;");
         transport.Add("TX;", "TX0;");
         await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
@@ -231,6 +229,8 @@ public sealed class Ftdx10DriverTests
         Assert.Equal(VfoId.A, state.Receivers[ReceiverId.Main].SelectedVfo);
         Assert.Equal(14_250_000, state.Receivers[ReceiverId.Main].FrequencyHz);
         Assert.Equal(7_100_000, state.Vfos[VfoId.B].FrequencyHz);
+        Assert.Equal(RadioMode.Usb, state.Vfos[VfoId.A].Mode);
+        Assert.Equal(RadioMode.Cw, state.Vfos[VfoId.B].Mode);
         Assert.Equal(
             [new RadioSignalPath(ReceiverId.Main, VfoId.A)],
             state.ReceivePaths);
@@ -243,14 +243,172 @@ public sealed class Ftdx10DriverTests
     }
 
     [Fact]
+    public async Task ActiveVfoModeComesFromItsVfoQualifiedInformation()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("IF;", "IF001014250000+000000200000;");
+        transport.Add("OI;", "OI001007100000+000000300000;");
+        transport.Add("VS;", "VS1;");
+        transport.Add("ST;", "ST0;");
+        transport.Add("TX;", "TX0;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+
+        RadioState state = await driver.ReadStateAsync();
+
+        Assert.Equal(VfoId.B, state.ActiveVfo);
+        Assert.Equal(RadioMode.Cw, state.Mode);
+        Assert.Equal(RadioMode.Usb, state.Vfos[VfoId.A].Mode);
+        Assert.Equal(RadioMode.Cw, state.Vfos[VfoId.B].Mode);
+        Assert.Equal(RadioMode.Cw, state.Receivers[ReceiverId.Main].Mode);
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task InactiveVfoInformationDoesNotOverwriteActiveMode()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("IF;", "IF001014250000+000000200000;");
+        transport.Add("OI;", "OI001007100000+000000300000;");
+        transport.Add("VS;", "VS1;");
+        transport.Add("ST;", "ST0;");
+        transport.Add("TX;", "TX0;");
+        Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+        await using ManagedRadio radio = await ManagedRadio.CreateAsync("ftdx10-vfo-modes", driver);
+        await using IRadioSession session = radio.OpenSession(new ClientIdentity("observer"));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await using IAsyncEnumerator<RadioEvent> events = session
+            .WatchEventsAsync(timeout.Token)
+            .GetAsyncEnumerator();
+
+        await transport.EmitAsync("IF001014260000+000000200000;", timeout.Token);
+        Assert.True(await events.MoveNextAsync());
+        RadioState state = (await session.GetSnapshotAsync(timeout.Token)).State;
+
+        Assert.Equal(VfoId.B, state.ActiveVfo);
+        Assert.Equal(RadioMode.Cw, state.Mode);
+        Assert.Equal(RadioMode.Usb, state.Vfos[VfoId.A].Mode);
+        Assert.Equal(RadioMode.Cw, state.Vfos[VfoId.B].Mode);
+        Assert.Equal(RadioMode.Cw, state.Receivers[ReceiverId.Main].Mode);
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task ActiveVfoAnnouncementSelectsThatVfosCachedMode()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("IF;", "IF001014250000+000000200000;");
+        transport.Add("OI;", "OI001007100000+000000300000;");
+        transport.Add("VS;", "VS0;");
+        transport.Add("ST;", "ST0;");
+        transport.Add("TX;", "TX0;");
+        Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+        await using ManagedRadio radio = await ManagedRadio.CreateAsync("ftdx10-vfo-selection", driver);
+        await using IRadioSession session = radio.OpenSession(new ClientIdentity("observer"));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await using IAsyncEnumerator<RadioEvent> events = session
+            .WatchEventsAsync(timeout.Token)
+            .GetAsyncEnumerator();
+
+        await transport.EmitAsync("VS1;", timeout.Token);
+        Assert.True(await events.MoveNextAsync());
+        RadioState state = (await session.GetSnapshotAsync(timeout.Token)).State;
+
+        Assert.Equal(VfoId.B, state.ActiveVfo);
+        Assert.Equal(RadioMode.Cw, state.Mode);
+        Assert.Equal(RadioMode.Cw, state.Receivers[ReceiverId.Main].Mode);
+        InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => session.ReadControlAsync(RadioControlId.MicrophoneGain).AsTask());
+        Assert.Contains("cannot be read in Cw mode", exception.Message, StringComparison.Ordinal);
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task MainSubModeAnnouncementIsNotMisrepresentedAsVfoMode()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await using IAsyncEnumerator<RadioDriverObservation> observations = driver
+            .WatchObservationsAsync(timeout.Token)
+            .GetAsyncEnumerator();
+
+        await transport.EmitAsync("MD13;", timeout.Token);
+
+        Assert.True(await observations.MoveNextAsync());
+        Assert.IsType<IgnoredFrameObservation>(observations.Current);
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task MainBandModeAnnouncementRequestsAuthoritativeRefresh()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await using IAsyncEnumerator<RadioDriverObservation> observations = driver
+            .WatchObservationsAsync(timeout.Token)
+            .GetAsyncEnumerator();
+
+        await transport.EmitAsync("MD03;", timeout.Token);
+
+        Assert.True(await observations.MoveNextAsync());
+        StateRefreshRequestedObservation request =
+            Assert.IsType<StateRefreshRequestedObservation>(observations.Current);
+        Assert.Contains("MAIN-band", request.Reason, StringComparison.Ordinal);
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task MainBandModeAnnouncementRefreshesAuthoritativeVfoState()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("IF;", "IF001014250000+000000200000;");
+        transport.Add("OI;", "OI001007100000+000000300000;");
+        transport.Add("VS;", "VS0;");
+        transport.Add("ST;", "ST0;");
+        transport.Add("TX;", "TX0;");
+        transport.Add("IF;", "IF001014250000+000000300000;");
+        transport.Add("OI;", "OI001007100000+000000200000;");
+        transport.Add("VS;", "VS0;");
+        transport.Add("ST;", "ST0;");
+        transport.Add("TX;", "TX0;");
+        Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+        await using ManagedRadio radio = await ManagedRadio.CreateAsync("ftdx10-mode-refresh", driver);
+        await using IRadioSession session = radio.OpenSession(new ClientIdentity("observer"));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        await using IAsyncEnumerator<RadioEvent> events = session
+            .WatchEventsAsync(timeout.Token)
+            .GetAsyncEnumerator();
+
+        await transport.EmitAsync("MD03;", timeout.Token);
+
+        Assert.True(await events.MoveNextAsync());
+        Assert.Equal(RadioEventKind.Diagnostic, events.Current.Kind);
+        Assert.True(await events.MoveNextAsync());
+        Assert.Equal(RadioEventKind.StateChanged, events.Current.Kind);
+        RadioState state = (await session.GetSnapshotAsync(timeout.Token)).State;
+
+        Assert.Equal(VfoId.A, state.ActiveVfo);
+        Assert.Equal(RadioMode.Cw, state.Mode);
+        Assert.Equal(RadioMode.Cw, state.Vfos[VfoId.A].Mode);
+        Assert.Equal(RadioMode.Usb, state.Vfos[VfoId.B].Mode);
+        transport.AssertComplete();
+    }
+
+    [Fact]
     public async Task NonSplitStateUsesTheReceivePathForTransmit()
     {
         var transport = new ScriptedRadioTransport();
         transport.Add("ID;", "ID0761;");
-        transport.Add("FA;", "FA014250000;");
-        transport.Add("FB;", "FB007100000;");
+        transport.Add("IF;", "IF001014250000+000000200000;");
+        transport.Add("OI;", "OI001007100000+000000300000;");
         transport.Add("VS;", "VS0;");
-        transport.Add("MD0;", "MD02;");
         transport.Add("ST;", "ST0;");
         transport.Add("TX;", "TX0;");
         await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
@@ -684,10 +842,9 @@ public sealed class Ftdx10DriverTests
     {
         var transport = new ScriptedRadioTransport();
         transport.Add("ID;", "ID0761;");
-        transport.Add("FA;", "FA014200000;");
-        transport.Add("FB;", "FB007100000;");
+        transport.Add("IF;", "IF001014200000+000000200000;");
+        transport.Add("OI;", "OI001007100000+000000300000;");
         transport.Add("VS;", "VS0;");
-        transport.Add("MD0;", "MD02;");
         transport.Add("ST;", "ST0;");
         transport.Add("TX;", "TX0;");
         transport.Add("VS;", "VS0;");
@@ -700,6 +857,97 @@ public sealed class Ftdx10DriverTests
 
         await session.WriteChoiceAsync(RadioChoiceId.TuningStep, "10hz");
 
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task AudioPeakFilterCapabilitiesAreRestrictedToCwModes()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+
+        Capabilities.ModeApplicabilityDescriptor[] applicability =
+        [
+            driver.Capabilities.Controls[RadioControlId.AudioPeakFilterOffsetHz].ModeApplicability,
+            driver.Capabilities.Switches[RadioSwitchId.AudioPeakFilter].ModeApplicability,
+            driver.Capabilities.Choices[RadioChoiceId.AudioPeakFilterWidth].ModeApplicability
+        ];
+
+        Assert.All(applicability, item =>
+        {
+            Assert.True(item.CanRead(RadioMode.Cw));
+            Assert.True(item.CanWrite(RadioMode.CwReverse));
+            Assert.False(item.CanRead(RadioMode.Usb));
+            Assert.False(item.CanWrite(RadioMode.Lsb));
+        });
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task MicrophoneGainCapabilityIsUnavailableInCwModes()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+
+        Capabilities.ModeApplicabilityDescriptor applicability =
+            driver.Capabilities.Controls[RadioControlId.MicrophoneGain].ModeApplicability;
+
+        Assert.True(applicability.CanRead(RadioMode.Usb));
+        Assert.True(applicability.CanWrite(RadioMode.Lsb));
+        Assert.False(applicability.CanRead(RadioMode.Cw));
+        Assert.False(applicability.CanWrite(RadioMode.CwReverse));
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task ManagedRadioRejectsModeInvalidControlBeforeSendingCat()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("IF;", "IF001014200000+000000200000;");
+        transport.Add("OI;", "OI001007100000+000000300000;");
+        transport.Add("VS;", "VS0;");
+        transport.Add("ST;", "ST0;");
+        transport.Add("TX;", "TX0;");
+        Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+        await using ManagedRadio radio = await ManagedRadio.CreateAsync("ftdx10-mode-applicability", driver);
+        await using IRadioSession session = radio.OpenSession(new ClientIdentity("observer"));
+
+        InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => session.ReadSwitchAsync(RadioSwitchId.AudioPeakFilter).AsTask());
+
+        Assert.Contains("cannot be read in Usb mode", exception.Message, StringComparison.Ordinal);
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task AdvisoryModeApplicabilityAllowsCatWhilePreservingMetadata()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("IF;", "IF001014200000+000000200000;");
+        transport.Add("OI;", "OI001007100000+000000300000;");
+        transport.Add("VS;", "VS0;");
+        transport.Add("ST;", "ST0;");
+        transport.Add("TX;", "TX0;");
+        transport.Add("CO02;", "CO020001;");
+        Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+        await using ManagedRadio radio = await ManagedRadio.CreateAsync(
+            "ftdx10-advisory-applicability",
+            driver,
+            new ManagedRadioOptions
+            {
+                ModeApplicabilityPolicy = ModeApplicabilityPolicy.Advisory
+            });
+        await using IRadioSession session = radio.OpenSession(new ClientIdentity("observer"));
+
+        RadioSwitchValue value = await session.ReadSwitchAsync(RadioSwitchId.AudioPeakFilter);
+
+        Assert.True(value.Enabled);
+        Assert.False((await session.GetSnapshotAsync()).Capabilities.Switches[RadioSwitchId.AudioPeakFilter]
+            .ModeApplicability.CanRead(RadioMode.Usb));
         transport.AssertComplete();
     }
 }

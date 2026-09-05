@@ -7,6 +7,11 @@ desktop software, web interfaces, background services, and network clients. It
 provides a common radio abstraction, safe multi-client runtime, pluggable model
 drivers, capability discovery, and optional protocol adapters.
 
+Third-party developers can start with the [developer documentation
+portal](docs/developer/README.md), then follow either [using Rig2Cast in an
+application](docs/developer/using-rig2cast.md) or [creating a radio
+driver](docs/developer/driver-development.md).
+
 > **Project status:** Active early development. The architecture and working
 > FTDX10 vertical slice are in place, but public APIs are not yet stable. The
 > Yaesu FTDX10 is the first supported and physically tested transceiver. An
@@ -464,8 +469,8 @@ asynchronous, modular, capability-driven, multi-client safe,
 transport-independent, and easy to extend.
 
 Before contributing, please read [CONTRIBUTING.md](CONTRIBUTING.md), the
-[architecture overview](docs/architecture.md), and the
-[driver-development guide](docs/driver-development.md).
+[architecture overview](docs/architecture.md), and the comprehensive
+[driver-development guide](docs/developer/driver-development.md).
 
 Repository: <https://github.com/DeXTeRGT/Rig2CastLib>
 
