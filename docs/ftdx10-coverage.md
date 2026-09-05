@@ -1,5 +1,8 @@
 # FTDX10 driver coverage
 
+For the full 101-command manual-to-code audit and cross-vendor abstraction gaps,
+see the [FTDX10 CAT command inventory](ftdx10-cat-command-inventory.md).
+
 The Yaesu CAT manual is the implementation authority. Hamlib's FTDX10 capability declarations are used as a coverage checklist, not translated code.
 
 ## Audit status
@@ -19,25 +22,28 @@ Status meanings:
 | Active VFO | `VS` | Complete | Read validated; interactive setter testing passed | None |
 | Operating mode | `MD` | Complete | Read validated; interactive setter testing passed | None |
 | IF passband width | `SH0` | Complete, mode-aware | Read and write validated | None |
-| Split | `ST` | Complete | Read validated; interactive setter testing passed | None |
+| Split | `ST0`/`ST1` | Complete for ordinary off/on; CAT family partial (`ST2` quick +5 kHz absent) | Read validated; interactive setter testing passed | Add quick split only through a shared action abstraction |
 | PTT | `TX` | Complete, lease protected | Read validated | Keep transmit testing explicit/manual |
 | AF/RF gain and squelch | `AG0`, `RG0`, `SQ0` | Complete | Read validated | Safely validate setters |
 | Mic gain, TX power, processor level | `MG`, `PC`, `PL` | Complete | Read validated | Safely validate setters |
 | NR/NB/monitor/VOX/anti-VOX levels | `RL0`, `NL0`, `ML1`, `VG`, `AV` | Complete | Read validated | Safely validate setters |
 | IF shift, notch, contour | `IS0`, `BP01`, `CO01` | Complete | Read validated | Safely validate setters |
-| Clarifier offset | `CF001` | Complete | Read validated | Safely validate setter |
+| Clarifier offset | `CF001` | Complete for advertised main clarifier; CAT family partial | Read validated | Safely validate setter; add qualified forms only with target-aware modeling |
 | NR/NB/notch/contour/APF switches | `NR0`, `NB0`, `BC0`, `BP00`, `CO00`, `CO02` | Complete | Read validated | Safely validate setters |
-| Monitor/processor/VOX/lock/break-in | `ML0`, `PR0`, `VX`, `LK`, `BI` | Complete | Read validated | Safely validate setters |
+| Monitor/processor/VOX/lock/break-in | `ML0`, `PR0`, `VX`, `LK`, `BI` | Complete for advertised features; `PR` equalizer selector absent | Read validated | Safely validate setters; model parametric EQ separately |
 | RIT/XIT switches | `RT`, `XT` | Complete | Read validated | Safely validate setters |
-| Tuner state | `AC` | Complete | Read validated | Keep tuner-start as a separate hazardous action |
+| Tuner state | `AC` | Complete for enable/bypass; CAT family partial | Read validated | Keep tuner-start as a separate hazardous action |
 | Attenuator/preamp/AGC | `RA0`, `PA0`, `GT0` | Complete | Read validated | Safely validate setters |
 | Roofing filter | `RF0` | Complete | Read validated | Safely validate setters; optional 300 Hz filter is capability-sensitive |
-| Raw meters | `SM0`, `RM3`-`RM8` | Complete, uncalibrated | Read validated | Add independently validated engineering calibration later |
+| Raw meters | `SM0`, `RM3`-`RM8` | Complete for advertised meters; `RM` family partial, uncalibrated | Read validated | Add independently validated engineering calibration later |
 | CW pitch | `KP` | Complete, typed Hz control | Not tested | Physically validate read and safe setter |
 | Keyer speed | `KS` | Complete, typed WPM control | Not tested | Physically validate read and safe setter |
 | VOX delay | `VD` | Complete, discrete `off`/100-3000 ms choices | Not tested | Physically validate read and safe setter |
-| APF frequency/width | `CO03`, `EX030201` | Complete, typed offset and width choice | Not tested | Physically validate in CW mode |
-| Tuning step | `FS` | Complete, mode-aware normal/fast choices | Not tested | Physically validate read and safe setter |
+| APF frequency/width | `CO03`, `EX030201` | Complete for advertised APF; `EX` menu family partial | Not tested | Physically validate in CW mode |
+| Tuning step | `FS` | Complete as a write-only, mode-aware normal/fast choice | Physical write behavior established; command is not readable | Retain write-only access; never issue `FS;` |
+| Keyer and semi break-in | `KR`, `SD` | Complete in software, mode-aware | Not tested | Physically validate read and safe setters in CW |
+| AMC and parametric microphone EQ | `AO`, `PR1` | Complete in software, mode-aware | Not tested | Physically validate in voice modes; retain hardware-proven PR 0/1 encoding |
+| Advanced DSP menu controls | `EX030101`-`EX030104` | NB width/rejection, contour level/width, and IF-notch width complete in software | Not tested | Physically validate reads, then safe setters |
 | Repeater offset/shift and tones | manual repeater/tone controls | Missing | Not tested | Defer until core HF controls are complete |
 | Memories, scan, QMB, band operations | multiple | Missing | Not tested | Later milestone |
 | CW/voice message operations | multiple | Missing | Not tested | Later milestone |
@@ -59,10 +65,10 @@ CW pitch, keyer speed, VOX delay, APF parameters, and mode-aware tuning step.
 | Operating mode | `MD` |
 | Split | `ST` |
 | CAT PTT and PTT status | `TX` |
-| Numeric controls | `AG0`, `RG0`, `SQ0`, `MG`, `PC`, `PL`, `RL0`, `NL0`, `ML1`, `VG`, `AV`, `KP`, `KS`, `CO03` |
+| Numeric controls | `AG0`, `RG0`, `SQ0`, `MG`, `PC`, `PL`, `RL0`, `NL0`, `ML1`, `VG`, `AV`, `KP`, `KS`, `CO03`, `AO`, `EX030202`, `EX030203` |
 | Raw meters | `SM0`, `RM3`, `RM4`, `RM5`, `RM6`, `RM7`, `RM8` |
-| Switch controls | `NB0`, `NR0`, `ML0`, `PR0`, `VX`, `LK`, `BI`, `AC` |
-| Choice controls | `RA0`, `PA0`, `GT0`, `VD`, `EX030201`, `FS` |
+| Switch controls | `NB0`, `NR0`, `ML0`, `PR0`, `PR1`, `VX`, `LK`, `BI`, `KR`, `AC` |
+| Choice controls | `RA0`, `PA0`, `GT0`, `VD`, `SD`, `EX030101`, `EX030102`, `EX030201`, `EX030204`, `FS` |
 | Receiver filtering/interference controls | `IS0`, `NA0`, `BC0`, `BP00`, `BP01`, `CO00`, `CO01`, `CO02`, `RF0` |
 | Mode-aware filter width | `SH0` |
 | Receive/transmit clarifier and signed offset | `RT`, `XT`, `CF001` |

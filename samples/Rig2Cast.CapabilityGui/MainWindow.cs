@@ -987,10 +987,11 @@ public sealed class MainWindow : Window, IAsyncDisposable
         RadioControlId.RfGain => "RF",
         RadioControlId.MicrophoneGain or RadioControlId.TransmitPower or
             RadioControlId.SpeechProcessorLevel or RadioControlId.VoxGain or
-            RadioControlId.AntiVoxLevel => "Transmit",
+            RadioControlId.AntiVoxLevel or RadioControlId.AmcOutputLevel => "Transmit",
         RadioControlId.NoiseReductionLevel or RadioControlId.NoiseBlankerLevel or
             RadioControlId.ManualNotchFrequencyHz or RadioControlId.ContourFrequencyHz or
-            RadioControlId.AudioPeakFilterOffsetHz => "DSP",
+            RadioControlId.AudioPeakFilterOffsetHz or RadioControlId.ContourLevel or
+            RadioControlId.ContourWidth => "DSP",
         RadioControlId.IfShiftHz => "Filtering",
         RadioControlId.CwPitchHz or RadioControlId.KeyerSpeedWpm => "CW",
         RadioControlId.ClarifierOffsetHz => "Operating",
@@ -1000,11 +1001,12 @@ public sealed class MainWindow : Window, IAsyncDisposable
     private static string ControlCategory(RadioSwitchId id) => id switch
     {
         RadioSwitchId.Monitor => "Audio",
-        RadioSwitchId.SpeechProcessor or RadioSwitchId.Vox or RadioSwitchId.AntennaTuner => "Transmit",
+        RadioSwitchId.SpeechProcessor or RadioSwitchId.Vox or RadioSwitchId.AntennaTuner or
+            RadioSwitchId.ParametricMicrophoneEqualizer => "Transmit",
         RadioSwitchId.NoiseBlanker or RadioSwitchId.NoiseReduction or RadioSwitchId.AutoNotch or
             RadioSwitchId.ManualNotch or RadioSwitchId.Contour or RadioSwitchId.AudioPeakFilter => "DSP",
         RadioSwitchId.NarrowFilter => "Filtering",
-        RadioSwitchId.BreakIn => "CW",
+        RadioSwitchId.BreakIn or RadioSwitchId.ElectronicKeyer => "CW",
         RadioSwitchId.ReceiveClarifier or RadioSwitchId.TransmitClarifier or RadioSwitchId.DialLock => "Operating",
         _ => "Other"
     };
@@ -1013,8 +1015,10 @@ public sealed class MainWindow : Window, IAsyncDisposable
     {
         RadioChoiceId.Attenuator or RadioChoiceId.Preamp or RadioChoiceId.Agc => "RF",
         RadioChoiceId.VoxDelay => "Transmit",
-        RadioChoiceId.AudioPeakFilterWidth => "DSP",
-        RadioChoiceId.RoofingFilter or RadioChoiceId.FilterWidth => "Filtering",
+        RadioChoiceId.AudioPeakFilterWidth or RadioChoiceId.NoiseBlankerWidth or
+            RadioChoiceId.NoiseBlankerRejection => "DSP",
+        RadioChoiceId.RoofingFilter or RadioChoiceId.FilterWidth or RadioChoiceId.IfNotchWidth => "Filtering",
+        RadioChoiceId.BreakInDelay => "CW",
         RadioChoiceId.TuningStep => "Operating",
         _ => "Other"
     };

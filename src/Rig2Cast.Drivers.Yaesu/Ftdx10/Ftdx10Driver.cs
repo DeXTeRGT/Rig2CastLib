@@ -32,7 +32,10 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         [RadioSwitchId.Contour] = new("Contour", "CO00", "CO00", "CO00", '0', '1', 4),
         [RadioSwitchId.AudioPeakFilter] = new("Audio peak filter", "CO02", "CO02", "CO02", '0', '1', 4),
         [RadioSwitchId.ReceiveClarifier] = new("Receive clarifier (RIT)", "RT", "RT", "RT", '0', '1'),
-        [RadioSwitchId.TransmitClarifier] = new("Transmit clarifier (XIT)", "XT", "XT", "XT", '0', '1')
+        [RadioSwitchId.TransmitClarifier] = new("Transmit clarifier (XIT)", "XT", "XT", "XT", '0', '1'),
+        [RadioSwitchId.ElectronicKeyer] = new("Electronic keyer", "KR", "KR", "KR", '0', '1'),
+        [RadioSwitchId.ParametricMicrophoneEqualizer] = new(
+            "Parametric microphone equalizer", "PR1", "PR1", "PR1", '0', '1')
     };
 
     private static readonly Dictionary<RadioChoiceId, ChoiceCommand> ChoiceCommands = new()
@@ -64,6 +67,18 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         [RadioChoiceId.AudioPeakFilterWidth] = new("Audio peak filter width", "EX030201", "EX030201", new Dictionary<string, ChoiceCode>
         {
             ["narrow"] = new('0', "Narrow"), ["medium"] = new('1', "Medium"), ["wide"] = new('2', "Wide")
+        }),
+        [RadioChoiceId.IfNotchWidth] = new("IF notch width", "EX030204", "EX030204", new Dictionary<string, ChoiceCode>
+        {
+            ["narrow"] = new('0', "Narrow"), ["wide"] = new('1', "Wide")
+        }),
+        [RadioChoiceId.NoiseBlankerWidth] = new("Noise blanker width", "EX030101", "EX030101", new Dictionary<string, ChoiceCode>
+        {
+            ["1ms"] = new('0', "1 ms"), ["3ms"] = new('1', "3 ms"), ["10ms"] = new('2', "10 ms")
+        }),
+        [RadioChoiceId.NoiseBlankerRejection] = new("Noise blanker rejection", "EX030102", "EX030102", new Dictionary<string, ChoiceCode>
+        {
+            ["10db"] = new('0', "10 dB"), ["30db"] = new('1', "30 dB"), ["50db"] = new('2', "50 dB")
         })
     };
 
@@ -87,7 +102,11 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             [RadioControlId.ClarifierOffsetHz] = new("Clarifier offset", "CF001", "CF001", 5, -9999, 9999, "Hz"),
             [RadioControlId.CwPitchHz] = new("CW pitch", "KP", "KP", 2, 300, 1050, "Hz", 10, 300),
             [RadioControlId.KeyerSpeedWpm] = new("Keyer speed", "KS", "KS", 3, 4, 60, "WPM"),
-            [RadioControlId.AudioPeakFilterOffsetHz] = new("APF offset", "CO03", "CO03", 4, -250, 250, "Hz", 10, -250)
+            [RadioControlId.AudioPeakFilterOffsetHz] = new("APF offset", "CO03", "CO03", 4, -250, 250, "Hz", 10, -250),
+            [RadioControlId.AmcOutputLevel] = new("AMC output level", "AO", "AO", 3, 1, 100, "%"),
+            [RadioControlId.ContourLevel] = new(
+                "Contour level", "EX030202", "EX030202", 3, -40, 20, "step", AlwaysSign: true),
+            [RadioControlId.ContourWidth] = new("Contour width", "EX030203", "EX030203", 2, 1, 11, "step")
         };
 
     private static readonly AsciiQuerySet<RadioMeterId> MeterCommands = new(
@@ -379,7 +398,9 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         int valueOffset = command.ResponsePrefix.Length;
         if (response.Length != valueOffset + command.Digits + 1 ||
             !response.StartsWith(command.ResponsePrefix, StringComparison.Ordinal) ||
-            !int.TryParse(response.AsSpan(valueOffset, command.Digits), NumberStyles.None, CultureInfo.InvariantCulture, out int value) ||
+            !int.TryParse(response.AsSpan(valueOffset, command.Digits),
+                command.AlwaysSign ? NumberStyles.AllowLeadingSign : NumberStyles.None,
+                CultureInfo.InvariantCulture, out int value) ||
             value * command.Scale + command.ValueOffset < command.Minimum ||
             value * command.Scale + command.ValueOffset > command.Maximum)
         {
@@ -436,9 +457,10 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         }
 
         int encoded = (value - command.ValueOffset) / command.Scale;
-        return _protocol.SendAsync(
-            $"{command.Query}{encoded.ToString($"D{command.Digits}", CultureInfo.InvariantCulture)}",
-            cancellationToken);
+        string formatted = command.AlwaysSign
+            ? encoded.ToString("+00;-00;+00", CultureInfo.InvariantCulture)
+            : encoded.ToString($"D{command.Digits}", CultureInfo.InvariantCulture);
+        return _protocol.SendAsync($"{command.Query}{formatted}", cancellationToken);
     }
 
     public async ValueTask<RadioMeterReading> ReadMeterAsync(
@@ -506,6 +528,8 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         EnsureActive();
         if (control == RadioChoiceId.VoxDelay)
             return await ReadVoxDelayAsync(cancellationToken).ConfigureAwait(false);
+        if (control == RadioChoiceId.BreakInDelay)
+            return await ReadBreakInDelayAsync(cancellationToken).ConfigureAwait(false);
         if (control == RadioChoiceId.TuningStep)
             throw new NotSupportedException(
                 "The FTDX10 CAT FS command is write-only; its current tuning-step state cannot be queried.");
@@ -555,6 +579,8 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         EnsureActive();
         if (control == RadioChoiceId.VoxDelay)
             return WriteVoxDelayAsync(value, cancellationToken);
+        if (control == RadioChoiceId.BreakInDelay)
+            return WriteBreakInDelayAsync(value, cancellationToken);
         if (control == RadioChoiceId.TuningStep)
             return WriteTuningStepAsync(value, cancellationToken);
         if (control == RadioChoiceId.FilterWidth)
@@ -728,7 +754,8 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         int valueOffset = command.ResponsePrefix.Length;
         return response.Length == valueOffset + command.Digits + 1 && response[^1] == ';' &&
                response.StartsWith(command.ResponsePrefix, StringComparison.Ordinal) &&
-               int.TryParse(response.AsSpan(valueOffset, command.Digits), NumberStyles.None,
+               int.TryParse(response.AsSpan(valueOffset, command.Digits),
+                   command.AlwaysSign ? NumberStyles.AllowLeadingSign : NumberStyles.None,
                    CultureInfo.InvariantCulture, out int encoded) &&
                encoded * command.Scale + command.ValueOffset >= command.Minimum &&
                encoded * command.Scale + command.ValueOffset <= command.Maximum;
@@ -982,6 +1009,8 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             controls[RadioControlId.AudioPeakFilterOffsetHz] with { ModeApplicability = CwOnlyApplicability() };
         controls[RadioControlId.MicrophoneGain] =
             controls[RadioControlId.MicrophoneGain] with { ModeApplicability = NonCwApplicability() };
+        controls[RadioControlId.AmcOutputLevel] =
+            controls[RadioControlId.AmcOutputLevel] with { ModeApplicability = NonCwApplicability() };
         return controls;
     }
 
@@ -1013,6 +1042,10 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             });
         switches[RadioSwitchId.AudioPeakFilter] =
             switches[RadioSwitchId.AudioPeakFilter] with { ModeApplicability = CwOnlyApplicability() };
+        switches[RadioSwitchId.ElectronicKeyer] =
+            switches[RadioSwitchId.ElectronicKeyer] with { ModeApplicability = CwOnlyApplicability() };
+        switches[RadioSwitchId.ParametricMicrophoneEqualizer] =
+            switches[RadioSwitchId.ParametricMicrophoneEqualizer] with { ModeApplicability = NonCwApplicability() };
         return switches;
     }
 
@@ -1033,6 +1066,10 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             });
         choices[RadioChoiceId.FilterWidth] = CreateFilterWidthCapability(feature);
         choices[RadioChoiceId.VoxDelay] = CreateVoxDelayCapability(feature);
+        choices[RadioChoiceId.BreakInDelay] = CreateBreakInDelayCapability(feature) with
+        {
+            ModeApplicability = CwOnlyApplicability()
+        };
         choices[RadioChoiceId.TuningStep] = CreateTuningStepCapability(
             new FeatureDescriptor(CapabilitySupport.Supported, FeatureAccess.Write));
         choices[RadioChoiceId.AudioPeakFilterWidth] = choices[RadioChoiceId.AudioPeakFilterWidth] with
@@ -1074,6 +1111,20 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         for (int milliseconds = 100; milliseconds <= 3000; milliseconds += 100)
             options[$"{milliseconds}ms"] = new($"{milliseconds}ms", $"{milliseconds} ms");
         return new ChoiceControlDescriptor(RadioChoiceId.VoxDelay, "VOX delay", feature, options);
+    }
+
+    private static ChoiceControlDescriptor CreateBreakInDelayCapability(FeatureDescriptor feature)
+    {
+        var milliseconds = new List<int> { 30, 50, 100, 150, 200, 250 };
+        milliseconds.AddRange(Enumerable.Range(3, 28).Select(value => value * 100));
+        return new ChoiceControlDescriptor(
+            RadioChoiceId.BreakInDelay,
+            "Semi break-in delay",
+            feature,
+            milliseconds.ToDictionary(
+                value => $"{value}ms",
+                value => new RadioChoiceOption($"{value}ms", $"{value} ms"),
+                StringComparer.OrdinalIgnoreCase));
     }
 
     private static ChoiceControlDescriptor CreateTuningStepCapability(FeatureDescriptor feature)
@@ -1179,6 +1230,45 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         return _protocol.SendAsync($"VD{code:D2}", cancellationToken);
     }
 
+    private async ValueTask<RadioChoiceValue> ReadBreakInDelayAsync(CancellationToken cancellationToken)
+    {
+        string response = await _protocol.QueryAsync(
+            "SD", "SD", IsValidBreakInDelayResponse, cancellationToken).ConfigureAwait(false);
+        if (!int.TryParse(response.AsSpan(2, 2), NumberStyles.None,
+                CultureInfo.InvariantCulture, out int code))
+            throw new YaesuProtocolException($"Invalid semi break-in delay response '{response}'.");
+        return new RadioChoiceValue(
+            RadioChoiceId.BreakInDelay, $"{DecodeBreakInDelay(code)}ms", _timeProvider.GetUtcNow());
+    }
+
+    private ValueTask WriteBreakInDelayAsync(string value, CancellationToken cancellationToken)
+    {
+        if (!value.EndsWith("ms", StringComparison.OrdinalIgnoreCase) ||
+            !int.TryParse(value.AsSpan(0, value.Length - 2), NumberStyles.None,
+                CultureInfo.InvariantCulture, out int milliseconds))
+            throw new ArgumentOutOfRangeException(nameof(value));
+        return _protocol.SendAsync($"SD{EncodeBreakInDelay(milliseconds):D2}", cancellationToken);
+    }
+
+    private static bool IsValidBreakInDelayResponse(string response) =>
+        response.Length == 5 && response[^1] == ';' && response.StartsWith("SD", StringComparison.Ordinal) &&
+        int.TryParse(response.AsSpan(2, 2), NumberStyles.None, CultureInfo.InvariantCulture, out int code) &&
+        code is >= 0 and <= 33;
+
+    private static int DecodeBreakInDelay(int code) => code switch
+    {
+        0 => 30, 1 => 50, 2 => 100, 3 => 150, 4 => 200, 5 => 250,
+        >= 6 and <= 33 => (code - 3) * 100,
+        _ => throw new YaesuProtocolException($"Invalid semi break-in delay code '{code:D2}'.")
+    };
+
+    private static int EncodeBreakInDelay(int milliseconds) => milliseconds switch
+    {
+        30 => 0, 50 => 1, 100 => 2, 150 => 3, 200 => 4, 250 => 5,
+        >= 300 and <= 3000 when milliseconds % 100 == 0 => milliseconds / 100 + 3,
+        _ => throw new ArgumentOutOfRangeException(nameof(milliseconds))
+    };
+
     private async ValueTask WriteTuningStepAsync(string value, CancellationToken cancellationToken)
     {
         RadioMode mode = await ReadActiveModeAsync(cancellationToken).ConfigureAwait(false);
@@ -1273,7 +1363,8 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         int Maximum,
         string Unit,
         int Scale = 1,
-        int ValueOffset = 0);
+        int ValueOffset = 0,
+        bool AlwaysSign = false);
 
     private sealed record SwitchCommand(
         string DisplayName,

@@ -19,7 +19,9 @@ public enum RadioSwitchId
     Contour,
     AudioPeakFilter,
     ReceiveClarifier,
-    TransmitClarifier
+    TransmitClarifier,
+    ElectronicKeyer,
+    ParametricMicrophoneEqualizer
 }
 
 public sealed record SwitchControlDescriptor(
@@ -49,7 +51,11 @@ public enum RadioChoiceId
     FilterWidth,
     VoxDelay,
     AudioPeakFilterWidth,
-    TuningStep
+    TuningStep,
+    BreakInDelay,
+    IfNotchWidth,
+    NoiseBlankerWidth,
+    NoiseBlankerRejection
 }
 
 public sealed record RadioChoiceOption(

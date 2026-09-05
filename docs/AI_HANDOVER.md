@@ -49,7 +49,7 @@ categories later, but do not generalize prematurely.
 - Target framework: .NET 8
 - Shell: PowerShell
 - Current baseline commit when this handover was written: `49eed20`
-- Current expected automated suite: **316 passing tests**.
+- Current expected automated suite: **321 passing tests**.
 
 Git may report dubious ownership because Codex and the interactive Windows user
 have different SIDs. Do not modify the user's global Git configuration. For
@@ -261,6 +261,15 @@ Read `docs/architecture/receiver-vfo-model.md` before receiver work.
   renewal leaves only the short safety window.
 - Never enable hardware PTT in ordinary automated tests. Use the simulator.
 - Tuner start remains intentionally unavailable from the Console.
+
+The subsequent FTDX10 operator-control batch uses only existing shared
+numeric/switch/choice abstractions. It adds `AO` AMC output, `KR` electronic keyer,
+`SD` semi break-in delay, the `PR1` parametric microphone equalizer selector, and
+whitelisted `EX` values for noise-blanker width/rejection, contour level/width, and
+IF-notch width. CW and non-CW applicability is declared where supported. The
+capability GUI discovers and groups these controls dynamically; the Console uses
+the same enum-based generic syntax. Automated validation count must be refreshed
+after the complete suite passes; physical read/write validation remains pending.
 
 ### 5.6 Reconnect and shutdown
 
@@ -883,7 +892,7 @@ snapshots without putting UI concerns in the library. The Console exposes
 `--list-ports`, `--list-connection-settings`, repeatable
 `--connection-setting <id=value>`, and `--civ-controller-address`; older convenience
 options still feed the same resolver. See
-`docs/architecture/typed-connection-settings.md`. Automated coverage is 316 passing
+`docs/architecture/typed-connection-settings.md`. Automated coverage is 321 passing
 tests, and Console metadata output plus local COM discovery were manually checked.
 
 The next milestone was a small Avalonia sample that dynamically renders transport
@@ -1075,6 +1084,8 @@ Read these before related work:
 - `docs/protocol-sources/yaesu-ftdx10.md`
 - `docs/protocol-sources/elecraft-k3-family.md`
 - `docs/ftdx10-coverage.md`
+- `docs/ftdx10-cat-command-inventory.md` (101-command audit, partial coverage,
+  missing families, abstraction gaps, and recommended expansion order)
 - `docs/code_review_01.md`, `docs/code_review_02.md`, `docs/code_review_03.md`, and
   `docs/findings.md` for
   historical review context; do not blindly implement rejected findings.
@@ -1108,6 +1119,6 @@ dotnet test .\Rig2Cast\tests\Rig2Cast.Runtime.Tests\Rig2Cast.Runtime.Tests.cspro
 dotnet build .\Rig2Cast\samples\Rig2Cast.Console\Rig2Cast.Console.csproj --no-restore
 ```
 
-Then compare the result with the expected 316 tests and inspect changes made after
+Then compare the result with the expected 321 tests and inspect changes made after
 this handover. Build and interactively validate the capability GUI sample before
 beginning legacy Yaesu binary CAT.

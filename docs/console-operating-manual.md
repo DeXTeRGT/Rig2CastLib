@@ -636,12 +636,14 @@ Core targets are VFO A/B and receiver `main`. Implemented controls include:
   `SpeechProcessorLevel`, `NoiseReductionLevel`, `NoiseBlankerLevel`, `MonitorLevel`,
   `VoxGain`, `AntiVoxLevel`, `IfShiftHz`, `ManualNotchFrequencyHz`,
   `ContourFrequencyHz`, `ClarifierOffsetHz`, `CwPitchHz`, `KeyerSpeedWpm`, and
-  `AudioPeakFilterOffsetHz`.
+  `AudioPeakFilterOffsetHz`, `AmcOutputLevel`, `ContourLevel`, and `ContourWidth`.
 - Switches: `NoiseBlanker`, `NoiseReduction`, `Monitor`, `SpeechProcessor`, `Vox`,
   `DialLock`, `BreakIn`, `AntennaTuner`, `NarrowFilter`, `AutoNotch`, `ManualNotch`,
-  `Contour`, `AudioPeakFilter`, `ReceiveClarifier`, and `TransmitClarifier`.
+  `Contour`, `AudioPeakFilter`, `ReceiveClarifier`, `TransmitClarifier`,
+  `ElectronicKeyer`, and `ParametricMicrophoneEqualizer`.
 - Choices: `Attenuator`, `Preamp`, `Agc`, `RoofingFilter`, `FilterWidth`, `VoxDelay`,
-  `AudioPeakFilterWidth`, and `TuningStep`.
+  `AudioPeakFilterWidth`, `TuningStep`, `BreakInDelay`, `IfNotchWidth`,
+  `NoiseBlankerWidth`, and `NoiseBlankerRejection`.
 - Meters: `SignalStrength`, `Compression`, `Alc`, `Power`, `Swr`, `DrainCurrent`, and
   `DrainVoltage`.
 
@@ -662,6 +664,15 @@ set choice Preamp amp1
 set choice Agc auto
 set switch NoiseReduction on
 get switch NoiseReduction
+get switch ElectronicKeyer
+get switch ParametricMicrophoneEqualizer
+get numeric AmcOutputLevel
+get numeric ContourLevel
+get numeric ContourWidth
+get choice BreakInDelay
+get choice IfNotchWidth
+get choice NoiseBlankerWidth
+get choice NoiseBlankerRejection
 meters
 set split on
 state

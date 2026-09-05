@@ -22,7 +22,10 @@ public enum RadioControlId
     ClarifierOffsetHz,
     CwPitchHz,
     KeyerSpeedWpm,
-    AudioPeakFilterOffsetHz
+    AudioPeakFilterOffsetHz,
+    AmcOutputLevel,
+    ContourLevel,
+    ContourWidth
 }
 
 public sealed record NumericControlDescriptor(

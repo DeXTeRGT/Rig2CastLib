@@ -640,7 +640,14 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
             [RadioChoiceId.AudioPeakFilterWidth] = CreateChoice(RadioChoiceId.AudioPeakFilterWidth,
                 ("narrow", "Narrow", true), ("medium", "Medium", true), ("wide", "Wide", true)),
             [RadioChoiceId.TuningStep] = CreateChoice(RadioChoiceId.TuningStep,
-                ("10hz", "10 Hz", true), ("100hz", "100 Hz", true), ("1khz", "1 kHz", true))
+                ("10hz", "10 Hz", true), ("100hz", "100 Hz", true), ("1khz", "1 kHz", true)),
+            [RadioChoiceId.BreakInDelay] = CreateBreakInDelayChoice(),
+            [RadioChoiceId.IfNotchWidth] = CreateChoice(RadioChoiceId.IfNotchWidth,
+                ("narrow", "Narrow", true), ("wide", "Wide", true)),
+            [RadioChoiceId.NoiseBlankerWidth] = CreateChoice(RadioChoiceId.NoiseBlankerWidth,
+                ("1ms", "1 ms", true), ("3ms", "3 ms", true), ("10ms", "10 ms", true)),
+            [RadioChoiceId.NoiseBlankerRejection] = CreateChoice(RadioChoiceId.NoiseBlankerRejection,
+                ("10db", "10 dB", true), ("30db", "30 dB", true), ("50db", "50 dB", true))
         };
 
         ChoiceControlDescriptor CreateChoice(
@@ -694,6 +701,19 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
             return new ChoiceControlDescriptor(RadioChoiceId.VoxDelay, "VOX delay", feature, options);
         }
 
+        ChoiceControlDescriptor CreateBreakInDelayChoice()
+        {
+            var milliseconds = new List<int> { 30, 50, 100, 150, 200, 250 };
+            milliseconds.AddRange(Enumerable.Range(3, 28).Select(value => value * 100));
+            return new ChoiceControlDescriptor(
+                RadioChoiceId.BreakInDelay,
+                "Semi break-in delay",
+                feature,
+                milliseconds.ToDictionary(
+                    value => $"{value}ms",
+                    value => new RadioChoiceOption($"{value}ms", $"{value} ms")));
+        }
+
         return choices.ToDictionary(
             pair => pair.Key,
             pair => pair.Value with { ReceiverTargets = MainReceiverTargets() });
@@ -728,6 +748,12 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
                     new NumericControlDescriptor(id, "Keyer speed", feature, 4, 60, 1, "WPM"),
                 RadioControlId.AudioPeakFilterOffsetHz =>
                     new NumericControlDescriptor(id, "APF offset", feature, -250, 250, 10, "Hz"),
+                RadioControlId.AmcOutputLevel =>
+                    new NumericControlDescriptor(id, "AMC output level", feature, 1, 100, 1, "%"),
+                RadioControlId.ContourLevel =>
+                    new NumericControlDescriptor(id, "Contour level", feature, -40, 20, 1, "step"),
+                RadioControlId.ContourWidth =>
+                    new NumericControlDescriptor(id, "Contour width", feature, 1, 11, 1, "step"),
                 _ => new NumericControlDescriptor(id, id.ToString(), feature, 0, 100, 1, "%")
             })
             .ToDictionary(

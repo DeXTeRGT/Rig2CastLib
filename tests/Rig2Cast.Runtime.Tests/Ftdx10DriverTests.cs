@@ -519,7 +519,7 @@ public sealed class Ftdx10DriverTests
         await driver.WriteControlAsync(RadioControlId.AfGain, 200);
         await driver.WriteControlAsync(RadioControlId.TransmitPower, 50);
 
-        Assert.Equal(18, driver.Capabilities.Controls.Count);
+        Assert.Equal(21, driver.Capabilities.Controls.Count);
         transport.AssertComplete();
     }
 
@@ -589,6 +589,8 @@ public sealed class Ftdx10DriverTests
         transport.Add("CO02;", "CO020000;");
         transport.Add("RT;", "RT1;");
         transport.Add("XT;", "XT0;");
+        transport.Add("KR;", "KR1;");
+        transport.Add("PR1;", "PR10;");
         transport.Add("NB00;");
         transport.Add("ML0000;");
         transport.Add("PR01;");
@@ -602,11 +604,11 @@ public sealed class Ftdx10DriverTests
         }
 
         values = observed.ToArray();
-        Assert.Equal([true, true, true, true, true, false, false, true, false, true, true, true, false, true, false], values);
+        Assert.Equal([true, true, true, true, true, false, false, true, false, true, true, true, false, true, false, true, false], values);
         await driver.WriteSwitchAsync(RadioSwitchId.NoiseBlanker, false);
         await driver.WriteSwitchAsync(RadioSwitchId.Monitor, false);
         await driver.WriteSwitchAsync(RadioSwitchId.SpeechProcessor, true);
-        Assert.Equal(15, driver.Capabilities.Switches.Count);
+        Assert.Equal(17, driver.Capabilities.Switches.Count);
         transport.AssertComplete();
     }
 
@@ -807,6 +809,92 @@ public sealed class Ftdx10DriverTests
         await driver.WriteControlAsync(RadioControlId.AudioPeakFilterOffsetHz, -50);
         await driver.WriteChoiceAsync(RadioChoiceId.AudioPeakFilterWidth, "wide");
 
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task ReadsAndWritesAdditionalOperatorNumericControls()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("AO;", "AO075;");
+        transport.Add("EX030202;", "EX030202-12;");
+        transport.Add("EX030203;", "EX03020307;");
+        transport.Add("AO080;");
+        transport.Add("EX030202+05;");
+        transport.Add("EX03020309;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+
+        Assert.Equal(75, (await driver.ReadControlAsync(RadioControlId.AmcOutputLevel)).Value);
+        Assert.Equal(-12, (await driver.ReadControlAsync(RadioControlId.ContourLevel)).Value);
+        Assert.Equal(7, (await driver.ReadControlAsync(RadioControlId.ContourWidth)).Value);
+        await driver.WriteControlAsync(RadioControlId.AmcOutputLevel, 80);
+        await driver.WriteControlAsync(RadioControlId.ContourLevel, 5);
+        await driver.WriteControlAsync(RadioControlId.ContourWidth, 9);
+
+        Assert.Equal((-40, 20), (
+            driver.Capabilities.Controls[RadioControlId.ContourLevel].Minimum,
+            driver.Capabilities.Controls[RadioControlId.ContourLevel].Maximum));
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task ReadsAndWritesAdditionalOperatorSwitchesAndDspChoices()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("KR;", "KR1;");
+        transport.Add("PR1;", "PR10;");
+        transport.Add("EX030204;", "EX0302041;");
+        transport.Add("EX030101;", "EX0301012;");
+        transport.Add("EX030102;", "EX0301021;");
+        transport.Add("KR0;");
+        transport.Add("PR11;");
+        transport.Add("EX0302040;");
+        transport.Add("EX0301011;");
+        transport.Add("EX0301022;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+
+        Assert.True((await driver.ReadSwitchAsync(RadioSwitchId.ElectronicKeyer)).Enabled);
+        Assert.False((await driver.ReadSwitchAsync(RadioSwitchId.ParametricMicrophoneEqualizer)).Enabled);
+        Assert.Equal("wide", (await driver.ReadChoiceAsync(RadioChoiceId.IfNotchWidth)).Value);
+        Assert.Equal("10ms", (await driver.ReadChoiceAsync(RadioChoiceId.NoiseBlankerWidth)).Value);
+        Assert.Equal("30db", (await driver.ReadChoiceAsync(RadioChoiceId.NoiseBlankerRejection)).Value);
+        await driver.WriteSwitchAsync(RadioSwitchId.ElectronicKeyer, false);
+        await driver.WriteSwitchAsync(RadioSwitchId.ParametricMicrophoneEqualizer, true);
+        await driver.WriteChoiceAsync(RadioChoiceId.IfNotchWidth, "narrow");
+        await driver.WriteChoiceAsync(RadioChoiceId.NoiseBlankerWidth, "3ms");
+        await driver.WriteChoiceAsync(RadioChoiceId.NoiseBlankerRejection, "50db");
+
+        Assert.True(driver.Capabilities.Switches[RadioSwitchId.ElectronicKeyer]
+            .ModeApplicability.CanRead(RadioMode.Cw));
+        Assert.False(driver.Capabilities.Switches[RadioSwitchId.ElectronicKeyer]
+            .ModeApplicability.CanRead(RadioMode.Usb));
+        Assert.True(driver.Capabilities.Switches[RadioSwitchId.ParametricMicrophoneEqualizer]
+            .ModeApplicability.CanRead(RadioMode.Usb));
+        transport.AssertComplete();
+    }
+
+    [Theory]
+    [InlineData("SD00;", "30ms", "50ms", "SD01;")]
+    [InlineData("SD05;", "250ms", "300ms", "SD06;")]
+    [InlineData("SD13;", "1000ms", "3000ms", "SD33;")]
+    public async Task ReadsAndWritesSemiBreakInDelayUsingExactYaesuCodes(
+        string response, string expected, string requested, string command)
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("SD;", response);
+        transport.Add(command);
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+
+        Assert.Equal(expected, (await driver.ReadChoiceAsync(RadioChoiceId.BreakInDelay)).Value);
+        await driver.WriteChoiceAsync(RadioChoiceId.BreakInDelay, requested);
+        Assert.Equal(34, driver.Capabilities.Choices[RadioChoiceId.BreakInDelay].Options.Count);
+        Assert.True(driver.Capabilities.Choices[RadioChoiceId.BreakInDelay]
+            .ModeApplicability.CanWrite(RadioMode.CwReverse));
+        Assert.False(driver.Capabilities.Choices[RadioChoiceId.BreakInDelay]
+            .ModeApplicability.CanRead(RadioMode.Usb));
         transport.AssertComplete();
     }
 
