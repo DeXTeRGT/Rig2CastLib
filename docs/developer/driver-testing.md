@@ -42,6 +42,25 @@ advertised descriptor before the helper invokes the driver. Keep model-specific
 command and boundary tests alongside these common checks; the conformance helper
 does not replace them.
 
+Use `AssertFeatureReadsAsync` to verify representative returned IDs, descriptor
+ranges and options, normalized meter bounds, and mode-specific passband constraints.
+Use `AssertRejectsInvalidCoreMutationsAsync` to cover undeclared persistent VFO
+targets, out-of-range frequencies, and unsupported modes. A context query needed to
+resolve a relative protocol selector is acceptable, but an invalid mutation must
+not emit its write command.
+
+Use `AssertDriverOwnsTransportAsync` and
+`AssertUnknownModelDisposesTransportAsync` for every built-in factory. They verify
+successful ownership transfer, idempotent driver disposal, and failed-validation
+cleanup. Keep topology-specific targeted and receiver command sequences in the
+model fixture while the common metadata checks ensure every advertised target has
+the corresponding interface.
+
+Run fault and cancellation conformance once per shared protocol engine, then add a
+driver-level case only for model-specific probing, framing, or recovery behavior.
+Every model does not need a duplicate of the same ASCII-session or CI-V-session
+timeout test.
+
 For every advertised feature:
 
 - Access flags match the implemented interface and command direction.

@@ -3,6 +3,7 @@ using Rig2Cast.Abstractions.Controls;
 using Rig2Cast.Abstractions.Drivers;
 using Rig2Cast.Abstractions.Meters;
 using Rig2Cast.Abstractions.Radios;
+using Rig2Cast.Abstractions.Transports;
 using Rig2Cast.Drivers.Elecraft.K3Family;
 using Rig2Cast.Drivers.Icom.Ic7300;
 using Rig2Cast.Drivers.Xiegu.G90;
@@ -43,6 +44,7 @@ public sealed class DriverConformanceTests
                 new(RadioChoiceId.Attenuator, "6db")),
             RadioMode.Cw,
             verifyReadback: false);
+        await DriverConformance.AssertRejectsInvalidCoreMutationsAsync(driver);
         transport.AssertComplete();
     }
 
@@ -64,6 +66,7 @@ public sealed class DriverConformanceTests
         transport.Add("RT1;");
         transport.Add("RA05;");
         transport.Add("BW0270;");
+        transport.Add("IF;", "IF00014060000     +000000 0002001001 ;");
         await using ElecraftK3Driver driver = await ElecraftK3Driver.OpenAsync(
             transport, ElecraftK3Profile.Models[ElecraftK3Profile.K3SModelId]);
 
@@ -78,6 +81,7 @@ public sealed class DriverConformanceTests
                 new(RadioChoiceId.Attenuator, "5db"), 2_700),
             RadioMode.Cw,
             verifyReadback: false);
+        await DriverConformance.AssertRejectsInvalidCoreMutationsAsync(driver);
         transport.AssertComplete();
     }
 
@@ -100,6 +104,7 @@ public sealed class DriverConformanceTests
             new(new(RadioControlId.AfGain, 143), new(RadioSwitchId.NoiseBlanker, true),
                 new(RadioChoiceId.Attenuator, "20db"), 2_700),
             RadioMode.RttyReverse);
+        await DriverConformance.AssertRejectsInvalidCoreMutationsAsync(driver);
     }
 
     [Fact]
@@ -122,7 +127,137 @@ public sealed class DriverConformanceTests
             new(new(RadioControlId.ClarifierOffsetHz, -1_250),
                 new(RadioSwitchId.NoiseBlanker, true), new(RadioChoiceId.Preamp, "on")),
             RadioMode.CwReverse);
+        await DriverConformance.AssertRejectsInvalidCoreMutationsAsync(driver);
     }
+
+    [Fact]
+    public async Task Ftdx10RepresentativeReadsConformToDescriptors()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("AG0;", "AG0128;");
+        transport.Add("NB0;", "NB01;");
+        transport.Add("RA0;", "RA03;");
+        transport.Add("SM0;", "SM0123;");
+        transport.Add("MD0;", "MD02;");
+        transport.Add("SH0;", "SH0013;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+
+        await DriverConformance.AssertFeatureReadsAsync(driver,
+            new(RadioControlId.AfGain, RadioSwitchId.NoiseBlanker, RadioChoiceId.Attenuator,
+                RadioMode.Usb, RadioMeterId.SignalStrength, IncludePassband: true));
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task ElecraftK3sRepresentativeReadsConformToDescriptors()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("OM;", "OM-P-S---LVR--;");
+        transport.Add("AG;", "AG123;");
+        transport.Add("RT;", "RT1;");
+        transport.Add("RA;", "RA05;");
+        transport.Add("SMH;", "SMH040;");
+        transport.Add("BW;", "BW0240;");
+        await using ElecraftK3Driver driver = await ElecraftK3Driver.OpenAsync(
+            transport, ElecraftK3Profile.Models[ElecraftK3Profile.K3SModelId]);
+
+        await DriverConformance.AssertFeatureReadsAsync(driver,
+            new(RadioControlId.AfGain, RadioSwitchId.ReceiveClarifier, RadioChoiceId.Attenuator,
+                RadioMode.Usb, RadioMeterId.SignalStrength, IncludePassband: true));
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task Ic7300RepresentativeReadsConformToDescriptors()
+    {
+        await using var transport = await ConnectedTransportAsync("IC-7300 read conformance");
+        await using var simulator = new CivRadioSimulator(transport);
+        await using IRadioDriver driver = await new Ic7300DriverFactory().OpenAsync(
+            new RadioConnectionOptions("icom-read-conformance", Ic7300Profile.ModelId,
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)), transport);
+
+        await DriverConformance.AssertFeatureReadsAsync(driver,
+            new(RadioControlId.AfGain, RadioSwitchId.NoiseBlanker, RadioChoiceId.Attenuator,
+                RadioMode.Usb, RadioMeterId.SignalStrength, IncludePassband: true));
+    }
+
+    [Fact]
+    public async Task G90RepresentativeReadsConformToDescriptors()
+    {
+        await using var transport = await ConnectedTransportAsync("G90 read conformance");
+        await using var simulator = new CivRadioSimulator(transport,
+            new CivSimulatorOptions { RadioAddress = 0x70, SupportsXieguIdentity = true });
+        await using IRadioDriver driver = await new G90DriverFactory().OpenAsync(
+            new RadioConnectionOptions("g90-read-conformance", G90Profile.ModelId,
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)), transport);
+
+        await DriverConformance.AssertFeatureReadsAsync(driver,
+            new(RadioControlId.ClarifierOffsetHz, RadioSwitchId.NoiseBlanker, RadioChoiceId.Preamp,
+                RadioMode.Usb, RadioMeterId.SignalStrength));
+    }
+
+    [Fact]
+    public async Task Ftdx10FactoryConformsToTransportOwnershipContract()
+    {
+        var factory = new Ftdx10DriverFactory();
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        IRadioDriver driver = await factory.OpenAsync(Options(Ftdx10CatProfile.ModelId), transport);
+
+        await DriverConformance.AssertDriverOwnsTransportAsync(driver, transport);
+        Assert.Equal(1, transport.DisposeCount);
+        var failedTransport = new ScriptedRadioTransport();
+        await failedTransport.ConnectAsync();
+        await DriverConformance.AssertUnknownModelDisposesTransportAsync(factory, failedTransport);
+        Assert.Equal(1, failedTransport.DisposeCount);
+    }
+
+    [Fact]
+    public async Task ElecraftFactoryConformsToTransportOwnershipContract()
+    {
+        var factory = new ElecraftK3DriverFactory();
+        var transport = new ScriptedRadioTransport();
+        transport.Add("OM;", "OM-P-S----VR--;");
+        IRadioDriver driver = await factory.OpenAsync(Options(ElecraftK3Profile.K3SModelId), transport);
+
+        await DriverConformance.AssertDriverOwnsTransportAsync(driver, transport);
+        Assert.Equal(1, transport.DisposeCount);
+        var failedTransport = new ScriptedRadioTransport();
+        await failedTransport.ConnectAsync();
+        await DriverConformance.AssertUnknownModelDisposesTransportAsync(factory, failedTransport);
+        Assert.Equal(1, failedTransport.DisposeCount);
+    }
+
+    [Fact]
+    public async Task Ic7300FactoryConformsToTransportOwnershipContract()
+    {
+        var factory = new Ic7300DriverFactory();
+        var transport = await ConnectedTransportAsync("IC-7300 ownership conformance");
+        await using var simulator = new CivRadioSimulator(transport);
+        IRadioDriver driver = await factory.OpenAsync(Options(Ic7300Profile.ModelId), transport);
+
+        await DriverConformance.AssertDriverOwnsTransportAsync(driver, transport);
+        await DriverConformance.AssertUnknownModelDisposesTransportAsync(
+            factory, await ConnectedTransportAsync("IC-7300 failed-open conformance"));
+    }
+
+    [Fact]
+    public async Task G90FactoryConformsToTransportOwnershipContract()
+    {
+        var factory = new G90DriverFactory();
+        var transport = await ConnectedTransportAsync("G90 ownership conformance");
+        await using var simulator = new CivRadioSimulator(transport,
+            new CivSimulatorOptions { RadioAddress = 0x70, SupportsXieguIdentity = true });
+        IRadioDriver driver = await factory.OpenAsync(Options(G90Profile.ModelId), transport);
+
+        await DriverConformance.AssertDriverOwnsTransportAsync(driver, transport);
+        await DriverConformance.AssertUnknownModelDisposesTransportAsync(
+            factory, await ConnectedTransportAsync("G90 failed-open conformance"));
+    }
+
+    private static RadioConnectionOptions Options(string modelId) =>
+        new("conformance", modelId, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
 
     private static async Task<InMemoryRadioTransport> ConnectedTransportAsync(string name)
     {
@@ -151,6 +286,14 @@ internal static class DriverConformance
         SwitchMutation Switch,
         ChoiceMutation Choice,
         int? PassbandHz = null);
+
+    internal sealed record FeatureReadScenario(
+        RadioControlId Numeric,
+        RadioSwitchId Switch,
+        RadioChoiceId Choice,
+        RadioMode ActiveMode,
+        RadioMeterId Meter,
+        bool IncludePassband = false);
 
     public static void AssertCapabilities(IRadioDriver driver)
     {
@@ -328,6 +471,85 @@ internal static class DriverConformance
             Assert.Equal(expectedPassbandHz, (await passband!.ReadPassbandAsync()).WidthHz);
     }
 
+    public static async Task AssertFeatureReadsAsync(IRadioDriver driver, FeatureReadScenario scenario)
+    {
+        RadioCapabilities capabilities = driver.Capabilities;
+        NumericControlDescriptor numericDescriptor = capabilities.Controls[scenario.Numeric];
+        SwitchControlDescriptor switchDescriptor = capabilities.Switches[scenario.Switch];
+        ChoiceControlDescriptor choiceDescriptor = capabilities.Choices[scenario.Choice];
+        RadioMeterDescriptor meterDescriptor = capabilities.Meters[scenario.Meter];
+        AssertReadable(numericDescriptor.Feature);
+        AssertReadable(switchDescriptor.Feature);
+        AssertReadable(choiceDescriptor.Feature);
+
+        var controls = Assert.IsAssignableFrom<IRadioControlDriver>(driver);
+        var switches = Assert.IsAssignableFrom<IRadioSwitchDriver>(driver);
+        var choices = Assert.IsAssignableFrom<IRadioChoiceDriver>(driver);
+        var meters = Assert.IsAssignableFrom<IRadioMeterDriver>(driver);
+        RadioControlValue numeric = await controls.ReadControlAsync(scenario.Numeric);
+        RadioSwitchValue @switch = await switches.ReadSwitchAsync(scenario.Switch);
+        RadioChoiceValue choice = await choices.ReadChoiceAsync(scenario.Choice);
+        RadioMeterReading meter = await meters.ReadMeterAsync(scenario.Meter);
+
+        Assert.Equal(scenario.Numeric, numeric.Id);
+        Assert.InRange(numeric.Value, numericDescriptor.Minimum, numericDescriptor.Maximum);
+        Assert.Equal(scenario.Switch, @switch.Id);
+        Assert.Equal(scenario.Choice, choice.Id);
+        Assert.Contains(choice.Value, choiceDescriptor.Options.Keys);
+        Assert.Equal(scenario.Meter, meter.Id);
+        Assert.InRange(meter.RawValue, meterDescriptor.RawMinimum, meterDescriptor.RawMaximum);
+        Assert.InRange(meter.NormalizedValue, 0d, 1d);
+
+        if (!scenario.IncludePassband)
+            return;
+
+        AssertReadable(capabilities.Passband.Feature);
+        PassbandConstraint constraint = capabilities.Passband.ByMode[scenario.ActiveMode];
+        RadioPassbandValue passband = await Assert.IsAssignableFrom<IRadioPassbandDriver>(driver)
+            .ReadPassbandAsync();
+        Assert.InRange(passband.WidthHz, constraint.MinimumHz, constraint.MaximumHz);
+        if (constraint.DiscreteValuesHz is { } values)
+            Assert.Contains(passband.WidthHz, values);
+    }
+
+    public static async Task AssertRejectsInvalidCoreMutationsAsync(IRadioDriver driver)
+    {
+        RadioCapabilities capabilities = driver.Capabilities;
+        VfoId unsupportedVfo = Enum.GetValues<VfoId>()
+            .First(vfo => vfo != VfoId.Current && !capabilities.Frequency.Targets.Contains(vfo));
+        RadioMode unsupportedMode = Enum.GetValues<RadioMode>()
+            .First(mode => !capabilities.Modes.Values.Contains(mode));
+
+        await Assert.ThrowsAsync<NotSupportedException>(
+            () => driver.SetFrequencyAsync(unsupportedVfo, capabilities.Frequency.Ranges[0].MinimumHz).AsTask());
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => driver.SetFrequencyAsync(capabilities.Frequency.Targets.First(), long.MaxValue).AsTask());
+        await Assert.ThrowsAsync<NotSupportedException>(
+            () => driver.SetModeAsync(unsupportedMode).AsTask());
+    }
+
+    public static async Task AssertDriverOwnsTransportAsync(IRadioDriver driver, IRadioTransport transport)
+    {
+        Assert.True(transport.IsConnected);
+        await driver.DisposeAsync();
+        Assert.False(transport.IsConnected);
+        await driver.DisposeAsync();
+        Assert.False(transport.IsConnected);
+    }
+
+    public static async Task AssertUnknownModelDisposesTransportAsync(
+        IRadioDriverFactory factory, IRadioTransport transport)
+    {
+        Assert.True(transport.IsConnected);
+        await Assert.ThrowsAsync<NotSupportedException>(
+            () => factory.OpenAsync(OptionsForUnknownModel(), transport).AsTask());
+        Assert.False(transport.IsConnected);
+    }
+
+    private static RadioConnectionOptions OptionsForUnknownModel() =>
+        new("conformance", "unsupported.model",
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
+
     private static void AssertControls(RadioCapabilities capabilities, IRadioDriver driver)
     {
         if (capabilities.Controls.Count > 0)
@@ -420,6 +642,9 @@ internal static class DriverConformance
 
     private static void AssertWritable(FeatureDescriptor feature) =>
         Assert.True(feature.Access.HasFlag(FeatureAccess.Write));
+
+    private static void AssertReadable(FeatureDescriptor feature) =>
+        Assert.True(feature.Access.HasFlag(FeatureAccess.Read));
 
     private static bool IsAvailable(FeatureDescriptor feature) =>
         (feature.Support is CapabilitySupport.Supported or CapabilitySupport.Experimental) &&

@@ -48,8 +48,8 @@ categories later, but do not generalize prematurely.
 - Solution: `Rig2Cast\Rig2Cast.sln`
 - Target framework: .NET 8
 - Shell: PowerShell
-- Current baseline commit: `5044da0`
-- Current expected automated suite: **334 passing tests**.
+- Current baseline commit: `57c54cc`
+- Current expected automated suite: **342 passing tests**.
 
 Git may report dubious ownership because Codex and the interactive Windows user
 have different SIDs. Do not modify the user's global Git configuration. For
@@ -78,7 +78,7 @@ interfaces, and coherent state topology across FTDX10, Elecraft K3S, IC-7300, an
 G90 simulator/scripted fixtures. The full isolated-output checkpoint passes 334
 tests.
 
-The worktree after `5044da0` extends that suite with shared operational checks for
+Commit `57c54cc` extends that suite with shared operational checks for
 writable frequency, active mode, split, and representative numeric, switch, choice,
 and passband mutations. Each scenario first proves that its value is allowed by the
 advertised descriptor. FTDX10 and K3S validate exact CAT transcripts; IC-7300 and
@@ -88,6 +88,32 @@ support. Active-VFO selection is not inferred because `VfoCapability` currently
 identifies available VFOs but has no separate selectable-target set; for example,
 the FTDX10 advertises Memory as available but does not accept it as an active-VFO
 selection target.
+
+The worktree after `57c54cc` adds four representative read fixtures
+covering numeric controls, switches, choices, meters, and canonical passband where
+advertised. It validates returned identities, descriptor ranges/options, normalized
+meter bounds, and passband constraints. Core rejection checks cover undeclared
+persistent VFO targets, out-of-range frequency, and unsupported mode. `VfoId.Current`
+is excluded from the undeclared-target check because some drivers accept it as a
+convenience selector without listing it as a persistent VFO. Elecraft may query `IF`
+to resolve foreground/background before rejecting a mode, but must not emit the
+mode-write command.
+
+Four factory-lifecycle fixtures also cover every built-in factory. They verify
+successful ownership transfer, transport closure on driver disposal, idempotent
+repeated disposal, and closure of an already-connected transport when an unknown
+model is rejected during factory validation. Targeted and receiver routing remains
+covered in model-specific fixtures: especially the K3S subreceiver surface, the
+IC-7300 current/main adapters, FTDX10 A/B and main adapters, and the G90 extended
+A/B path. Keep those protocol-specific tests rather than duplicating their command
+transcripts in the common harness.
+
+Cancellation, response-timeout, late-response, terminal-disconnect, and committed-
+write cancellation behavior is tested at the shared protocol-engine level in
+`YaesuAsciiProtocolTests` and `CivSessionTests`. Driver-specific cases remain for
+FTDX10 timeout handling, Elecraft committed-write cancellation, and the G90 optional
+probe with a cancellation-ignoring reader. Do not duplicate identical protocol
+fault tests across every model profile.
 
 Always run `git status --short` before editing because the state may have changed
 after this document was written.
