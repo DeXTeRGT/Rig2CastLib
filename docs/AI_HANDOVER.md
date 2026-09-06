@@ -1,6 +1,6 @@
 # Rig2Cast AI development handover
 
-Last updated: 2026-09-05 (Europe/Bucharest)
+Last updated: 2026-09-06 (Europe/Bucharest)
 
 This document is the continuity source for an AI agent resuming development of
 Rig2Cast. Read it before modifying code. Then read the architecture and decision
@@ -48,8 +48,8 @@ categories later, but do not generalize prematurely.
 - Solution: `Rig2Cast\Rig2Cast.sln`
 - Target framework: .NET 8
 - Shell: PowerShell
-- Current baseline commit when this handover was written: `49eed20`
-- Current expected automated suite: **321 passing tests**.
+- Current baseline commit when this handover was written: `3fcce4c`
+- Current expected automated suite: **322 passing tests**.
 
 Git may report dubious ownership because Codex and the interactive Windows user
 have different SIDs. Do not modify the user's global Git configuration. For
@@ -61,19 +61,10 @@ git -c safe.directory=C:/HAM_RADIO/PROJECTS/HAMLIB_PORT/Rig2Cast -C Rig2Cast sta
 
 The worktree is intentionally dirty and contains the active milestone. Preserve
 all existing changes. Do not reset, checkout, discard, or overwrite them. At the
-time of writing, the principal uncommitted changes include:
-
-- Receiver-targeted frequency/mode contracts and implementations.
-- Receiver capability limits and stable JSON identities.
-- Renewable and bounded transmit control.
-- Firmware-aware Elecraft SWR capability handling.
-- Console receiver syntax and safe PTT commands.
-- Uniform runtime validation for legacy and receiver-targeted mutations.
-- Receiver-specific typed observations and component freshness tracking.
-- `TimeProvider`-based runtime timing and concurrent shutdown hardening.
-- Plugin manifests, trusted discovery, isolated loading, diagnostics, and tests.
-- New runtime, simulator, driver, and topology tests.
-- Documentation and contribution-rule updates.
+time of writing, `Rig2Cast.sln` includes the new uncommitted
+`samples/Rig2Cast.WebGui` project. The worktree also contains the current FTDX10
+signed-control hardening, its regression test, and related README/handover edits.
+Always inspect the actual status rather than assuming this list is exhaustive.
 
 Always run `git status --short` before editing because the state may have changed
 after this document was written.
@@ -100,7 +91,9 @@ after this document was written.
 - `src/Rig2Cast.Drivers.Elecraft/K3Family`: shared K3S/K3/KX3/KX2 family driver
   with model profiles and option/firmware-dependent capabilities.
 - `src/Rig2Cast.Drivers.Icom/Ic7300`: documented, simulator-validated IC-7300 CI-V
-  pilot with configurable addresses and verified frequency/mode setters.
+  driver with configurable addresses and the implemented common controls.
+- `src/Rig2Cast.Drivers.Xiegu/G90`: physically validated Xiegu G90 CI-V driver,
+  including its firmware-aware identity fallback and G90-specific VFO behavior.
 
 ### Adapters and hosts
 
@@ -108,6 +101,9 @@ after this document was written.
 - `samples/Rig2Cast.RigctldHost`: standalone rigctld host. Keep it a separate
   adapter/project; do not place radio-specific features in it.
 - `samples/Rig2Cast.Console`: primary interactive hardware diagnostic surface.
+- `samples/Rig2Cast.CapabilityGui`: native Avalonia capability-driven reference UI.
+- `samples/Rig2Cast.WebGui`: ASP.NET Core REST/WebSocket capability-driven web POC
+  with a server-owned multi-radio registry and multi-browser attachment model.
 - `samples/Rig2Cast.Ftdx10Smoke`: earlier FTDX10 hardware smoke tool.
 - `src/Rig2Cast.PluginHost`: manifest validation, trusted assembly discovery,
   descriptor verification, duplicate isolation, catalog composition/lifetime, and
@@ -152,7 +148,7 @@ Implemented and covered by automated tests:
   and event timestamps. The FTDX10 and Elecraft K3-family factories also accept a
   clock and propagate it to every driver-produced timestamp while retaining
   parameterless constructors and `TimeProvider.System` defaults.
-- Built-in Yaesu FTDX10, Elecraft K3-family, and Icom IC-7300 factories
+- Built-in Yaesu FTDX10, Elecraft K3-family, Icom IC-7300, and Xiegu G90 factories
   and drivers.
 - Plugin-host library foundation: strict manifests, exact API compatibility,
   SHA-256 trust, safe entry paths, descriptor matching, duplicate handling,
@@ -173,17 +169,19 @@ Not implemented or not integrated yet:
 - The rigctld host does not yet reuse plugin composition and still registers built-in
   factories directly. The Console supports `--plugin-config`, repeatable
   `--plugin-directory`, and explicit `--plugin-development-mode`.
-- `Rig2Cast.Server`, REST, gRPC, WebSocket, desktop, and web hosts remain future work.
+- `src/Rig2Cast.Server` remains only scaffolding and gRPC is not implemented. The
+  separate `samples/Rig2Cast.WebGui` POC now provides working REST, WebSocket, and
+  browser surfaces; the Avalonia desktop sample is also implemented.
 - The model-neutral Icom CI-V framing, addressed session, packed-BCD primitive, and
   deterministic IC-7300 simulator are implemented. The
   session serializes transactions, discriminates exact echoes, correlates reversed
   addresses and command prefixes, recognizes ACK/NAK, bounds unsolicited delivery,
   and makes ambiguous timeout/post-commit cancellation terminal. The simulator covers
   frequency and mode/filter reads, echo, fragmentation, broadcasts, injected delay,
-  drop, rejection, and close behavior. Model drivers remain future work. Legacy
-  Yaesu binary CAT is not implemented.
-- A general declarative command engine is not implemented. Existing family/model
-  profiles are only partially declarative.
+  drop, rejection, and close behavior. IC-7300 and G90 model drivers are implemented.
+  Legacy Yaesu binary CAT is not implemented.
+- A compiled C# declarative descriptor engine and declarative example plugin are
+  implemented. An external JSON/YAML driver-definition format is not implemented.
 - The latest renewable-PTT and receiver-targeted physical checks listed in section 7
   still require explicit user confirmation.
 
@@ -270,6 +268,10 @@ IF-notch width. CW and non-CW applicability is declared where supported. The
 capability GUI discovers and groups these controls dynamically; the Console uses
 the same enum-based generic syntax. Automated validation count must be refreshed
 after the complete suite passes; physical read/write validation remains pending.
+The signed numeric codec now requires the explicit `+`/`-` character advertised by
+an `AlwaysSign` descriptor in both query correlation and final parsing. Its write
+width is derived from `Digits` rather than fixed to two magnitude digits; malformed
+unsigned contour responses are regression-tested.
 
 ### 5.6 Reconnect and shutdown
 
@@ -892,7 +894,7 @@ snapshots without putting UI concerns in the library. The Console exposes
 `--list-ports`, `--list-connection-settings`, repeatable
 `--connection-setting <id=value>`, and `--civ-controller-address`; older convenience
 options still feed the same resolver. See
-`docs/architecture/typed-connection-settings.md`. Automated coverage is 321 passing
+`docs/architecture/typed-connection-settings.md`. Automated coverage is 322 passing
 tests, and Console metadata output plus local COM discovery were manually checked.
 
 The next milestone was a small Avalonia sample that dynamically renders transport
@@ -1024,6 +1026,67 @@ runtime generically preserves physical readback for readable choices and publish
 the commanded value for write-only choices. The user physically confirmed that this
 removed the initial-refresh timeout and reconnect cycle.
 
+### Milestone 7: capability-driven Web GUI and multi-radio host POC
+
+`samples/Rig2Cast.WebGui` is a separate ASP.NET Core/.NET 8 sample; do not confuse
+it with the unused `src/Rig2Cast.Server` scaffold. It serves a polished vanilla
+HTML/CSS/JavaScript browser UI and a versioned `/api/v1` REST/WebSocket surface from
+the same process. Connection fields are generated from `RadioModelDescriptor` and
+operational VFO, mode, split, passband, numeric, switch, choice, and meter controls
+are generated from the connected `RadioCapabilities`. The browser has no driver or
+manufacturer command tables. Refresh respects mode applicability and avoids TX-only
+meter reads while receiving.
+
+The sample supports serial and transparent raw TCP for built-in models plus the
+FTDX10 in-process simulator. HTTP binds to `127.0.0.1:8080` by default. A trusted
+VPN/LAN binding can be selected with `--urls http://0.0.0.0:8080`. This is deliberately
+an unauthenticated HTTP POC and must not be exposed directly to the Internet.
+`Rig2Cast__AllowWrites` is false by default; non-PTT writes require both server
+permission and the browser connection checkbox. Remote PTT and arbitrary raw CAT
+endpoints are intentionally absent.
+
+The server owns physical connections through a registry rather than assigning a COM
+port or TCP socket to a browser page. Canonical endpoint keys prevent the same serial
+port (case-insensitive) or normalized TCP host/port from being opened twice. Each
+different endpoint owns an independent `ManagedRadio`, so multiple radios can run at
+once. The first browser identity opens the radio and owns permission to close that
+physical connection. A later browser requesting the same endpoint attaches to the
+existing `ManagedRadio` through its own read-only Observer `IRadioSession`; it receives
+the same snapshots and radio-specific WebSocket stream but cannot mutate or close the
+radio. The browser uses a per-tab `sessionStorage` UUID, preventing tabs from silently
+sharing an owner identity. Owner versus Operator are distinct: an owner can close the
+connection, while Operator writes still depend on both server and connection policy.
+
+Important routes are `GET /api/v1/radios`, `POST /api/v1/radios/connect`, scoped
+`/api/v1/radios/{radioId}/...` operations, Observer detach, owner-only DELETE, and
+`/api/v1/radios/{radioId}/events?clientId=...`. REST calls require the matching
+`X-Rig2Cast-Client` header. This identity is session correlation, not authentication.
+See `samples/Rig2Cast.WebGui/README.md` for commands and endpoint details.
+
+Automated/runtime validation at handover: the Web project builds with zero warnings;
+JavaScript syntax validation passes; a two-client simulator test produced one radio
+ID and two attachments, made the second client read-only, allowed it to read state,
+returned HTTP 403 for its close attempt, and allowed the owner to remove the radio.
+The consolidated suite remains 322/322 passing. Physical simultaneous multi-radio
+testing has not yet been performed. The in-app visual browser was unavailable during
+the last automated pass, although the user subsequently reported that the Web GUI
+works as well as the Avalonia CapabilityGui.
+
+Known Web POC hardening work:
+
+- Abandoned browser attachments persist until explicitly detached or the radio is
+  closed. Add heartbeat/expiry cleanup without making a transient WebSocket reconnect
+  revoke ownership.
+- Add real authentication/authorization before any untrusted-network deployment;
+  then add TLS/HTTPS, users, role administration, audit logging, and CSRF/origin policy.
+- Replace anonymous API projections with explicitly versioned DTOs before treating
+  the POC surface as a stable external contract.
+- Add automated integration tests for registry races, duplicate serial/TCP aliases,
+  simultaneous different radios, WebSocket fan-out, detach, owner reconnect, shutdown,
+  and authorization. Test multiple physical radios when hardware is available.
+- Consider a server-side radio dashboard/attachment list and persistent configured
+  radios. Do not let two browser pages independently own the same transport.
+
 ### Later milestone: legacy Yaesu binary CAT
 
 Implement this as another binary family engine, not as an FTDX10 ASCII extension:
@@ -1053,8 +1116,9 @@ Implement this as another binary family engine, not as an FTDX10 ASCII extension
 - Reorganize tests into protocol-focused projects when CI-V or another binary family
   makes the consolidated runtime test project unwieldy.
 - Add fuzz/property-style framing tests for binary decoders and declarative profiles.
-- Implement the standalone server and native REST/gRPC/WebSocket surfaces around the
-  existing runtime; keep adapters thin and capability-driven.
+- Promote the Web GUI POC into a hardened host only after versioned DTOs,
+  authentication, stale-client cleanup, origin policy, TLS deployment guidance, and
+  integration coverage exist. gRPC remains optional future work.
 - Consider deprecating legacy `VfoId.Main`/`Sub` aliases only in a planned major API.
 - Extend receiver-specific typed observations only when real protocol semantics need
   additional independently fresh state components.
@@ -1079,6 +1143,9 @@ Read these before related work:
 - `docs/decisions/0005-transmit-leases.md`
 - `docs/console-operating-manual.md` (operator-facing startup, command, safety, and
   three-driver physical/simulator test manual)
+- `samples/Rig2Cast.CapabilityGui/README.md` (native capability-driven UI sample)
+- `samples/Rig2Cast.WebGui/README.md` (REST/WebSocket Web GUI POC, multi-radio
+  registry, owner/observer behavior, deployment and safety limits)
 - `docs/diagnostic-console.md`
 - `docs/rigctld-adapter.md`
 - `docs/protocol-sources/yaesu-ftdx10.md`
@@ -1117,8 +1184,12 @@ From `C:\HAM_RADIO\PROJECTS\HAMLIB_PORT`:
 git -c safe.directory=C:/HAM_RADIO/PROJECTS/HAMLIB_PORT/Rig2Cast -C Rig2Cast status --short
 dotnet test .\Rig2Cast\tests\Rig2Cast.Runtime.Tests\Rig2Cast.Runtime.Tests.csproj --no-restore
 dotnet build .\Rig2Cast\samples\Rig2Cast.Console\Rig2Cast.Console.csproj --no-restore
+dotnet build .\Rig2Cast\samples\Rig2Cast.WebGui\Rig2Cast.WebGui.csproj --no-restore -p:UseAppHost=false
 ```
 
-Then compare the result with the expected 321 tests and inspect changes made after
-this handover. Build and interactively validate the capability GUI sample before
-beginning legacy Yaesu binary CAT.
+Then compare the result with the expected 322 tests and inspect changes made after
+this handover. For Web work, run `dotnet run --project
+.\Rig2Cast\samples\Rig2Cast.WebGui` and read its README before changing registry,
+ownership, authorization, or WebSocket behavior. The recommended next work is Web
+POC hardening or, after an explicit maintainer decision, the legacy Yaesu binary CAT
+milestone.

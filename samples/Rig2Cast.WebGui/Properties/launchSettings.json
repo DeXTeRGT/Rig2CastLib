@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "Rig2Cast.WebGui": {
+      "commandName": "Project",
+      "launchBrowser": true,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      },
+      "applicationUrl": "https://localhost:57676;http://localhost:57677"
+    }
+  }
+}

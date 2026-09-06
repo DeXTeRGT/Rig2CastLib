@@ -839,6 +839,20 @@ public sealed class Ftdx10DriverTests
     }
 
     [Fact]
+    public async Task ContourLevelRejectsUnsignedResponseWhenWireFieldRequiresSign()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("EX030202;", "EX030202020;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(
+            transport, responseTimeout: TimeSpan.FromMilliseconds(50));
+
+        await Assert.ThrowsAsync<TimeoutException>(
+            () => driver.ReadControlAsync(RadioControlId.ContourLevel).AsTask());
+        transport.AssertComplete();
+    }
+
+    [Fact]
     public async Task ReadsAndWritesAdditionalOperatorSwitchesAndDspChoices()
     {
         var transport = new ScriptedRadioTransport();

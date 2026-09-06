@@ -138,6 +138,18 @@ dotnet run --project samples\Rig2Cast.CapabilityGui\Rig2Cast.CapabilityGui.cspro
 
 See the [capability GUI guide](samples/Rig2Cast.CapabilityGui/README.md).
 
+The separate Web GUI POC serves the same capability-driven approach through an
+ASP.NET Core REST/WebSocket host. It supports server-owned multiple radios and
+read-only observer pages without opening a physical endpoint twice:
+
+```powershell
+dotnet run --project samples\Rig2Cast.WebGui\Rig2Cast.WebGui.csproj
+```
+
+See the [Web GUI guide](samples/Rig2Cast.WebGui/README.md). It is unauthenticated
+HTTP intended only for trusted local/VPN testing; remote PTT and raw CAT are not
+exposed.
+
 ### Modular and pluggable radio drivers
 
 Radio models use stable identifiers such as `yaesu.ftdx10`. Each factory
@@ -254,7 +266,7 @@ dotnet build Rig2Cast.sln
 dotnet test tests\Rig2Cast.Runtime.Tests\Rig2Cast.Runtime.Tests.csproj
 ```
 
-The current suite contains **321 automated tests** covering CAT framing and
+The current suite contains **322 automated tests** covering CAT framing and
 parsing, runtime serialization, concurrent clients, roles and leases, capability
 and model discovery, trusted plugin loading, TCP behavior, disconnect/reconnect behavior, unsolicited
 reporting, shutdown cleanup, FTDX10 controls, the initial Elecraft K3-family slice,

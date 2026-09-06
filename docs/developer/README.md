@@ -51,6 +51,9 @@ evolving; pin third-party integrations to a tested commit or release.
 
 - [`Rig2Cast.CapabilityGui`](../../samples/Rig2Cast.CapabilityGui/README.md): a
   capability-driven Avalonia application.
+- [`Rig2Cast.WebGui`](../../samples/Rig2Cast.WebGui/README.md): a capability-driven
+  ASP.NET Core REST/WebSocket sample with server-owned multi-radio connections and
+  owner/read-only-observer browser attachments.
 - [`Rig2Cast.Console`](../console-operating-manual.md): model selection,
   serial/raw-TCP connection, inspection, and control.
 - [`Rig2Cast.ExamplePlugin`](../../samples/Rig2Cast.ExamplePlugin/README.md): the
@@ -61,7 +64,9 @@ evolving; pin third-party integrations to a tested commit or release.
 ## Current boundaries
 
 The native API supports serial and transparent raw TCP, capability-driven
-controls, managed events, reconnect supervision, and external driver plugins.
+controls, managed events, reconnect supervision, and external driver plugins. The
+Web GUI sample demonstrates a thin multi-radio REST/WebSocket host, but its HTTP API
+is still a POC rather than a stable authenticated public contract.
 The declarative engine is a compiled C# descriptor vocabulary; it is not yet an
 external JSON/YAML driver format. A public read-only raw-frame fan-out and an
 IC-7300 spectrum stream are roadmap items, not current consumer APIs. Legacy

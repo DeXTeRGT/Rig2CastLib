@@ -395,19 +395,12 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         string response = await _protocol.QueryAsync(
             command.Query, command.ResponsePrefix,
             candidate => IsValidControlResponse(candidate, command), cancellationToken).ConfigureAwait(false);
-        int valueOffset = command.ResponsePrefix.Length;
-        if (response.Length != valueOffset + command.Digits + 1 ||
-            !response.StartsWith(command.ResponsePrefix, StringComparison.Ordinal) ||
-            !int.TryParse(response.AsSpan(valueOffset, command.Digits),
-                command.AlwaysSign ? NumberStyles.AllowLeadingSign : NumberStyles.None,
-                CultureInfo.InvariantCulture, out int value) ||
-            value * command.Scale + command.ValueOffset < command.Minimum ||
-            value * command.Scale + command.ValueOffset > command.Maximum)
+        if (!TryParseControlValue(response, command, out int value))
         {
             throw new YaesuProtocolException($"Invalid {control} response '{response}'.");
         }
 
-        return new RadioControlValue(control, value * command.Scale + command.ValueOffset, _timeProvider.GetUtcNow());
+        return new RadioControlValue(control, value, _timeProvider.GetUtcNow());
     }
 
     public async ValueTask SetFrequencyAsync(
@@ -457,9 +450,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         }
 
         int encoded = (value - command.ValueOffset) / command.Scale;
-        string formatted = command.AlwaysSign
-            ? encoded.ToString("+00;-00;+00", CultureInfo.InvariantCulture)
-            : encoded.ToString($"D{command.Digits}", CultureInfo.InvariantCulture);
+        string formatted = FormatControlValue(encoded, command);
         return _protocol.SendAsync($"{command.Query}{formatted}", cancellationToken);
     }
 
@@ -749,16 +740,53 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         response[5] is '+' or '-' &&
         int.TryParse(response.AsSpan(6, 4), NumberStyles.None, CultureInfo.InvariantCulture, out _);
 
-    private static bool IsValidControlResponse(string response, ControlCommand command)
+    private static bool IsValidControlResponse(string response, ControlCommand command) =>
+        TryParseControlValue(response, command, out _);
+
+    private static bool TryParseControlValue(string response, ControlCommand command, out int value)
     {
+        value = default;
         int valueOffset = command.ResponsePrefix.Length;
-        return response.Length == valueOffset + command.Digits + 1 && response[^1] == ';' &&
-               response.StartsWith(command.ResponsePrefix, StringComparison.Ordinal) &&
-               int.TryParse(response.AsSpan(valueOffset, command.Digits),
-                   command.AlwaysSign ? NumberStyles.AllowLeadingSign : NumberStyles.None,
-                   CultureInfo.InvariantCulture, out int encoded) &&
-               encoded * command.Scale + command.ValueOffset >= command.Minimum &&
-               encoded * command.Scale + command.ValueOffset <= command.Maximum;
+        if (response.Length != valueOffset + command.Digits + 1 || response[^1] != ';' ||
+            !response.StartsWith(command.ResponsePrefix, StringComparison.Ordinal))
+            return false;
+
+        ReadOnlySpan<char> encodedText = response.AsSpan(valueOffset, command.Digits);
+        if (command.AlwaysSign && (encodedText.IsEmpty || encodedText[0] is not ('+' or '-')))
+            return false;
+        if (!int.TryParse(
+                encodedText,
+                command.AlwaysSign ? NumberStyles.AllowLeadingSign : NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out int encoded))
+            return false;
+
+        try
+        {
+            value = checked(encoded * command.Scale + command.ValueOffset);
+        }
+        catch (OverflowException)
+        {
+            return false;
+        }
+        return value >= command.Minimum && value <= command.Maximum;
+    }
+
+    private static string FormatControlValue(int encoded, ControlCommand command)
+    {
+        if (!command.AlwaysSign)
+            return encoded.ToString($"D{command.Digits}", CultureInfo.InvariantCulture);
+        if (command.Digits < 2)
+            throw new InvalidOperationException(
+                $"Signed control '{command.DisplayName}' must reserve at least one sign and one magnitude digit.");
+
+        int magnitudeDigits = command.Digits - 1;
+        string magnitude = Math.Abs((long)encoded).ToString(
+            $"D{magnitudeDigits}", CultureInfo.InvariantCulture);
+        if (magnitude.Length != magnitudeDigits)
+            throw new InvalidOperationException(
+                $"Control '{command.DisplayName}' value '{encoded}' exceeds its {command.Digits}-character signed field.");
+        return $"{(encoded < 0 ? '-' : '+')}{magnitude}";
     }
 
     private static bool IsValidMeterResponse(string response, AsciiQueryDescriptor command)

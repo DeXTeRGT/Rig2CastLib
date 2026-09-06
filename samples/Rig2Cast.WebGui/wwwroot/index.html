@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rig2Cast Web Console</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">R2C</span><div><strong>Rig2Cast</strong><small>Web console POC</small></div></div>
+      <section>
+        <h2>Connection</h2>
+        <label>Radio model<select id="model"></select></label>
+        <label>Transport<select id="transport"></select></label>
+        <div id="serial-fields">
+          <label>Discovered port<div class="inline"><select id="serial-port"></select><button id="refresh-ports" class="icon" title="Refresh ports">↻</button></div></label>
+          <label class="check"><input id="port-override-enabled" type="checkbox">Override discovered port</label>
+          <label id="port-override-row">Port override<input id="port-override" placeholder="COM16 or /dev/ttyUSB0" disabled></label>
+          <label>Baud rate<select id="baud"></select></label>
+        </div>
+        <div id="tcp-fields" hidden>
+          <label>Raw TCP host<input id="tcp-host" value="127.0.0.1"></label>
+          <label>Raw TCP port<input id="tcp-port" type="number" min="1" max="65535" value="5555"></label>
+        </div>
+        <div id="model-settings"></div>
+        <label>Mode restrictions<select id="mode-policy"><option>Enforce</option><option>Advisory</option></select></label>
+        <label class="check"><input id="enable-writes" type="checkbox">Enable non-PTT writes</label>
+        <div class="actions"><button id="connect" class="primary">Connect</button><button id="disconnect" disabled>Disconnect</button></div>
+      </section>
+      <div id="status-card" class="status-card"><span class="dot"></span><div><strong id="status-title">Offline</strong><small id="status-text">Select a radio and transport.</small></div></div>
+      <p class="safety">Remote PTT and arbitrary raw CAT are intentionally unavailable.</p>
+    </aside>
+
+    <main>
+      <header>
+        <div><span class="eyebrow">LIVE RADIO</span><h1 id="radio-title">No radio connected</h1><p id="radio-summary">Capability-driven controls appear after connection.</p></div>
+        <div id="connection-badge" class="badge offline">OFFLINE</div>
+      </header>
+      <div id="vfo-deck" class="vfo-deck empty"><div class="empty-state">Connect to display the radio's advertised VFO topology.</div></div>
+      <nav><button class="tab active" data-tab="radio">Radio</button><button class="tab" data-tab="controls">Controls</button><button class="tab" data-tab="meters">Meters</button><button class="tab" data-tab="diagnostics">Diagnostics</button><button id="refresh-all" class="refresh" disabled>Refresh all</button></nav>
+      <section id="tab-radio" class="tab-page active"><div id="core-card" class="panel empty-state">Runtime capabilities and core state will appear here.</div></section>
+      <section id="tab-controls" class="tab-page"><div id="controls-grid" class="control-groups"></div></section>
+      <section id="tab-meters" class="tab-page"><div id="meters-grid" class="meter-grid"></div></section>
+      <section id="tab-diagnostics" class="tab-page"><div class="panel"><div class="panel-title"><h3>Session log</h3><button id="clear-log">Clear</button></div><pre id="log"></pre></div></section>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
