@@ -26,6 +26,7 @@
     <ProjectReference Include="..\..\src\Rig2Cast.Transports\Rig2Cast.Transports.csproj" />
     <ProjectReference Include="..\..\src\Rig2Cast.Adapters.Rigctld\Rig2Cast.Adapters.Rigctld.csproj" />
     <ProjectReference Include="..\..\src\Rig2Cast.PluginHost\Rig2Cast.PluginHost.csproj" />
+    <ProjectReference Include="..\..\samples\Rig2Cast.WebGui\Rig2Cast.WebGui.csproj" />
   </ItemGroup>
 
   <ItemGroup>

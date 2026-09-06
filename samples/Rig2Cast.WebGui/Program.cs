@@ -78,6 +78,10 @@ api.MapPut("/radios/{radioId}/split", async (string radioId, BoolValue body, Htt
     await host.SetSplitAsync(radioId, clientId, body.Value, ct);
     return Results.Ok(await host.GetSnapshotAsync(radioId, clientId, ct));
 });
+api.MapPut("/radios/{radioId}/ptt", async (string radioId, BoolValue body, HttpContext context, RadioWebHost host, CancellationToken ct) =>
+    Results.Ok(await host.SetPttAsync(radioId, ApiClientIdentity.Require(context), body.Value, ct)));
+api.MapPost("/radios/{radioId}/ptt/renew", async (string radioId, HttpContext context, RadioWebHost host, CancellationToken ct) =>
+    Results.Ok(await host.RenewPttAsync(radioId, ApiClientIdentity.Require(context), ct)));
 api.MapPost("/radios/{radioId}/controls/{id}/read", async (string radioId, string id, HttpContext context, RadioWebHost host, CancellationToken ct) => Results.Ok(await host.ReadControlAsync(radioId, ApiClientIdentity.Require(context), Enum.Parse<RadioControlId>(id, true), ct)));
 api.MapPut("/radios/{radioId}/controls/{id}", async (string radioId, string id, IntValue body, HttpContext context, RadioWebHost host, CancellationToken ct) => { await host.WriteControlAsync(radioId, ApiClientIdentity.Require(context), Enum.Parse<RadioControlId>(id, true), body.Value, ct); return Results.NoContent(); });
 api.MapPost("/radios/{radioId}/switches/{id}/read", async (string radioId, string id, HttpContext context, RadioWebHost host, CancellationToken ct) => Results.Ok(await host.ReadSwitchAsync(radioId, ApiClientIdentity.Require(context), Enum.Parse<RadioSwitchId>(id, true), ct)));

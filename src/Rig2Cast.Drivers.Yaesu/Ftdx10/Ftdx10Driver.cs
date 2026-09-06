@@ -290,12 +290,12 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         await _protocol.SendAsync($"{prefix}{frequencyHz:000000000}", cancellationToken).ConfigureAwait(false);
     }
 
-    public async ValueTask SetModeAsync(RadioMode mode, CancellationToken cancellationToken = default)
+    public ValueTask SetModeAsync(RadioMode mode, CancellationToken cancellationToken = default)
     {
         EnsureActive();
-        VfoId active = ParseVfo(await QueryParsedAsync("VS", "VS", ParseVfo, cancellationToken).ConfigureAwait(false));
-        char target = active == VfoId.A ? '0' : '1';
-        await _protocol.SendAsync($"MD{target}{Ftdx10CatProfile.EncodeMode(mode)}", cancellationToken).ConfigureAwait(false);
+        // MD0 addresses the foreground/operated VFO and MD1 the background VFO;
+        // the selector is relative to the current VS state, not an absolute A/B ID.
+        return _protocol.SendAsync($"MD0{Ftdx10CatProfile.EncodeMode(mode)}", cancellationToken);
     }
 
     public ValueTask SetActiveVfoAsync(VfoId vfo, CancellationToken cancellationToken = default)
@@ -1318,9 +1318,7 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
 
     private async ValueTask<RadioMode> ReadActiveModeAsync(CancellationToken cancellationToken)
     {
-        VfoId active = ParseVfo(await QueryParsedAsync("VS", "VS", ParseVfo, cancellationToken).ConfigureAwait(false));
-        string modeQuery = active == VfoId.A ? "MD0" : "MD1";
-        return ParseMode(await QueryParsedAsync(modeQuery, modeQuery, ParseMode, cancellationToken).ConfigureAwait(false));
+        return ParseMode(await QueryParsedAsync("MD0", "MD0", ParseMode, cancellationToken).ConfigureAwait(false));
     }
 
     private async ValueTask WriteFilterWidthAsync(string value, CancellationToken cancellationToken)

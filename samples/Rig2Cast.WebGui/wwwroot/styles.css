@@ -234,6 +234,25 @@ header p {
     color: var(--muted)
 }
 
+.header-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px
+}
+
+.ptt {
+    min-width: 104px;
+    border-color: #70404a;
+    color: #ffb2bd
+}
+
+.ptt.transmitting {
+    color: white;
+    border-color: var(--danger);
+    background: linear-gradient(135deg, #b51f38, #e33d56);
+    box-shadow: 0 0 20px #ff63784d
+}
+
 .badge {
     padding: 8px 13px;
     border-radius: 30px;
@@ -268,6 +287,19 @@ header p {
     box-shadow: inset 0 0 0 1px #26b8ff33
 }
 
+.vfo-card.split-tx {
+    border-color: var(--danger);
+    box-shadow: inset 0 0 0 1px #ff63784d
+}
+
+.vfo-card.active.split-tx {
+    box-shadow: inset 0 0 0 1px #26b8ff33, 0 0 0 2px var(--danger)
+}
+
+.vfo-card.split-tx .vfo-role {
+    color: var(--danger)
+}
+
 .vfo-role {
     position: absolute;
     right: 18px;
@@ -287,6 +319,16 @@ header p {
     font-weight: 800;
     margin: 17px 0 14px;
     letter-spacing: .02em
+}
+
+.frequency.tunable {
+    cursor: ns-resize;
+    user-select: none
+}
+
+.frequency.tunable:hover {
+    color: #d9f4ff;
+    text-shadow: 0 0 18px #26b8ff55
 }
 
 .frequency-editor {

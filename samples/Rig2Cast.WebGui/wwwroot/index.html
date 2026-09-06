@@ -26,17 +26,17 @@
         </div>
         <div id="model-settings"></div>
         <label>Mode restrictions<select id="mode-policy"><option>Enforce</option><option>Advisory</option></select></label>
-        <label class="check"><input id="enable-writes" type="checkbox">Enable non-PTT writes</label>
+        <label class="check"><input id="enable-writes" type="checkbox">Enable radio writes, including PTT</label>
         <div class="actions"><button id="connect" class="primary">Connect</button><button id="disconnect" disabled>Disconnect</button></div>
       </section>
       <div id="status-card" class="status-card"><span class="dot"></span><div><strong id="status-title">Offline</strong><small id="status-text">Select a radio and transport.</small></div></div>
-      <p class="safety">Remote PTT and arbitrary raw CAT are intentionally unavailable.</p>
+      <p class="safety">PTT uses a 10-second safety lease renewed by this page. If the page or connection is lost, the lease expires and the runtime forces RX.</p>
     </aside>
 
     <main>
       <header>
         <div><span class="eyebrow">LIVE RADIO</span><h1 id="radio-title">No radio connected</h1><p id="radio-summary">Capability-driven controls appear after connection.</p></div>
-        <div id="connection-badge" class="badge offline">OFFLINE</div>
+        <div class="header-actions"><button id="ptt" class="ptt" disabled>PTT OFF</button><div id="connection-badge" class="badge offline">OFFLINE</div></div>
       </header>
       <div id="vfo-deck" class="vfo-deck empty"><div class="empty-state">Connect to display the radio's advertised VFO topology.</div></div>
       <nav><button class="tab active" data-tab="radio">Radio</button><button class="tab" data-tab="controls">Controls</button><button class="tab" data-tab="meters">Meters</button><button class="tab" data-tab="diagnostics">Diagnostics</button><button id="refresh-all" class="refresh" disabled>Refresh all</button></nav>

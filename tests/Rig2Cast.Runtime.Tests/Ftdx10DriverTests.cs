@@ -447,7 +447,6 @@ public sealed class Ftdx10DriverTests
         transport.Add("ID;", "ID0761;");
         transport.Add("FA014225000;");
         transport.Add("FB007125000;");
-        transport.Add("VS;", "VS0;");
         transport.Add("MD03;");
         transport.Add("ST1;");
         transport.Add("TX1;");
@@ -475,6 +474,19 @@ public sealed class Ftdx10DriverTests
         await driver.SetActiveVfoAsync(VfoId.B);
 
         Assert.True(driver.Capabilities.Vfos.Selection.Access.HasFlag(Capabilities.FeatureAccess.Write));
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task ActiveModeWriteAlwaysUsesForegroundSelector()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("MD04;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+
+        await driver.SetModeAsync(RadioMode.Fm);
+
         transport.AssertComplete();
     }
 
@@ -683,10 +695,8 @@ public sealed class Ftdx10DriverTests
     {
         var transport = new ScriptedRadioTransport();
         transport.Add("ID;", "ID0761;");
-        transport.Add("VS;", "VS0;");
         transport.Add("MD0;", "MD02;");
         transport.Add("SH0;", "SH0013;");
-        transport.Add("VS;", "VS0;");
         transport.Add("MD0;", "MD02;");
         transport.Add("SH0020;");
         await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
@@ -917,7 +927,6 @@ public sealed class Ftdx10DriverTests
     {
         var transport = new ScriptedRadioTransport();
         transport.Add("ID;", "ID0761;");
-        transport.Add("VS;", "VS0;");
         transport.Add("MD0;", "MD02;");
         transport.Add("FS0;");
         await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
@@ -949,7 +958,6 @@ public sealed class Ftdx10DriverTests
         transport.Add("VS;", "VS0;");
         transport.Add("ST;", "ST0;");
         transport.Add("TX;", "TX0;");
-        transport.Add("VS;", "VS0;");
         transport.Add("MD0;", "MD02;");
         transport.Add("FS0;");
         Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);

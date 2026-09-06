@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.WebSockets;
+using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Rig2Cast.Abstractions.Capabilities;
@@ -36,6 +37,7 @@ public sealed record ConnectRequest(
 
 public sealed class RadioWebHost : IAsyncDisposable
 {
+    private static readonly TimeSpan WebTransmitLeaseDuration = TimeSpan.FromSeconds(10);
     private readonly RadioDriverCatalog _catalog = new();
     private readonly SystemSerialPortDiscovery _ports = new();
     private readonly SemaphoreSlim _registryGate = new(1, 1);
@@ -66,7 +68,7 @@ public sealed class RadioWebHost : IAsyncDisposable
             {
                 activeRadios = _radios.Count,
                 serverAllowsWrites = _serverAllowsWrites,
-                pttAvailable = false,
+                pttAvailable = true,
                 rawCatAvailable = false
             };
         }
@@ -94,7 +96,7 @@ public sealed class RadioWebHost : IAsyncDisposable
         finally { _registryGate.Release(); }
     }
 
-    public async Task<object> ConnectOrAttachAsync(ConnectRequest request, CancellationToken cancellationToken)
+    public async Task<WebConnectionResult> ConnectOrAttachAsync(ConnectRequest request, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(request.ClientId);
         await _registryGate.WaitAsync(cancellationToken);
@@ -146,21 +148,19 @@ public sealed class RadioWebHost : IAsyncDisposable
         return attachment;
     }
 
-    private static async Task<object> ConnectionResultAsync(
-        RadioEntry entry, ClientAttachment attachment, bool attachedExisting, CancellationToken cancellationToken) => new
-    {
+    private static async Task<WebConnectionResult> ConnectionResultAsync(
+        RadioEntry entry, ClientAttachment attachment, bool attachedExisting, CancellationToken cancellationToken) => new(
         entry.RadioId,
-        result = attachedExisting ? "attached" : "opened",
-        role = attachment.Role,
+        attachedExisting ? "attached" : "opened",
+        attachment.Role,
         attachment.IsOwner,
-        readOnly = attachment.Role == ClientRole.Observer,
-        message = attachedExisting
+        attachment.Role == ClientRole.Observer,
+        attachedExisting
             ? "This physical radio is already open. This page was attached to the existing connection read-only."
             : attachment.Role == ClientRole.Operator
                 ? "The radio was opened and this page has operator access."
                 : "The radio was opened read-only by server or connection policy.",
-        snapshot = await attachment.Session.GetSnapshotAsync(cancellationToken)
-    };
+        await attachment.Session.GetSnapshotAsync(cancellationToken));
 
     public async Task DetachAsync(string radioId, string clientId)
     {
@@ -173,7 +173,7 @@ public sealed class RadioWebHost : IAsyncDisposable
                 throw new KeyNotFoundException("This browser is not attached to that radio.");
         }
         finally { _registryGate.Release(); }
-        await attachment.Session.DisposeAsync();
+        await attachment.DisposeAsync();
     }
 
     public async Task CloseRadioAsync(string radioId, string clientId)
@@ -305,6 +305,96 @@ public sealed class RadioWebHost : IAsyncDisposable
     public ValueTask<RadioPassbandValue> ReadPassbandAsync(string radioId, string clientId, CancellationToken ct) => Session(radioId, clientId).ReadPassbandAsync(ct);
     public ValueTask WritePassbandAsync(string radioId, string clientId, int value, CancellationToken ct) => Session(radioId, clientId).SetPassbandAsync(value, ct);
 
+    public async ValueTask<RadioSnapshot> SetPttAsync(
+        string radioId, string clientId, bool enabled, CancellationToken cancellationToken)
+    {
+        ClientAttachment attachment = GetAttachment(radioId, clientId);
+        EnsurePttAuthorized(attachment);
+        await attachment.PttGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (enabled)
+            {
+                LeaseToken lease = attachment.TransmitLease is { } current && current.ExpiresAt > DateTimeOffset.UtcNow
+                    ? await attachment.Session.RenewLeaseAsync(current, WebTransmitLeaseDuration, cancellationToken).ConfigureAwait(false)
+                    : await attachment.Session.AcquireLeaseAsync(LeaseKinds.Transmit, WebTransmitLeaseDuration, cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await attachment.Session.SetPttAsync(true, lease, cancellationToken).ConfigureAwait(false);
+                    attachment.TransmitLease = lease;
+                }
+                catch
+                {
+                    try { await attachment.Session.ReleaseLeaseAsync(lease, CancellationToken.None).ConfigureAwait(false); }
+                    catch (InvalidLeaseException) { }
+                    attachment.TransmitLease = null;
+                    throw;
+                }
+            }
+            else
+            {
+                await StopPttCoreAsync(attachment, cancellationToken).ConfigureAwait(false);
+            }
+
+            return await attachment.Session.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            attachment.PttGate.Release();
+        }
+    }
+
+    public async ValueTask<PttLeaseStatus> RenewPttAsync(
+        string radioId, string clientId, CancellationToken cancellationToken)
+    {
+        ClientAttachment attachment = GetAttachment(radioId, clientId);
+        EnsurePttAuthorized(attachment);
+        await attachment.PttGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            LeaseToken current = attachment.TransmitLease
+                ?? throw new InvalidOperationException("PTT is not active for this browser.");
+            LeaseToken renewed = await attachment.Session.RenewLeaseAsync(
+                current, WebTransmitLeaseDuration, cancellationToken).ConfigureAwait(false);
+            attachment.TransmitLease = renewed;
+            return new PttLeaseStatus(renewed.ExpiresAt);
+        }
+        catch (InvalidLeaseException)
+        {
+            attachment.TransmitLease = null;
+            throw;
+        }
+        finally
+        {
+            attachment.PttGate.Release();
+        }
+    }
+
+    private static void EnsurePttAuthorized(ClientAttachment attachment)
+    {
+        if (!attachment.IsOwner || attachment.Role != ClientRole.Operator)
+            throw new UnauthorizedAccessException("Only the owning Operator page may control PTT.");
+    }
+
+    private static async ValueTask StopPttCoreAsync(
+        ClientAttachment attachment, CancellationToken cancellationToken)
+    {
+        LeaseToken lease = attachment.TransmitLease is { } current && current.ExpiresAt > DateTimeOffset.UtcNow
+            ? current
+            : await attachment.Session.AcquireLeaseAsync(
+                LeaseKinds.Transmit, TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await attachment.Session.SetPttAsync(false, lease, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            try { await attachment.Session.ReleaseLeaseAsync(lease, CancellationToken.None).ConfigureAwait(false); }
+            catch (InvalidLeaseException) { }
+            attachment.TransmitLease = null;
+        }
+    }
+
     public async Task StreamSnapshotsAsync(string radioId, string clientId, WebSocket socket, CancellationToken cancellationToken)
     {
         IRadioSession session = Session(radioId, clientId);
@@ -330,7 +420,47 @@ public sealed class RadioWebHost : IAsyncDisposable
         _registryGate.Dispose();
     }
 
-    private sealed record ClientAttachment(string ClientId, IRadioSession Session, bool IsOwner, ClientRole Role);
+    private sealed class ClientAttachment(
+        string clientId, IRadioSession session, bool isOwner, ClientRole role) : IAsyncDisposable
+    {
+        public string ClientId { get; } = clientId;
+        public IRadioSession Session { get; } = session;
+        public bool IsOwner { get; } = isOwner;
+        public ClientRole Role { get; } = role;
+        public SemaphoreSlim PttGate { get; } = new(1, 1);
+        public LeaseToken? TransmitLease { get; set; }
+
+        public async ValueTask DisposeAsync()
+        {
+            var failures = new List<Exception>();
+            await PttGate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (TransmitLease is { } lease && lease.ExpiresAt > DateTimeOffset.UtcNow)
+                {
+                    try { await Session.SetPttAsync(false, lease, CancellationToken.None).ConfigureAwait(false); }
+                    catch (Exception exception) when (exception is InvalidLeaseException or ObjectDisposedException) { }
+                    catch (Exception exception) { failures.Add(exception); }
+                    try { await Session.ReleaseLeaseAsync(lease, CancellationToken.None).ConfigureAwait(false); }
+                    catch (Exception exception) when (exception is InvalidLeaseException or ObjectDisposedException) { }
+                    catch (Exception exception) { failures.Add(exception); }
+                }
+                TransmitLease = null;
+                try { await Session.DisposeAsync().ConfigureAwait(false); }
+                catch (Exception exception) { failures.Add(exception); }
+            }
+            finally
+            {
+                PttGate.Release();
+                PttGate.Dispose();
+            }
+
+            if (failures.Count == 1)
+                ExceptionDispatchInfo.Capture(failures[0]).Throw();
+            if (failures.Count > 1)
+                throw new AggregateException("Web attachment cleanup encountered multiple failures.", failures);
+        }
+    }
 
     private sealed class RadioEntry(
         string radioId, string endpointKey, string endpointDisplay, string modelId, string manufacturer,
@@ -351,7 +481,7 @@ public sealed class RadioWebHost : IAsyncDisposable
 
         public async ValueTask DisposeAsync()
         {
-            foreach (ClientAttachment attachment in Attachments.Values) await attachment.Session.DisposeAsync();
+            foreach (ClientAttachment attachment in Attachments.Values) await attachment.DisposeAsync();
             Attachments.Clear();
             await Radio.DisposeAsync();
         }

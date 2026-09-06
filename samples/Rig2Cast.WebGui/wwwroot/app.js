@@ -5,7 +5,10 @@ let models = [],
     busy = false,
     radioId = null,
     isOwner = false,
-    clientRole = 'Observer';
+    clientRole = 'Observer',
+    pttLeaseActive = false,
+    pttRenewalTimer = null;
+const frequencyWriteTimers = new Map();
 const clientId = sessionStorage.getItem('rig2castClientId') || crypto.randomUUID();
 sessionStorage.setItem('rig2castClientId', clientId);
 const ui = {
@@ -62,7 +65,8 @@ function setBusy(value) {
     document.body.classList.toggle('busy', value);
     ui.connect.disabled = value || connected();
     ui.disconnect.disabled = value || !connected();
-    ui.refresh.disabled = value || !connected()
+    ui.refresh.disabled = value || !connected();
+    if ($('ptt') && snapshot) $('ptt').disabled = value || !canControlPtt()
 }
 async function run(action, label) {
     if (busy) return;
@@ -153,6 +157,7 @@ async function connect() {
     log(`${result.message} Radio ID: ${radioId}.`)
 }
 async function disconnect() {
+    stopPttRenewal();
     if (ws) {
         ws.onclose = null;
         ws.close();
@@ -169,6 +174,7 @@ async function disconnect() {
     radioId = null;
     isOwner = false;
     clientRole = 'Observer';
+    pttLeaseActive = false;
     ui.disconnect.textContent = 'Disconnect';
     renderOffline();
     status('Offline', action);
@@ -203,6 +209,7 @@ function renderSnapshot(rebuild = true) {
     $('radio-summary').textContent = `VFO ${s.activeVfo} · ${s.mode} · Split ${s.isSplit ? 'ON' : 'OFF'} · ${s.isTransmitting ? 'TX' : 'RX'} · ${clientRole}`;
     $('connection-badge').textContent = `${s.connection} · ${clientRole.toUpperCase()}`;
     $('connection-badge').className = 'badge online';
+    renderPtt(c, s);
     renderVfos(c, s, writes);
     renderCore(c, s, writes);
     if (rebuild) {
@@ -218,8 +225,112 @@ function renderVfos(c, s, writes) {
     deck.className = 'vfo-deck';
     deck.innerHTML = c.vfos.available.map(v => {
         const hz = s.frequenciesHz[v] ?? s.vfos?.[v]?.frequencyHz ?? 0;
-        return `<article class="vfo-card ${v === s.activeVfo ? 'active' : ''}"><span class="vfo-role">${v === s.activeVfo ? 'ACTIVE · RX' : v === s.transmitVfo ? 'TX' : 'STANDBY'}</span><div class="vfo-name">VFO ${esc(v)}</div><div class="frequency">${frequencyText(hz)}</div><div class="frequency-editor"><input id="freq-${v}" type="number" value="${hz}"><button ${writes && access(c.frequency.feature, 'write') ? '' : 'disabled'} onclick="writeFrequency('${v}')">Apply</button></div></article>`
+        const writable = writes && access(c.frequency.feature, 'write') && c.frequency.targets.some(x => String(x).toLowerCase() === String(v).toLowerCase());
+        const splitTx = s.isSplit && v === s.transmitVfo;
+        const role = v === s.activeVfo ? `ACTIVE · RX${splitTx ? ' · TX' : ''}` : splitTx ? 'SPLIT · TX' : 'STANDBY';
+        const hint = writable ? 'Mouse wheel: base step; Shift: 10×; Ctrl: 100×' : '';
+        return `<article class="vfo-card ${v === s.activeVfo ? 'active' : ''} ${splitTx ? 'split-tx' : ''}"><span class="vfo-role">${role}</span><div class="vfo-name">VFO ${esc(v)}</div><div class="frequency ${writable ? 'tunable' : ''}" title="${hint}" onwheel="tuneFrequency(event, '${v}')">${frequencyText(hz)}</div><div class="frequency-editor"><input id="freq-${v}" type="number" value="${hz}"><button ${writable ? '' : 'disabled'} onclick="writeFrequency('${v}')">Apply</button></div></article>`
     }).join('')
+}
+
+function canControlPtt() {
+    return !!snapshot && isOwner && clientRole.toLowerCase() === 'operator' &&
+        snapshot.authorization.canControl && access(snapshot.capabilities.transmit, 'write')
+}
+
+function renderPtt(c, s) {
+    const button = $('ptt');
+    button.textContent = s.isTransmitting ? 'PTT ON' : 'PTT OFF';
+    button.classList.toggle('transmitting', s.isTransmitting);
+    button.disabled = busy || !canControlPtt();
+    button.title = button.disabled
+        ? 'PTT requires the owning Operator page and writable transmit capability.'
+        : 'Toggle PTT. A 10-second safety lease is renewed every 5 seconds while active.';
+    if (!s.isTransmitting) {
+        pttLeaseActive = false;
+        stopPttRenewal()
+    }
+}
+
+function startPttRenewal() {
+    stopPttRenewal();
+    pttRenewalTimer = setInterval(renewPtt, 5000)
+}
+
+function stopPttRenewal() {
+    if (pttRenewalTimer !== null) clearInterval(pttRenewalTimer);
+    pttRenewalTimer = null
+}
+
+async function renewPtt() {
+    if (!pttLeaseActive || !connected()) return stopPttRenewal();
+    try {
+        await api(`/radios/${radioId}/ptt/renew`, { method: 'POST' })
+    } catch (e) {
+        pttLeaseActive = false;
+        stopPttRenewal();
+        status('PTT renewal failed', `${e.message} The safety lease will force RX.`, 'error');
+        log(`PTT renewal failed: ${e.message}`, 'ERROR');
+        try {
+            snapshot = await api(`/radios/${radioId}/ptt`, {
+                method: 'PUT',
+                body: JSON.stringify({ value: false })
+            });
+            renderSnapshot(false)
+        } catch {}
+    }
+}
+
+window.togglePtt = () => run(async () => {
+    const enable = !snapshot.state.isTransmitting;
+    snapshot = await api(`/radios/${radioId}/ptt`, {
+        method: 'PUT',
+        body: JSON.stringify({ value: enable })
+    });
+    pttLeaseActive = enable;
+    if (enable) startPttRenewal(); else stopPttRenewal();
+    renderSnapshot(false)
+}, snapshot?.state.isTransmitting ? 'PTT released.' : 'PTT enabled with a 10-second safety lease.');
+
+function nearestAllowedFrequency(value, ranges) {
+    if (!ranges?.length) return value;
+    for (const range of ranges)
+        if (value >= range.minimumHz && value <= range.maximumHz) return value;
+    const boundaries = ranges.flatMap(range => [range.minimumHz, range.maximumHz]);
+    return boundaries.reduce((nearest, candidate) =>
+        Math.abs(candidate - value) < Math.abs(nearest - value) ? candidate : nearest)
+}
+
+window.tuneFrequency = (event, vfo) => {
+    const c = snapshot?.capabilities.frequency;
+    if (!c || !snapshot.authorization.canControl || !access(c.feature, 'write') ||
+        !c.targets.some(x => String(x).toLowerCase() === String(vfo).toLowerCase())) return;
+    event.preventDefault();
+    const step = Math.max(1, c.smallestStepHz || 1) * (event.ctrlKey ? 100 : event.shiftKey ? 10 : 1);
+    const current = snapshot.state.frequenciesHz[vfo] ?? snapshot.state.vfos?.[vfo]?.frequencyHz;
+    if (!Number.isFinite(current)) return;
+    const next = nearestAllowedFrequency(current + (event.deltaY < 0 ? step : -step), c.ranges);
+    snapshot.state.frequenciesHz[vfo] = next;
+    if (snapshot.state.vfos?.[vfo]) snapshot.state.vfos[vfo].frequencyHz = next;
+    renderVfos(snapshot.capabilities, snapshot.state, true);
+    clearTimeout(frequencyWriteTimers.get(vfo));
+    frequencyWriteTimers.set(vfo, setTimeout(() => commitWheelFrequency(vfo, next), 200))
+};
+
+async function commitWheelFrequency(vfo, value) {
+    frequencyWriteTimers.delete(vfo);
+    try {
+        snapshot = await api(`/radios/${radioId}/frequency/${vfo}`, {
+            method: 'PUT',
+            body: JSON.stringify({ value })
+        });
+        renderSnapshot(false)
+    } catch (e) {
+        status('Frequency update failed', e.message, 'error');
+        log(`VFO ${vfo}: ${e.message}`, 'ERROR');
+        try { snapshot = await api(`/radios/${radioId}/snapshot`) } catch {}
+        renderSnapshot(false)
+    }
 }
 
 function renderCore(c, s, writes) {
@@ -434,10 +545,17 @@ window.writePassband = () => run(async () => {
 }, 'Passband updated.');
 
 function renderOffline() {
+    stopPttRenewal();
+    pttLeaseActive = false;
+    for (const timer of frequencyWriteTimers.values()) clearTimeout(timer);
+    frequencyWriteTimers.clear();
     $('radio-title').textContent = 'No radio connected';
     $('radio-summary').textContent = 'Capability-driven controls appear after connection.';
     $('connection-badge').textContent = 'OFFLINE';
     $('connection-badge').className = 'badge offline';
+    $('ptt').textContent = 'PTT OFF';
+    $('ptt').className = 'ptt';
+    $('ptt').disabled = true;
     $('vfo-deck').className = 'vfo-deck empty';
     $('vfo-deck').innerHTML = '<div class="empty-state">Connect to display the radio\'s advertised VFO topology.</div>';
     $('core-card').className = 'panel empty-state';
@@ -453,6 +571,7 @@ $('refresh-ports').onclick = () => run(loadPorts, 'Serial ports refreshed.');
 ui.connect.onclick = () => run(connect);
 ui.disconnect.onclick = () => run(disconnect);
 ui.refresh.onclick = () => run(refreshAll, 'All readable values refreshed.');
+$('ptt').onclick = window.togglePtt;
 $('clear-log').onclick = () => $('log').textContent = '';
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
     document.querySelectorAll('.tab,.tab-page').forEach(x => x.classList.remove('active'));
