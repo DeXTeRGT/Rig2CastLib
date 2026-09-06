@@ -95,6 +95,14 @@ to `ReceiverId receiver`. Frequency operations retain an explicit VFO overload
 where the hardware exposes VFO registers and gain a receiver-targeted form for
 radios whose protocol tunes receiver paths directly.
 
+A future additive API may also target mode and passband by stable `VfoId` when a
+radio can modify an inactive tuning register directly. This is distinct from a
+receiver-targeted mode operation: the driver must translate the stable VFO identity
+to any protocol-relative foreground/background selector at execution time. Drivers
+must advertise this capability explicitly, serialize the translation and command,
+and refresh authoritative state afterward. Radios without that facility continue to
+offer only active-context or receiver-targeted mode operations.
+
 ## Initial driver mappings
 
 ### Yaesu FTDX10

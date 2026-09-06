@@ -39,6 +39,17 @@ PTT is available only to the owning Operator page when the radio advertises writ
 
 Writable VFO frequency displays support mouse-wheel tuning using the driver's smallest advertised step. Hold Shift for 10x or Ctrl for 100x. Split transmit VFO cards use a red border while the active receive VFO remains cyan.
 
+These interactions were physically validated on an FTDX10 on 2026-09-06: wheel
+tuning addressed the intended VFO with each modifier, the split transmit border
+followed the TX VFO, PTT toggled normally, and loss of browser renewal returned the
+radio to RX after the lease safety window.
+
+Known deferred presentation gap: the passband field does not yet reliably retain its
+read value across WebSocket redraws or derive its discrete/ranged limits from the
+current mode's passband constraint. Driver/runtime passband support is present, and
+the existing Filter Width and roofing-filter controls remain available until the
+canonical passband presentation is completed.
+
 REST operations on an attached radio require the browser's `X-Rig2Cast-Client` identity header. This identity separates sessions but is not authentication; the POC must remain on a trusted network or VPN.
 
 Only the FTDX10 simulator is included in this first POC. All built-in models can connect over their advertised physical transports.

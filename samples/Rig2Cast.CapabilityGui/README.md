@@ -84,6 +84,12 @@ one-time targeted refresh when a mode transition makes a control newly readable.
 Tooltips list restricted read, write, and operational modes. These facts come from
 driver descriptors; the GUI contains no model-specific mode table.
 
+Known deferred presentation gap: the runtime's canonical passband capability is not
+yet rendered as a dedicated editor. Radios such as the FTDX10 still expose their
+generic Filter Width and roofing-filter controls. A future update should populate
+passband from the selected receiver state, apply mode-specific constraints, and avoid
+showing duplicate controls for the same radio function.
+
 The connection-time **Mode restrictions** selector aligns presentation with the
 runtime policy. **Enforce** disables and skips inapplicable controls and configures
 `ManagedRadio` to reject those operations before CAT I/O. **Advisory** retains the

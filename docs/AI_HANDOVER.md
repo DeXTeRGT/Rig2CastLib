@@ -48,8 +48,8 @@ categories later, but do not generalize prematurely.
 - Solution: `Rig2Cast\Rig2Cast.sln`
 - Target framework: .NET 8
 - Shell: PowerShell
-- Current baseline commit before the active Web GUI UX work: `da579d9`
-- Current expected automated suite with the active Web GUI UX and FTDX10 mode fix: **330 passing tests**.
+- Current baseline commit: `2a527cd`
+- Current expected automated suite: **330 passing tests**.
 
 Git may report dubious ownership because Codex and the interactive Windows user
 have different SIDs. Do not modify the user's global Git configuration. For
@@ -59,17 +59,16 @@ read-only Git commands use:
 git -c safe.directory=C:/HAM_RADIO/PROJECTS/HAMLIB_PORT/Rig2Cast -C Rig2Cast status --short
 ```
 
-Commit `da579d9` contains the completed runtime/protocol hardening milestone. The
-current worktree contains Web GUI UX work based on that commit: split transmit-VFO
-highlighting, capability-derived mouse-wheel tuning, and owner-only PTT backed by a
-10-second transmit lease renewed every five seconds by the controlling browser. A
+Commit `2a527cd` contains the completed Web GUI UX and FTDX10 mode milestone:
+split transmit-VFO highlighting, capability-derived mouse-wheel tuning, and
+owner-only PTT backed by a 10-second transmit lease renewed every five seconds by
+the controlling browser. A
 simulator-backed Web-host regression test covers authorization, renewal, and forced
 RX when the owner attachment is disposed. FTDX10 active-mode writes and mode-dependent
 control context now consistently use `MD0` as the foreground selector; `MD1` is the
 background selector, not absolute VFO B. The full runtime test project passes 330
-tests. No commit has been made for this milestone. Preserve all existing
-changes and always inspect the actual status rather than assuming this list is
-exhaustive.
+tests. The milestone was physically validated and committed on 2026-09-06. Always
+inspect the actual status rather than assuming this description is exhaustive.
 
 Always run `git status --short` before editing because the state may have changed
 after this document was written.
@@ -187,8 +186,8 @@ Not implemented or not integrated yet:
   Legacy Yaesu binary CAT is not implemented.
 - A compiled C# declarative descriptor engine and declarative example plugin are
   implemented. An external JSON/YAML driver-definition format is not implemented.
-- The latest renewable-PTT and receiver-targeted physical checks listed in section 7
-  still require explicit user confirmation.
+- The latest Web GUI UX, renewable-PTT, and FTDX10 active-mode changes were
+  physically validated on 2026-09-06 as recorded in section 7.
 
 ## 5. Architectural invariants
 
@@ -354,9 +353,7 @@ Physically validated during the development session:
 - K3S `RVM;` returns and parses firmware 5.62.
 - K3S firmware 5.62 no longer advertises or sends unsupported `SW;`.
 - K3S `TQ;` distinguishes physical TX/RX after refresh.
-- CAT PTT on/off and settled readback work. The user reported the requested PTT
-  safety scenarios working on available hardware before the latest continuous
-  renewal refactor.
+- CAT PTT on/off and settled readback work on available hardware.
 - Explicit signal-path reporting was physically validated on 2026-09-02 on both
   radios. With split off, FTDX10 and K3S reported `main <- VFO A` for receive and
   transmit. With split on, both continued receiving on `main <- VFO A` and
@@ -364,15 +361,28 @@ Physically validated during the development session:
   transmit path to A. The FTDX10 legacy `TransmitVfo` intentionally continued to
   report its configured split VFO B while split was off.
 
-Implemented and automatically tested, but awaiting an explicit new hardware
-confirmation after the latest changes:
+Physically validated on 2026-09-06 after the Web GUI UX and FTDX10 mode changes:
 
-- New semantics where bare `ptt on` renews until `ptt off`.
-- Receiver-targeted `set frequency main ...` and `set mode main ...` for both
-  physical drivers.
-- Explicit rejection of `sub` frequency/mode on the user's no-sub K3S.
+- FTDX10 mode changes work with either VFO A or VFO B selected. Active-mode writes
+  correctly use the foreground `MD0` selector.
+- Mouse-wheel tuning changes each intended VFO using the advertised base step and
+  the documented Shift 10x and Ctrl 100x modifiers.
+- In split mode, the Web GUI red border follows the transmit VFO while the active
+  receive VFO remains highlighted separately.
+- Web PTT toggles normally. Closing the controlling browser or stopping lease
+  renewal lets the 10-second transmit lease expire and forces the radio back to RX.
+- The final automated checkpoint passed: the complete 330-test suite, Web GUI and
+  Capability GUI builds, JavaScript syntax validation, `git diff --check`, and a
+  review of the complete diff.
 
-Do not claim these latest items physically validated until the user confirms.
+Still awaiting explicit confirmation from the earlier Console/runtime validation
+list:
+
+- On each available radio, bare Console `ptt on` remains keyed for 15–20 seconds
+  through lease renewal, and `ptt off` returns it to RX.
+- Receiver-targeted `set frequency main ...` and `set mode main ...` work on the
+  FTDX10 and K3S.
+- Unsupported K3S `sub` frequency/mode operations reject without disconnecting.
 
 ## 8. Diagnostic Console grammar
 
@@ -605,21 +615,12 @@ Read `docs/rigctld-adapter.md` before adapter changes.
 
 ## 12. Next milestones in recommended order
 
-### Milestone 1: checkpoint and preserve the current baseline
+### Milestone 1: checkpoint and preserve the current baseline — complete
 
-Before another structural milestone:
-
-1. Run all 258 tests, build the Console, and run `git diff --check`.
-2. Review the intentionally dirty worktree as one coherent change set. Do not
-   discard or rewrite earlier user work and do not commit without explicit approval.
-3. Ask the user for the outstanding physical confirmation:
-   - On each radio, run bare `ptt on`, wait 15-20 seconds, confirm it remains on,
-     then run `ptt off` and confirm RX.
-   - Test receiver-targeted main frequency/mode on FTDX10 and K3S.
-   - Confirm unsupported K3S sub frequency/mode rejects without disconnecting.
-
-Automated evidence is already sufficient to continue non-hardware work; physical
-validation is a release-confidence checkpoint, not permission to weaken safety.
+The Web GUI UX/PTT and FTDX10 foreground-mode batch passed its 330-test automated
+checkpoint, application builds, JavaScript syntax check, `git diff --check`, diff
+review, and physical validation. It was committed and pushed as `2a527cd` on
+2026-09-06.
 
 ### Milestone 2: integrate plugins into a composition host
 
@@ -1109,6 +1110,23 @@ Implement this as another binary family engine, not as an FTDX10 ASCII extension
 
 ### Later roadmap
 
+- Complete canonical passband presentation in both reference GUIs. The driver and
+  runtime passband APIs already exist, but the Capability GUI does not render a
+  dedicated passband editor and the Web GUI recreates its field without reliably
+  retaining the read value or applying the current mode's constraint. Future work
+  should populate the selected receiver's `PassbandHz`, use discrete or ranged
+  `PassbandCapability.ByMode` values, update on mode/state changes, and suppress the
+  duplicate generic Filter Width choice when canonical passband is shown. This is a
+  lower-priority presentation gap because the existing Filter Width and roofing-
+  filter controls remain available.
+- Add capability-driven, VFO-targeted mode and passband operations for radios that
+  can address a persistent background VFO directly. Keep the public target as a
+  stable `VfoId`; drivers such as the FTDX10 must translate that identity to their
+  current foreground/background selectors (`MD0`/`MD1`) inside a serialized
+  operation and refresh authoritative state afterward. Preserve the existing active-
+  mode and receiver-targeted APIs. This is a convenience extension, not a current
+  correctness or safety defect, and must not be implemented by temporarily switching
+  the operator's active VFO.
 - Add an application-facing, read-only inbound protocol-frame fan-out after framing
   and CAT response routing. It must publish immutable/copy-owned complete frames,
   never expose transport writes, never steal correlated responses, support multiple
