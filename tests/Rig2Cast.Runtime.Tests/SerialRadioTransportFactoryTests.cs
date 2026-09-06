@@ -2,6 +2,7 @@ using System.IO.Ports;
 using Rig2Cast.Abstractions.Drivers;
 using Rig2Cast.Drivers.Elecraft.K3Family;
 using Rig2Cast.Drivers.Icom.Ic7300;
+using Rig2Cast.Drivers.Icom.Ic7600;
 using Rig2Cast.Drivers.Xiegu.G90;
 using Rig2Cast.Drivers.Yaesu.Ftdx10;
 using Rig2Cast.Transports.Serial;
@@ -18,6 +19,7 @@ public sealed class SerialRadioTransportFactoryTests
             .. new Ftdx10DriverFactory().Descriptor.Models,
             .. new ElecraftK3DriverFactory().Descriptor.Models,
             .. new Ic7300DriverFactory().Descriptor.Models,
+            .. new Ic7600DriverFactory().Descriptor.Models,
             .. new G90DriverFactory().Descriptor.Models
         ];
 

@@ -25,7 +25,7 @@ Run from the repository root:
 dotnet run --project samples\Rig2Cast.CapabilityGui\Rig2Cast.CapabilityGui.csproj
 ```
 
-The FTDX10, IC-7300, and G90 can be exercised without hardware using Simulator.
+The FTDX10, IC-7300, IC-7600, and G90 can be exercised without hardware using Simulator.
 The small sample does not include an Elecraft simulator peer; use serial or raw TCP
 for Elecraft hardware.
 

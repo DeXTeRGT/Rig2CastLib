@@ -299,7 +299,6 @@ internal static class DriverConformance
     {
         RadioCapabilities capabilities = driver.Capabilities;
         Assert.False(string.IsNullOrWhiteSpace(capabilities.DriverId));
-        Assert.NotEmpty(capabilities.Vfos.Available);
         Assert.NotEmpty(capabilities.Receivers.Available);
         Assert.NotEmpty(capabilities.Modes.Values);
         AssertFeature(capabilities.Frequency.Feature);
@@ -315,9 +314,11 @@ internal static class DriverConformance
         AssertReceiverTargets(capabilities, capabilities.Passband.ReceiverTargets);
         AssertSubset(capabilities.Passband.Targets, capabilities.Vfos.Available);
 
-        if (capabilities.Frequency.ReceiverTargets.Count > 0)
+        if (capabilities.Frequency.Feature.Access.HasFlag(FeatureAccess.Write) &&
+            capabilities.Frequency.ReceiverTargets.Count > 0)
             Assert.IsAssignableFrom<IRadioReceiverFrequencyDriver>(driver);
-        if (capabilities.Modes.ReceiverTargets.Count > 0)
+        if (capabilities.Modes.Feature.Access.HasFlag(FeatureAccess.Write) &&
+            capabilities.Modes.ReceiverTargets.Count > 0)
             Assert.IsAssignableFrom<IRadioReceiverModeDriver>(driver);
         if (IsAvailable(capabilities.Passband.Feature))
             Assert.IsAssignableFrom<IRadioPassbandDriver>(driver);
@@ -359,8 +360,16 @@ internal static class DriverConformance
 
     public static void AssertState(RadioCapabilities capabilities, RadioState state)
     {
-        Assert.Contains(state.ActiveVfo, capabilities.Vfos.Available);
-        Assert.Contains(state.TransmitVfo, capabilities.Vfos.Available);
+        if (capabilities.Vfos.Available.Count > 0)
+        {
+            Assert.Contains(state.ActiveVfo, capabilities.Vfos.Available);
+            Assert.Contains(state.TransmitVfo, capabilities.Vfos.Available);
+        }
+        else
+        {
+            Assert.Empty(state.FrequenciesHz);
+            Assert.Empty(state.Vfos);
+        }
         Assert.Contains(state.Mode, capabilities.Modes.Values);
         Assert.Contains(state.SelectedReceiver, capabilities.Receivers.Available.Keys);
         if (state.TransmitReceiver is ReceiverId transmitReceiver)

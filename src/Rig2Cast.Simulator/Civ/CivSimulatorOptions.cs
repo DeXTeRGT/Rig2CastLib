@@ -38,6 +38,12 @@ public sealed record CivSimulatorOptions
 
     public bool SupportsStandardIdentity { get; init; } = true;
 
+    public byte? StandardIdentity { get; init; }
+
+    public bool SupportsIc7600ReceiverCommands { get; init; }
+
+    public bool InitialDualWatch { get; init; }
+
     public int ResponseFragmentLength { get; init; } = int.MaxValue;
 
     public TimeSpan ResponseDelay { get; init; } = TimeSpan.Zero;

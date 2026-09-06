@@ -24,6 +24,7 @@ public sealed class CivRadioSimulator : IAsyncDisposable
     private bool _backgroundDataMode;
     private byte _activeVfo;
     private bool _split;
+    private bool _dualWatch;
     private bool _transmitting;
     private readonly Dictionary<byte, int> _levels = new()
     {
@@ -78,6 +79,7 @@ public sealed class CivRadioSimulator : IAsyncDisposable
         _activeVfo = _options.InitialActiveVfo;
         _passbandCode = _options.InitialPassbandCode;
         _split = _options.InitialSplit;
+        _dualWatch = _options.InitialDualWatch;
         _transmitting = _options.InitialTransmitting;
         _runLoop = RunAsync();
     }
@@ -306,11 +308,26 @@ public sealed class CivRadioSimulator : IAsyncDisposable
             return Reply([CivSession.Acknowledgement]);
         }
         if (_options.SupportsStandardIdentity && message.SequenceEqual(new byte[] { 0x19, 0x00 }))
-            return Reply([0x19, 0x00, _options.RadioAddress]);
+            return Reply([0x19, 0x00, _options.StandardIdentity ?? _options.RadioAddress]);
         if (_options.SupportsXieguIdentity && message.SequenceEqual(new byte[] { 0x1D, 0x19 }))
             return Reply([0x1D, 0x19, 0x00, 0x90]);
         if (message.SequenceEqual(new byte[] { 0x1C, 0x00 }))
             return Reply([0x1C, 0x00, ReadTransmitting() ? (byte)0x01 : (byte)0x00]);
+        if (_options.SupportsIc7600ReceiverCommands && message.Length == 2 && message[0] == 0x25 &&
+            message[1] is 0x00 or 0x01)
+            return Reply([0x25, message[1], .. CivBcd.Encode(ReadAbsoluteReceiverFrequency(message[1]), 5)]);
+        if (_options.SupportsIc7600ReceiverCommands && message.Length == 2 && message[0] == 0x26 &&
+            message[1] is 0x00 or 0x01)
+        {
+            (byte mode, bool dataMode, byte filter) = ReadAbsoluteReceiverMode(message[1]);
+            return Reply([0x26, message[1], mode, dataMode ? (byte)0x01 : (byte)0x00, filter]);
+        }
+        if (_options.SupportsIc7600ReceiverCommands && message.SequenceEqual(new byte[] { 0x07, 0xD2 }))
+            return Reply([0x07, 0xD2, ReadActiveVfo()]);
+        if (_options.SupportsIc7600ReceiverCommands && message.SequenceEqual(new byte[] { 0x07, 0xC2 }))
+            return Reply([0x07, 0xC2, ReadDualWatch() ? (byte)0x01 : (byte)0x00]);
+        if (_options.SupportsIc7600ReceiverCommands && message.SequenceEqual(new byte[] { 0x1C, 0x03 }))
+            return Reply([0x1C, 0x03, .. CivBcd.Encode(ReadSplit() ? ReadFrequency(0x01) : ReadFrequency(0x00), 5)]);
         if (_options.SupportsXieguExtendedVfo && message.Length == 2 && message[0] == 0x25 &&
             message[1] is 0x00 or 0x01)
             return Reply([0x25, ReadActiveVfo(), .. CivBcd.Encode(ReadRelativeVfoFrequency(message[1]), 5)]);
@@ -395,6 +412,28 @@ public sealed class CivRadioSimulator : IAsyncDisposable
     {
         lock (_stateGate)
             return _split;
+    }
+
+    private bool ReadDualWatch()
+    {
+        lock (_stateGate)
+            return _dualWatch;
+    }
+
+    private long ReadAbsoluteReceiverFrequency(byte receiver) => ReadFrequency(receiver);
+
+    private long ReadFrequency(byte receiver)
+    {
+        lock (_stateGate)
+            return receiver == 0x00 ? _frequencyHz : _backgroundFrequencyHz;
+    }
+
+    private (byte Mode, bool DataMode, byte Filter) ReadAbsoluteReceiverMode(byte receiver)
+    {
+        lock (_stateGate)
+            return receiver == 0x00
+                ? (_mode, _dataMode, _filter)
+                : (_backgroundMode, _backgroundDataMode, _backgroundFilter);
     }
 
     private bool ReadTransmitting()

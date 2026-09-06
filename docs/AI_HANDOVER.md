@@ -1,6 +1,6 @@
 # Rig2Cast AI development handover
 
-Last updated: 2026-09-06 (Europe/Bucharest)
+Last updated: 2026-09-07 (Europe/Bucharest)
 
 This document is the continuity source for an AI agent resuming development of
 Rig2Cast. Read it before modifying code. Then read the architecture and decision
@@ -48,8 +48,9 @@ categories later, but do not generalize prematurely.
 - Solution: `Rig2Cast\Rig2Cast.sln`
 - Target framework: .NET 8
 - Shell: PowerShell
-- Current baseline commit: `57c54cc`
-- Current expected automated suite: **342 passing tests**.
+- Current baseline commit: `8916e98`
+- Current expected automated suite: **346 passing tests** with the uncommitted
+  initial IC-7600 batch described below.
 
 Git may report dubious ownership because Codex and the interactive Windows user
 have different SIDs. Do not modify the user's global Git configuration. For
@@ -115,6 +116,28 @@ FTDX10 timeout handling, Elecraft committed-write cancellation, and the G90 opti
 probe with a cancellation-ignoring reader. Do not duplicate identical protocol
 fault tests across every model profile.
 
+The worktree after `8916e98` contains the approved initial IC-7600 driver batch.
+The official local reference is `tcvr_manuals/IC-7600_ENG_4.pdf`; its CI-V command
+table is on PDF pages 169-174 and its SHA-256 is recorded in
+`docs/protocol-sources/icom-ic7600.md`. The PDF remains untracked and must not be
+committed. The model ID is `icom.ic-7600`, the default address/identity is `7A`, and
+the exact published serial rates are 300, 1200, 4800, 9600, and 19200 baud.
+
+This first slice is read-only. It verifies identity with `19 00`; reads absolute
+Main/Sub frequency and mode with `25 00/01` and `26 00/01`; reads selected Main/Sub,
+dualwatch, split, and TX state with `07 D2`, `07 C2`, `0F`, and `1C 00`; and publishes
+Main/Sub as receivers without inventing stable VFO A/B identities. Main is the
+normal transmit receiver and split routes transmit through Sub. Supported initial
+modes are LSB, USB, AM, CW, CW-R, FM, and DATA variants based on LSB/USB/FM. RTTY and
+PSK variants are intentionally deferred at the maintainer's request. The shared
+CI-V simulator covers these receiver-aware reads and fixed model identity when the
+operator changes the destination address. Four IC-7600 fixtures cover metadata,
+topology/routing, mutation rejection, excluded modes, and configurable addressing.
+The Console, Capability GUI, and Web GUI catalogs register the model; the Console
+and Capability GUI also provide its CI-V simulator peer. Full validation on
+2026-09-07 passed 346/346 tests, and the Console, Capability GUI, and Web GUI builds
+passed with zero warnings. No physical IC-7600 validation has occurred yet.
+
 Always run `git status --short` before editing because the state may have changed
 after this document was written.
 
@@ -141,6 +164,8 @@ after this document was written.
   with model profiles and option/firmware-dependent capabilities.
 - `src/Rig2Cast.Drivers.Icom/Ic7300`: documented, simulator-validated IC-7300 CI-V
   driver with configurable addresses and the implemented common controls.
+- `src/Rig2Cast.Drivers.Icom/Ic7600`: initial documented, simulator-validated,
+  read-only IC-7600 CI-V driver with explicit Main/Sub receiver topology.
 - `src/Rig2Cast.Drivers.Xiegu/G90`: physically validated Xiegu G90 CI-V driver,
   including its firmware-aware identity fallback and G90-specific VFO behavior.
 
@@ -197,8 +222,8 @@ Implemented and covered by automated tests:
   and event timestamps. The FTDX10 and Elecraft K3-family factories also accept a
   clock and propagate it to every driver-produced timestamp while retaining
   parameterless constructors and `TimeProvider.System` defaults.
-- Built-in Yaesu FTDX10, Elecraft K3-family, Icom IC-7300, and Xiegu G90 factories
-  and drivers.
+- Built-in Yaesu FTDX10, Elecraft K3-family, Icom IC-7300, Icom IC-7600, and Xiegu
+  G90 factories and drivers. The IC-7600 is currently an initial read-only slice.
 - Plugin-host library foundation: strict manifests, exact API compatibility,
   SHA-256 trust, safe entry paths, descriptor matching, duplicate handling,
   collectible load contexts, and per-manifest diagnostics.
@@ -1269,9 +1294,9 @@ dotnet build .\Rig2Cast\samples\Rig2Cast.Console\Rig2Cast.Console.csproj --no-re
 dotnet build .\Rig2Cast\samples\Rig2Cast.WebGui\Rig2Cast.WebGui.csproj --no-restore -p:UseAppHost=false
 ```
 
-Then compare the result with the expected 334 tests and inspect changes made after
+Then compare the result with the expected 346 tests and inspect changes made after
 this handover. For Web work, run `dotnet run --project
 .\Rig2Cast\samples\Rig2Cast.WebGui` and read its README before changing registry,
-ownership, authorization, or WebSocket behavior. The recommended next work is Web
-POC hardening or, after an explicit maintainer decision, the legacy Yaesu binary CAT
-milestone.
+ownership, authorization, or WebSocket behavior. Complete physical IC-7600 validation
+before labeling its initial slice hardware-tested; then add write operations and
+controls in reviewed batches selected from the official command table.

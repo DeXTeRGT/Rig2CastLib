@@ -1,6 +1,7 @@
 using Rig2Cast.Abstractions.Drivers;
 using Rig2Cast.Drivers.Elecraft.K3Family;
 using Rig2Cast.Drivers.Icom.Ic7300;
+using Rig2Cast.Drivers.Icom.Ic7600;
 using Rig2Cast.Drivers.Xiegu.G90;
 using Rig2Cast.Drivers.Yaesu.Ftdx10;
 
@@ -16,6 +17,7 @@ public sealed class DriverFactoryOwnershipTests
             new Ftdx10DriverFactory(),
             new ElecraftK3DriverFactory(),
             new Ic7300DriverFactory(),
+            new Ic7600DriverFactory(),
             new G90DriverFactory()
         ];
 

@@ -7,6 +7,7 @@ built-in CAT driver families:
 - Elecraft K3S, K3, KX3, and KX2 (`elecraft.k3s`, `elecraft.k3`,
   `elecraft.kx3`, `elecraft.kx2`)
 - Icom IC-7300 (`icom.ic-7300`)
+- Icom IC-7600 (`icom.ic-7600`, initial read-only driver)
 - Xiegu G90 (`xiegu.g90`)
 
 The Console is a diagnostic and validation tool. It is not intended to replace a
@@ -170,6 +171,7 @@ before the value, for example `set frequency A 14100000`.
 | FTDX10 | 4800, 9600, 19200, 38400 | 38400 | 8 data bits, no parity, 2 stop bits, RTS/CTS |
 | Elecraft K3 family | 4800, 9600, 19200, 38400 | 38400 | 8 data bits, no parity, 1 stop bit, no handshake |
 | IC-7300 | 4800, 9600, 19200, 38400, 57600, 115200 | 19200 | 8 data bits, no parity, 1 stop bit, no handshake |
+| IC-7600 | 300, 1200, 4800, 9600, 19200 | 19200 | 8 data bits, no parity, 1 stop bit, no handshake |
 | Xiegu G90 | 19200 | 19200 | 8 data bits, no parity, 1 stop bit, no handshake |
 
 The selected rate must match the radio menu. IC-7300 rates above 19200 require the

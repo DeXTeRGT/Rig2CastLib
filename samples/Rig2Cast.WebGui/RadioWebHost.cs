@@ -14,6 +14,7 @@ using Rig2Cast.Abstractions.Transports;
 using Rig2Cast.Core.Drivers;
 using Rig2Cast.Drivers.Elecraft.K3Family;
 using Rig2Cast.Drivers.Icom.Ic7300;
+using Rig2Cast.Drivers.Icom.Ic7600;
 using Rig2Cast.Drivers.Xiegu.G90;
 using Rig2Cast.Drivers.Yaesu.Ftdx10;
 using Rig2Cast.Runtime.Sessions;
@@ -56,6 +57,7 @@ public sealed class RadioWebHost : IAsyncDisposable
         _catalog.Register(new Ftdx10DriverFactory());
         _catalog.Register(new ElecraftK3DriverFactory());
         _catalog.Register(new Ic7300DriverFactory());
+        _catalog.Register(new Ic7600DriverFactory());
         _catalog.Register(new G90DriverFactory());
     }
 

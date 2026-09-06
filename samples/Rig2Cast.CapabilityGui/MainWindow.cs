@@ -17,6 +17,7 @@ using Rig2Cast.Abstractions.Transports;
 using Rig2Cast.Core.Drivers;
 using Rig2Cast.Drivers.Elecraft.K3Family;
 using Rig2Cast.Drivers.Icom.Ic7300;
+using Rig2Cast.Drivers.Icom.Ic7600;
 using Rig2Cast.Drivers.Xiegu.G90;
 using Rig2Cast.Drivers.Yaesu.Ftdx10;
 using Rig2Cast.Runtime.Sessions;
@@ -105,6 +106,7 @@ public sealed class MainWindow : Window, IAsyncDisposable
         _catalog.Register(new Ftdx10DriverFactory());
         _catalog.Register(new ElecraftK3DriverFactory());
         _catalog.Register(new Ic7300DriverFactory());
+        _catalog.Register(new Ic7600DriverFactory());
         _catalog.Register(new G90DriverFactory());
 
         _modeApplicabilityPolicy.ItemsSource = Enum.GetValues<ModeApplicabilityPolicy>();
@@ -474,6 +476,7 @@ public sealed class MainWindow : Window, IAsyncDisposable
             return new SimulatedFtdx10Driver();
 
         if (!registration.Model.Id.Equals(Ic7300Profile.ModelId, StringComparison.OrdinalIgnoreCase) &&
+            !registration.Model.Id.Equals(Ic7600Profile.ModelId, StringComparison.OrdinalIgnoreCase) &&
             !registration.Model.Id.Equals(G90Profile.ModelId, StringComparison.OrdinalIgnoreCase))
             throw new NotSupportedException("This small sample has no Elecraft simulator peer; use serial or raw TCP.");
         byte radioAddress = resolved.Get<byte>("icom.civAddress");
@@ -484,6 +487,10 @@ public sealed class MainWindow : Window, IAsyncDisposable
         {
             RadioAddress = radioAddress,
             ControllerAddress = controllerAddress,
+            StandardIdentity = registration.Model.Id.Equals(Ic7600Profile.ModelId, StringComparison.OrdinalIgnoreCase)
+                ? Ic7600Profile.ModelIdentity
+                : null,
+            SupportsIc7600ReceiverCommands = registration.Model.Id.Equals(Ic7600Profile.ModelId, StringComparison.OrdinalIgnoreCase),
             SupportsXieguIdentity = registration.Model.Id.Equals(G90Profile.ModelId, StringComparison.OrdinalIgnoreCase),
             SupportsXieguExtendedVfo = registration.Model.Id.Equals(G90Profile.ModelId, StringComparison.OrdinalIgnoreCase)
         });

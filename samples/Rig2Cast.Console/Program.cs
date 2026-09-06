@@ -10,6 +10,7 @@ using Rig2Cast.Abstractions.Transports;
 using Rig2Cast.Core.Drivers;
 using Rig2Cast.Drivers.Elecraft.K3Family;
 using Rig2Cast.Drivers.Icom.Ic7300;
+using Rig2Cast.Drivers.Icom.Ic7600;
 using Rig2Cast.Drivers.Xiegu.G90;
 using Rig2Cast.Drivers.Yaesu.Ftdx10;
 using Rig2Cast.PluginHost;
@@ -49,6 +50,7 @@ var catalog = new RadioDriverCatalog();
 catalog.Register(new Ftdx10DriverFactory());
 catalog.Register(new ElecraftK3DriverFactory());
 catalog.Register(new Ic7300DriverFactory());
+catalog.Register(new Ic7600DriverFactory());
 catalog.Register(new G90DriverFactory());
 string? pluginConfigurationPath = GetOption(args, "--plugin-config");
 string[] additionalPluginDirectories = GetOptions(args, "--plugin-directory");
@@ -166,6 +168,7 @@ if (simulator)
         driver = new SimulatedFtdx10Driver();
     }
     else if (selectedModel.Model.Id.Equals(Ic7300Profile.ModelId, StringComparison.OrdinalIgnoreCase) ||
+             selectedModel.Model.Id.Equals(Ic7600Profile.ModelId, StringComparison.OrdinalIgnoreCase) ||
              selectedModel.Model.Id.Equals(G90Profile.ModelId, StringComparison.OrdinalIgnoreCase))
     {
         byte radioAddress = resolvedConnectionSettings.Get<byte>("icom.civAddress");
@@ -175,6 +178,11 @@ if (simulator)
             transport, new CivSimulatorOptions
             {
                 RadioAddress = radioAddress,
+                ControllerAddress = resolvedConnectionSettings.Get<byte>("icom.controllerAddress"),
+                StandardIdentity = selectedModel.Model.Id.Equals(Ic7600Profile.ModelId, StringComparison.OrdinalIgnoreCase)
+                    ? Ic7600Profile.ModelIdentity
+                    : null,
+                SupportsIc7600ReceiverCommands = selectedModel.Model.Id.Equals(Ic7600Profile.ModelId, StringComparison.OrdinalIgnoreCase),
                 SupportsXieguIdentity = selectedModel.Model.Id.Equals(G90Profile.ModelId, StringComparison.OrdinalIgnoreCase),
                 SupportsXieguExtendedVfo = selectedModel.Model.Id.Equals(G90Profile.ModelId, StringComparison.OrdinalIgnoreCase)
             });

@@ -15,6 +15,7 @@ transport and driver projects you ship. Register built-in factories explicitly:
 using Rig2Cast.Core.Drivers;
 using Rig2Cast.Drivers.Elecraft.K3Family;
 using Rig2Cast.Drivers.Icom.Ic7300;
+using Rig2Cast.Drivers.Icom.Ic7600;
 using Rig2Cast.Drivers.Xiegu.G90;
 using Rig2Cast.Drivers.Yaesu.Ftdx10;
 
@@ -22,6 +23,7 @@ var catalog = new RadioDriverCatalog();
 catalog.Register(new Ftdx10DriverFactory());
 catalog.Register(new ElecraftK3DriverFactory());
 catalog.Register(new Ic7300DriverFactory());
+catalog.Register(new Ic7600DriverFactory());
 catalog.Register(new G90DriverFactory());
 
 foreach (RadioModelRegistration item in catalog.Models)
