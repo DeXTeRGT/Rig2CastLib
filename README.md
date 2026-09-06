@@ -205,6 +205,9 @@ support currently includes:
 - RIT, XIT, and clarifier offset
 - IF shift, manual/automatic notch, and contour
 - Audio peak filter state, offset, and width
+- AMC output level and parametric microphone equalizer
+- Electronic keyer and semi break-in delay
+- Noise-blanker width/rejection, contour level/width, and IF-notch width
 - Attenuator, preamplifier, and AGC choices
 - CW pitch and keyer speed
 - Mode-aware VFO tuning steps

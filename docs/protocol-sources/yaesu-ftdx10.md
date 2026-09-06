@@ -30,6 +30,11 @@ The manual revision above documents the `PR` speech-processor state as `1` for o
 - Receiver filtering and interference command parsing: automated fixture tests
 - Mode-aware filter-width and signed clarifier parsing: automated fixture tests
 - CW pitch, keyer speed, discrete VOX delay, APF parameters, and mode-aware tuning step: automated fixture tests
+- AMC output (`AO`), electronic keyer (`KR`), semi break-in delay (`SD`),
+  parametric microphone EQ (`PR1`), and the selected `EX030101`, `EX030102`,
+  `EX030201`, `EX030202`, `EX030203`, and `EX030204` controls: automated fixture tests
+- Signed descriptor parsing requires an explicit sign and derives write width from
+  descriptor digits; malformed unsigned contour responses are regression-tested
 - Simulator/runtime integration: automated tests
 - Physical FTDX10 validation: passed on 2026-08-30 using the Enhanced CAT port at `COM11`, 38400 baud
   - Identification response verified as `ID0761;`

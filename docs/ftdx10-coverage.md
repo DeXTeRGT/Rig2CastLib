@@ -17,7 +17,7 @@ Status meanings:
 | Native feature | CAT | Software | Physical FTDX10 | Next action |
 |---|---|---|---|---|
 | Identification | `ID` | Complete | Read validated | None |
-| USB automatic information | `AI`, `IF`, `OI`, `FA`, `FB`, `MD`, `VS`, `ST`, `TX` | Complete, opt-in with confirmation and shutdown cleanup | Front-panel reporting and disconnect/reconnect recovery validated | Continue expanding typed handling for useful announced controls |
+| USB automatic information | `AI`, `IF`, `OI`, `FA`, `FB`, `MD`, `VS`, `ST`, `TX`; undocumented `FD` recognized/ignored | Complete, opt-in with confirmation and shutdown cleanup | Front-panel reporting, `FD` scope-scroll traffic, and disconnect/reconnect recovery validated | Continue expanding typed handling for useful announced controls |
 | VFO A/B frequency | `FA`, `FB` | Complete | Read validated; interactive setter testing passed | None |
 | Active VFO | `VS` | Complete | Read validated; interactive setter testing passed | None |
 | Operating mode | `MD` | Complete | Read validated; interactive setter testing passed | None |
@@ -43,7 +43,7 @@ Status meanings:
 | Tuning step | `FS` | Complete as a write-only, mode-aware normal/fast choice | Physical write behavior established; command is not readable | Retain write-only access; never issue `FS;` |
 | Keyer and semi break-in | `KR`, `SD` | Complete in software, mode-aware | Not tested | Physically validate read and safe setters in CW |
 | AMC and parametric microphone EQ | `AO`, `PR1` | Complete in software, mode-aware | Not tested | Physically validate in voice modes; retain hardware-proven PR 0/1 encoding |
-| Advanced DSP menu controls | `EX030101`-`EX030104` | NB width/rejection, contour level/width, and IF-notch width complete in software | Not tested | Physically validate reads, then safe setters |
+| Advanced DSP menu controls | `EX030101`, `EX030102`, `EX030201`, `EX030202`, `EX030203`, `EX030204` | NB width/rejection, APF width, contour level/width, and IF-notch width complete in software | Not tested | Physically validate reads, then safe setters |
 | Repeater offset/shift and tones | manual repeater/tone controls | Missing | Not tested | Defer until core HF controls are complete |
 | Memories, scan, QMB, band operations | multiple | Missing | Not tested | Later milestone |
 | CW/voice message operations | multiple | Missing | Not tested | Later milestone |
@@ -60,6 +60,7 @@ CW pitch, keyer speed, VOX delay, APF parameters, and mode-aware tuning step.
 |---|---|
 | Identification | `ID` |
 | USB automatic information | `AI` |
+| Recognized undocumented automatic-information traffic | valid `FDxxx#########` frames are consumed and ignored; malformed `FD` remains diagnostic |
 | VFO A/B frequency and mode state | `IF`, `OI`; `FA`, `FB` remain direct frequency operations |
 | Active VFO | `VS` |
 | Operating mode | `MD` |

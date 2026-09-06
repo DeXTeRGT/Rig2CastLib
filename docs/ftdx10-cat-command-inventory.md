@@ -86,7 +86,7 @@ step. The driver correctly does not send the unsupported `FS;` query.
 | --- | --- | --- |
 | `AC` | Tuner enable/bypass | Tuning start/stop must remain a separate hazardous action |
 | `CF` | Main-band clarifier frequency | Combined flags, sub-band form, and other qualified fields |
-| `EX` | APF width (`EX030201`) | Almost the entire Table 2 menu hierarchy |
+| `EX` | NB width/rejection (`EX030101`, `EX030102`), APF width (`EX030201`), contour level/width (`EX030202`, `EX030203`), and IF-notch width (`EX030204`) | Almost the entire remaining Table 2 menu hierarchy |
 | `IF` | Authoritative VFO-A frequency/mode | Memory, clarifier, CTCSS, repeater, and context fields are not surfaced |
 | `OI` | Authoritative VFO-B frequency/mode | Same additional fields as `IF` are not surfaced |
 | `RM` | Selectors 3–8: COMP/ALC/PO/SWR/IDD/VDD | Selectors 0/1; `SM` already supplies S-meter |
@@ -166,8 +166,10 @@ existing transmit lease or an equally strict specialized lease.
 ## Recommended roadmap
 
 1. Correct documentation terminology so partial families are not called complete.
-2. Add the broadly reusable live controls: `AO`, `BY`, `CN`, `CT`, `CS`, `FN`,
-   `KR`, `OS`, and `SD`, with target/mode metadata and hardware tests.
+2. Add the remaining broadly reusable live controls: `BY`, `CN`, `CT`, `FN`, and
+   `OS`, with target/mode metadata and hardware tests. `AO`, `KR`, and `SD` are
+   implemented; `CS` remains deliberately deferred with `ZI` because it offers
+   limited immediate operator benefit.
 3. Design a shared parameterized **action abstraction**, then add safe copy/swap,
    quick-split, zero-in, scan, band, and relative-control operations.
 4. Add shared **alarm/status** contracts and semantic observations.
