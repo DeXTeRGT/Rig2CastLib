@@ -182,14 +182,17 @@ public sealed class AsciiCatSession : IAsyncDisposable
                     if (value > 0x7f || value < 0x20)
                     {
                         frameLength = 0;
-                        FailPending(_options.InvalidFrameException("A CAT frame contained a non-printable ASCII byte."));
+                        if (FailMalformedFrame(
+                                _options.InvalidFrameException("A CAT frame contained a non-printable ASCII byte.")))
+                            return;
                         continue;
                     }
                     if (frameLength == _options.MaximumFrameLength)
                     {
                         frameLength = 0;
-                        FailPending(_options.InvalidFrameException(
-                            $"A CAT frame exceeded {_options.MaximumFrameLength} bytes."));
+                        if (FailMalformedFrame(_options.InvalidFrameException(
+                                $"A CAT frame exceeded {_options.MaximumFrameLength} bytes.")))
+                            return;
                     }
                     frame[frameLength++] = value;
                     if (value == (byte)';')
@@ -277,6 +280,35 @@ public sealed class AsciiCatSession : IAsyncDisposable
             _pending = null;
         }
         pending?.Completion.TrySetException(exception);
+    }
+
+    private bool FailMalformedFrame(Exception invalidFrame)
+    {
+        PendingQuery? pending;
+        Exception failure = invalidFrame;
+        bool armed = false;
+        bool installedTerminalFailure = false;
+        lock (_pendingGate)
+        {
+            pending = _pending;
+            _pending = null;
+            if (pending is { IsArmed: true })
+            {
+                armed = true;
+                failure = new RadioConnectionException(
+                    $"The {_options.ProtocolName} CAT session lost frame synchronization during an active query.",
+                    invalidFrame);
+                installedTerminalFailure = Interlocked.CompareExchange(ref _terminalFailure, failure, null) is null;
+            }
+        }
+
+        pending?.Completion.TrySetException(failure);
+        if (installedTerminalFailure)
+        {
+            _unsolicited.Writer.TryComplete(failure);
+            _stopping.Cancel();
+        }
+        return armed;
     }
 
     private void FailSession(Exception exception)

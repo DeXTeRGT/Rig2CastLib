@@ -854,17 +854,24 @@ public sealed class ElecraftK3Driver : IRadioDriver, IRadioObservationSource,
 
     private static ElecraftInformation ParseInformation(string response)
     {
+        // Elecraft K3 Programmer's Reference, IF response field layout.
+        const int TransmitStatusOffset = 28;
+        const int ModeOffset = 29;
+        const int ReceiveVfoOffset = 30;
+        const int SplitStatusOffset = 32;
         if (response.Length < 38 || response[^1] != ';' ||
             !long.TryParse(response.AsSpan(2, 11), NumberStyles.None, CultureInfo.InvariantCulture, out long frequency) ||
-            !ElecraftK3Profile.Modes.TryGetValue(response[29], out RadioMode mode) ||
-            response[28] is not ('0' or '1') || response[30] is not ('0' or '1') || response[32] is not ('0' or '1'))
+            !ElecraftK3Profile.Modes.TryGetValue(response[ModeOffset], out RadioMode mode) ||
+            response[TransmitStatusOffset] is not ('0' or '1') ||
+            response[ReceiveVfoOffset] is not ('0' or '1') ||
+            response[SplitStatusOffset] is not ('0' or '1'))
             throw new ElecraftProtocolException($"Invalid information response '{response}'.");
         return new(
             frequency,
             mode,
-            response[30] == '1' ? VfoId.B : VfoId.A,
-            response[32] == '1',
-            response[28] == '1');
+            response[ReceiveVfoOffset] == '1' ? VfoId.B : VfoId.A,
+            response[SplitStatusOffset] == '1',
+            response[TransmitStatusOffset] == '1');
     }
 
     private static RadioCapabilities CreateCapabilities(

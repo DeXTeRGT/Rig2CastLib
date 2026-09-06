@@ -48,8 +48,8 @@ categories later, but do not generalize prematurely.
 - Solution: `Rig2Cast\Rig2Cast.sln`
 - Target framework: .NET 8
 - Shell: PowerShell
-- Current baseline commit when this handover was written: `3fcce4c`
-- Current expected automated suite: **322 passing tests**.
+- Current baseline commit before the active hardening work: `0cee58f`
+- Current expected automated suite with the active hardening work: **328 passing tests**.
 
 Git may report dubious ownership because Codex and the interactive Windows user
 have different SIDs. Do not modify the user's global Git configuration. For
@@ -59,12 +59,15 @@ read-only Git commands use:
 git -c safe.directory=C:/HAM_RADIO/PROJECTS/HAMLIB_PORT/Rig2Cast -C Rig2Cast status --short
 ```
 
-The worktree is intentionally dirty and contains the active milestone. Preserve
-all existing changes. Do not reset, checkout, discard, or overwrite them. At the
-time of writing, `Rig2Cast.sln` includes the new uncommitted
-`samples/Rig2Cast.WebGui` project. The worktree also contains the current FTDX10
-signed-control hardening, its regression test, and related README/handover edits.
-Always inspect the actual status rather than assuming this list is exhaustive.
+The worktree contains the active runtime/protocol hardening milestone based on
+`0cee58f`. Preserve all existing changes. Do not reset, checkout, discard, or
+overwrite them. The active work closes exclusive-operation validation and
+Controller-role gaps, enforces typed-control write access, disposes transports on
+built-in factory preflight failures, faults an ASCII session when framing is lost
+during an armed query, documents/tests the unavoidable CI-V in-window transceive
+collision, and labels the Elecraft `IF` field offsets. The full runtime test project
+passes 328 tests. No commit has been made for this milestone. Always inspect the
+actual status rather than assuming this list is exhaustive.
 
 Always run `git status --short` before editing because the state may have changed
 after this document was written.
@@ -1187,7 +1190,7 @@ dotnet build .\Rig2Cast\samples\Rig2Cast.Console\Rig2Cast.Console.csproj --no-re
 dotnet build .\Rig2Cast\samples\Rig2Cast.WebGui\Rig2Cast.WebGui.csproj --no-restore -p:UseAppHost=false
 ```
 
-Then compare the result with the expected 322 tests and inspect changes made after
+Then compare the result with the expected 328 tests and inspect changes made after
 this handover. For Web work, run `dotnet run --project
 .\Rig2Cast\samples\Rig2Cast.WebGui` and read its README before changing registry,
 ownership, authorization, or WebSocket behavior. The recommended next work is Web

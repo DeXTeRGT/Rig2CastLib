@@ -54,6 +54,33 @@ public sealed class CivSessionTests
     }
 
     [Fact]
+    public async Task SameCommandTransceiveFrameDuringArmedQueryCanSatisfyQuery()
+    {
+        // Known CI-V limitation documented in docs/architecture.md: CI-V has no transaction ID,
+        // so a valid transceive frame with the response addresses, command prefix, and payload
+        // shape is indistinguishable from the solicited response while a query is armed.
+        await using var transport = await ConnectedTransportAsync();
+        await using var session = new CivSession(transport);
+        Task<CivFrame> query = session.QueryAsync(
+            FrequencyQuery, new byte[] { 0x03 }, frame => frame.Message.Length == 6).AsTask();
+        await transport.ReadDriverCommandAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(1));
+
+        var coincidentalTransceive = new CivFrame(0xE0, 0x94, [0x03, 0x00, 0x00, 0x10, 0x07, 0x00]);
+        await transport.SendRadioResponseAsync(CivFrameCodec.Encode(coincidentalTransceive));
+        Assert.Equal(
+            coincidentalTransceive.Message.ToArray(),
+            (await query.WaitAsync(TimeSpan.FromSeconds(1))).Message.ToArray());
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(1));
+        await using IAsyncEnumerator<CivFrame> unsolicited = session
+            .WatchUnsolicitedFramesAsync(timeout.Token).GetAsyncEnumerator();
+        var genuineReply = new CivFrame(0xE0, 0x94, [0x03, 0x00, 0x00, 0x25, 0x14, 0x00]);
+        await transport.SendRadioResponseAsync(CivFrameCodec.Encode(genuineReply));
+        Assert.True(await unsolicited.MoveNextAsync());
+        Assert.Equal(genuineReply.Message.ToArray(), unsolicited.Current.Message.ToArray());
+    }
+
+    [Fact]
     public async Task CommandAcceptsAcknowledgementAndRejectionDoesNotFaultSession()
     {
         await using var transport = await ConnectedTransportAsync();

@@ -250,6 +250,46 @@ public sealed class YaesuAsciiProtocolTests
     }
 
     [Fact]
+    public async Task NonPrintableByteDuringArmedQueryFaultsSession()
+    {
+        var transport = new BlockingWriteRadioTransport();
+        await transport.ConnectAsync();
+        await using var protocol = new YaesuAsciiProtocol(transport);
+
+        Task<string> query = protocol.QueryAsync("FA", "FA").AsTask();
+        await transport.WriteStarted.WaitAsync(TimeSpan.FromSeconds(1));
+        transport.CompleteWrite();
+        await Task.Delay(20);
+        await transport.EmitAsync([.. Encoding.ASCII.GetBytes("FA014"), 0x01, .. Encoding.ASCII.GetBytes("250000;")]);
+
+        RadioConnectionException failure = await Assert.ThrowsAsync<RadioConnectionException>(() => query);
+        Assert.IsType<YaesuProtocolException>(failure.InnerException);
+        await Assert.ThrowsAsync<RadioConnectionException>(
+            () => protocol.QueryAsync("FA", "FA").AsTask());
+    }
+
+    [Fact]
+    public async Task OverlongFrameDuringArmedQueryFaultsSession()
+    {
+        var transport = new BlockingWriteRadioTransport();
+        await transport.ConnectAsync();
+        await using var protocol = new YaesuAsciiProtocol(transport);
+
+        Task<string> query = protocol.QueryAsync("FA", "FA").AsTask();
+        await transport.WriteStarted.WaitAsync(TimeSpan.FromSeconds(1));
+        transport.CompleteWrite();
+        await Task.Delay(20);
+        await transport.EmitAsync(Encoding.ASCII.GetBytes(new string('A', 256)));
+        await transport.EmitAsync(Encoding.ASCII.GetBytes(new string('A', 256)));
+        await transport.EmitAsync(Encoding.ASCII.GetBytes("A"));
+
+        RadioConnectionException failure = await Assert.ThrowsAsync<RadioConnectionException>(() => query);
+        Assert.IsType<YaesuProtocolException>(failure.InnerException);
+        await Assert.ThrowsAsync<RadioConnectionException>(
+            () => protocol.QueryAsync("FA", "FA").AsTask());
+    }
+
+    [Fact]
     public async Task UnsolicitedOverflowIsCountedRatherThanRemainingSilent()
     {
         var transport = new ScriptedRadioTransport();
@@ -381,6 +421,9 @@ internal sealed class BlockingWriteRadioTransport : IRadioTransport
 
     public ValueTask EmitAsync(string frame, CancellationToken cancellationToken = default) =>
         _responses.Writer.WriteAsync(Encoding.ASCII.GetBytes(frame), cancellationToken);
+
+    public ValueTask EmitAsync(byte[] frame, CancellationToken cancellationToken = default) =>
+        _responses.Writer.WriteAsync(frame, cancellationToken);
 
     public ValueTask ConnectAsync(CancellationToken cancellationToken = default)
     {

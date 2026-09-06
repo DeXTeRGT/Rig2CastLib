@@ -29,13 +29,24 @@ public sealed class ElecraftK3DriverFactory : IRadioDriverFactory
         IRadioTransport transport,
         CancellationToken cancellationToken = default)
     {
-        if (!ElecraftK3Profile.Models.TryGetValue(options.ModelId, out ElecraftK3Profile? profile))
-            throw new NotSupportedException($"Model '{options.ModelId}' is not supported by the Elecraft K3-family driver.");
-        RadioModelDescriptor model = Descriptor.Models.Single(item =>
-            StringComparer.OrdinalIgnoreCase.Equals(item.Id, options.ModelId));
-        ResolvedConnectionSettings settings = ConnectionSettingsResolver.ResolveForFactory(options, model);
-        bool autoInformation = settings.Get<bool>("elecraft.autoInformation");
-        int autoInformationMode = settings.Get<int>("elecraft.autoInformationMode");
+        ElecraftK3Profile profile;
+        bool autoInformation;
+        int autoInformationMode;
+        try
+        {
+            if (!ElecraftK3Profile.Models.TryGetValue(options.ModelId, out profile!))
+                throw new NotSupportedException($"Model '{options.ModelId}' is not supported by the Elecraft K3-family driver.");
+            RadioModelDescriptor model = Descriptor.Models.Single(item =>
+                StringComparer.OrdinalIgnoreCase.Equals(item.Id, options.ModelId));
+            ResolvedConnectionSettings settings = ConnectionSettingsResolver.ResolveForFactory(options, model);
+            autoInformation = settings.Get<bool>("elecraft.autoInformation");
+            autoInformationMode = settings.Get<int>("elecraft.autoInformationMode");
+        }
+        catch
+        {
+            await transport.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
         return await ElecraftK3Driver.OpenAsync(
             transport, profile, autoInformation, autoInformationMode,
             timeProvider: _timeProvider,

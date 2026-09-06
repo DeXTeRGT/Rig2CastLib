@@ -55,13 +55,20 @@ public sealed class Ftdx10DriverFactory : IRadioDriverFactory
         IRadioTransport transport,
         CancellationToken cancellationToken = default)
     {
-        if (!StringComparer.OrdinalIgnoreCase.Equals(options.ModelId, Ftdx10CatProfile.ModelId))
+        bool enableAutomaticInformation;
+        try
         {
-            throw new NotSupportedException($"Model '{options.ModelId}' is not supported by this driver factory.");
-        }
+            if (!StringComparer.OrdinalIgnoreCase.Equals(options.ModelId, Ftdx10CatProfile.ModelId))
+                throw new NotSupportedException($"Model '{options.ModelId}' is not supported by this driver factory.");
 
-        ResolvedConnectionSettings settings = ConnectionSettingsResolver.ResolveForFactory(options, Descriptor.Models[0]);
-        bool enableAutomaticInformation = settings.Get<bool>("yaesu.autoInformation");
+            ResolvedConnectionSettings settings = ConnectionSettingsResolver.ResolveForFactory(options, Descriptor.Models[0]);
+            enableAutomaticInformation = settings.Get<bool>("yaesu.autoInformation");
+        }
+        catch
+        {
+            await transport.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
         return await Ftdx10Driver.OpenAsync(
             transport,
             enableAutomaticInformation: enableAutomaticInformation,

@@ -437,6 +437,46 @@ public sealed class ManagedRadioTests
     }
 
     [Fact]
+    public async Task ExclusiveScopeRequiresControllerRole()
+    {
+        await using TestContext context = await TestContext.CreateAsync();
+        await using IRadioSession operatorSession = context.Radio.OpenSession(
+            new ClientIdentity("operator"), ClientRole.Operator);
+        int initialCommands = context.Driver.CommandLog.Count;
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+            operatorSession.ExecuteExclusiveAsync(
+                (scope, cancellationToken) =>
+                    scope.SetFrequencyAsync(VfoId.A, 7_050_000, cancellationToken)).AsTask());
+
+        Assert.Equal(initialCommands, context.Driver.CommandLog.Count);
+    }
+
+    [Fact]
+    public async Task ExclusiveScopeRejectsCapabilityViolationsBeforeCallingDriver()
+    {
+        await using TestContext context = await TestContext.CreateAsync();
+        await using IRadioSession controller = context.Radio.OpenSession(
+            new ClientIdentity("controller"), ClientRole.Controller);
+        int initialCommands = context.Driver.CommandLog.Count;
+
+        await Assert.ThrowsAsync<NotSupportedException>(() =>
+            controller.ExecuteExclusiveAsync(
+                (scope, cancellationToken) =>
+                    scope.SetFrequencyAsync(VfoId.Memory, 14_200_000, cancellationToken)).AsTask());
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            controller.ExecuteExclusiveAsync(
+                (scope, cancellationToken) =>
+                    scope.SetFrequencyAsync(VfoId.A, 1, cancellationToken)).AsTask());
+        await Assert.ThrowsAsync<NotSupportedException>(() =>
+            controller.ExecuteExclusiveAsync(
+                (scope, cancellationToken) =>
+                    scope.SetModeAsync(RadioMode.Psk, cancellationToken)).AsTask());
+
+        Assert.Equal(initialCommands, context.Driver.CommandLog.Count);
+    }
+
+    [Fact]
     public async Task MutationPublishesVersionedStateEvent()
     {
         await using TestContext context = await TestContext.CreateAsync();

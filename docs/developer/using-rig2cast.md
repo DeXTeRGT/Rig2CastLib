@@ -234,6 +234,12 @@ await session.ExecuteExclusiveAsync(async (radioOps, ct) =>
 });
 ```
 
+The session must have the `Controller` or `Administrator` role because this API
+holds the `exclusive-control` lease for the sequence. Operations inside the scope
+are subject to the same capability access, target, range, choice, passband, and
+mode-applicability validation as individual session mutations; the scope is not a
+route around runtime validation.
+
 ## 7. Observe changes
 
 ```csharp

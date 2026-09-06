@@ -39,6 +39,12 @@ ambiguous; the ASCII session becomes terminal and must be replaced. This uses th
 same conservative recovery policy as a response timeout and prevents a late reply
 from satisfying a later same-prefix query.
 
+A malformed or overlong ASCII frame received while a query is armed also makes the
+session terminal. Once framing is lost inside an expected response, trailing bytes
+cannot be correlated safely with a later query; reconnect replaces the failed
+session generation. Noise received while no query is armed is discarded without
+forcing an otherwise unnecessary reconnect.
+
 If an independent terminal read failure cancels an in-flight write through the
 session shutdown token, the initiating send/query observes a connection failure,
 not a caller-cancellation exception. Ordinary caller cancellation before commitment
@@ -88,6 +94,16 @@ rejection responses. Other valid frames, including broadcast/transceive messages
 are routed through a bounded unsolicited stream. A response timeout or caller
 cancellation after command commitment makes the session terminal so a late response
 cannot satisfy a later transaction; reconnect must replace the session.
+
+**Known CI-V limitation — in-window transceive collision.** CI-V carries no
+per-transaction identifier. While a query is armed, a legitimate transceive frame
+that reverses the query addresses and satisfies the same command-prefix and payload
+validator is indistinguishable from the solicited response and can complete that
+query. The genuine response then appears on the unsolicited stream. Narrow,
+command-specific validators reduce this exposure but cannot eliminate it when the
+two frames have identical wire shape. This is an accepted protocol limitation, not
+a reason to disable transceive mode; the behavior is pinned by
+`CivSessionTests.SameCommandTransceiveFrameDuringArmedQueryCanSatisfyQuery`.
 
 ## Driver plugins
 

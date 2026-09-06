@@ -55,13 +55,23 @@ public sealed class G90DriverFactory : IRadioDriverFactory
         IRadioTransport transport,
         CancellationToken cancellationToken = default)
     {
-        if (!StringComparer.OrdinalIgnoreCase.Equals(options.ModelId, G90Profile.ModelId))
-            throw new NotSupportedException($"Model '{options.ModelId}' is not supported by the Xiegu G90 driver.");
+        byte radioAddress;
+        byte controllerAddress;
+        try
+        {
+            if (!StringComparer.OrdinalIgnoreCase.Equals(options.ModelId, G90Profile.ModelId))
+                throw new NotSupportedException($"Model '{options.ModelId}' is not supported by the Xiegu G90 driver.");
 
-        RadioModelDescriptor model = Descriptor.Models[0];
-        ResolvedConnectionSettings settings = ConnectionSettingsResolver.ResolveForFactory(options, model);
-        byte radioAddress = settings.Get<byte>("icom.civAddress");
-        byte controllerAddress = settings.Get<byte>("icom.controllerAddress");
+            RadioModelDescriptor model = Descriptor.Models[0];
+            ResolvedConnectionSettings settings = ConnectionSettingsResolver.ResolveForFactory(options, model);
+            radioAddress = settings.Get<byte>("icom.civAddress");
+            controllerAddress = settings.Get<byte>("icom.controllerAddress");
+        }
+        catch
+        {
+            await transport.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
         return await G90Driver.OpenAsync(
             transport, radioAddress, controllerAddress, timeProvider: _timeProvider,
             cancellationToken: cancellationToken).ConfigureAwait(false);

@@ -52,19 +52,29 @@ public sealed class Ic7300DriverFactory : IRadioDriverFactory
             ]
         }]);
 
-    public ValueTask<IRadioDriver> OpenAsync(
+    public async ValueTask<IRadioDriver> OpenAsync(
         RadioConnectionOptions options,
         IRadioTransport transport,
         CancellationToken cancellationToken = default)
     {
-        if (!StringComparer.OrdinalIgnoreCase.Equals(options.ModelId, Ic7300Profile.ModelId))
-            throw new NotSupportedException($"Model '{options.ModelId}' is not supported by the Icom IC-7300 driver.");
+        byte radioAddress;
+        byte controllerAddress;
+        try
+        {
+            if (!StringComparer.OrdinalIgnoreCase.Equals(options.ModelId, Ic7300Profile.ModelId))
+                throw new NotSupportedException($"Model '{options.ModelId}' is not supported by the Icom IC-7300 driver.");
 
-        RadioModelDescriptor model = Descriptor.Models[0];
-        ResolvedConnectionSettings settings = ConnectionSettingsResolver.ResolveForFactory(options, model);
-        byte radioAddress = settings.Get<byte>("icom.civAddress");
-        byte controllerAddress = settings.Get<byte>("icom.controllerAddress");
-        return OpenCoreAsync(transport, radioAddress, controllerAddress, cancellationToken);
+            RadioModelDescriptor model = Descriptor.Models[0];
+            ResolvedConnectionSettings settings = ConnectionSettingsResolver.ResolveForFactory(options, model);
+            radioAddress = settings.Get<byte>("icom.civAddress");
+            controllerAddress = settings.Get<byte>("icom.controllerAddress");
+        }
+        catch
+        {
+            await transport.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
+        return await OpenCoreAsync(transport, radioAddress, controllerAddress, cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask<IRadioDriver> OpenCoreAsync(
