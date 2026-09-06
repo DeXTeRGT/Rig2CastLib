@@ -48,8 +48,8 @@ categories later, but do not generalize prematurely.
 - Solution: `Rig2Cast\Rig2Cast.sln`
 - Target framework: .NET 8
 - Shell: PowerShell
-- Current baseline commit: `2a527cd`
-- Current expected automated suite: **330 passing tests**.
+- Current baseline commit: `a789fd3`
+- Current expected automated suite: **334 passing tests**.
 
 Git may report dubious ownership because Codex and the interactive Windows user
 have different SIDs. Do not modify the user's global Git configuration. For
@@ -69,6 +69,14 @@ control context now consistently use `MD0` as the foreground selector; `MD1` is 
 background selector, not absolute VFO B. The full runtime test project passes 330
 tests. The milestone was physically validated and committed on 2026-09-06. Always
 inspect the actual status rather than assuming this description is exhaustive.
+
+The worktree after `a789fd3` contains the initial reusable built-in-driver
+conformance suite plus a correction it exposed: the IC-7300 now implements the
+targeted passband interface matching its advertised `VfoId.Current` target. The
+suite validates declared feature access, targets, ranges, choices, modes, meters,
+implemented interfaces, and coherent state topology across FTDX10, Elecraft K3S,
+IC-7300, and G90 simulator/scripted fixtures. The full isolated-output checkpoint
+passes 334 tests; this work remains uncommitted until maintainer review.
 
 Always run `git status --short` before editing because the state may have changed
 after this document was written.
@@ -167,6 +175,9 @@ Implemented and covered by automated tests:
 - Diagnostic Console support for built-in model selection, receiver/VFO-targeted
   reads and writes, signal-path display, capability inspection, polling/watch,
   bounded PTT, and continuously renewed PTT.
+- Reusable built-in-driver conformance checks cover capability metadata/interface
+  agreement and coherent state topology for FTDX10, K3S, IC-7300, and G90. The
+  initial run exposed and corrected the IC-7300 targeted-passband interface gap.
 
 Not implemented or not integrated yet:
 
@@ -1110,6 +1121,16 @@ Implement this as another binary family engine, not as an FTDX10 ASCII extension
 
 ### Later roadmap
 
+- Complete the diagnostic Console capability-surface audit follow-up. Fix false
+  failures after successful write-only choice commands by skipping unsupported
+  readback; expose explicit split transmit-VFO selection; expand `state` with
+  per-VFO modes and receiver frequency/mode/passband/topology; print frequency
+  ranges, access, applicability, receiver-specific modes, target-specific choices
+  and meter ranges, and namespaced capability extensions; add an individually
+  targetable meter read with per-meter failure isolation; report the actual TCP
+  endpoint instead of serial placeholders; optionally expose fresh-within state
+  reads; and extract/test command dispatch with simulator-backed coverage. Raw CAT
+  and tuner start remain intentional exclusions.
 - Complete canonical passband presentation in both reference GUIs. The driver and
   runtime passband APIs already exist, but the Capability GUI does not render a
   dedicated passband editor and the Web GUI recreates its field without reliably
@@ -1211,7 +1232,7 @@ dotnet build .\Rig2Cast\samples\Rig2Cast.Console\Rig2Cast.Console.csproj --no-re
 dotnet build .\Rig2Cast\samples\Rig2Cast.WebGui\Rig2Cast.WebGui.csproj --no-restore -p:UseAppHost=false
 ```
 
-Then compare the result with the expected 330 tests and inspect changes made after
+Then compare the result with the expected 334 tests and inspect changes made after
 this handover. For Web work, run `dotnet run --project
 .\Rig2Cast\samples\Rig2Cast.WebGui` and read its README before changing registry,
 ownership, authorization, or WebSocket behavior. The recommended next work is Web

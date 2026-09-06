@@ -30,6 +30,12 @@ behavior. It must not merely return whatever makes the driver pass.
 
 ## Capability conformance
 
+Add the driver to `DriverConformanceTests` using its deterministic scripted or
+simulator-backed fixture. Run the shared `DriverConformance.AssertCapabilities`
+and `AssertState` checks so every built-in driver is held to the same metadata,
+interface, target, and topology rules. Keep model-specific command and boundary
+tests alongside this common check; the conformance helper does not replace them.
+
 For every advertised feature:
 
 - Access flags match the implemented interface and command direction.
@@ -97,4 +103,3 @@ manual/simulator result to “physically validated.”
   and machine-specific paths.
 - Do not commit or publish until the maintainer has reviewed hardware-affecting
   behavior and requested that action.
-

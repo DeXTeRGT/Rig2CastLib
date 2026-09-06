@@ -118,15 +118,21 @@ public sealed class Ic7300DriverTests
         await using var simulator = new CivRadioSimulator(transport);
         await using IRadioDriver driver = await OpenAsync(transport);
         var passband = Assert.IsAssignableFrom<IRadioPassbandDriver>(driver);
+        var targetedPassband = Assert.IsAssignableFrom<IRadioTargetedPassbandDriver>(driver);
         var receiverPassband = Assert.IsAssignableFrom<IRadioReceiverPassbandDriver>(driver);
 
         Assert.Equal(2_400, (await passband.ReadPassbandAsync()).WidthHz);
         await passband.SetPassbandAsync(2_700);
-        Assert.Equal(2_700, (await receiverPassband.ReadPassbandAsync(ReceiverId.Main)).WidthHz);
+        RadioPassbandValue targetedValue = await targetedPassband.ReadPassbandAsync(VfoId.Current);
+        Assert.Equal(2_700, targetedValue.WidthHz);
+        Assert.Equal(VfoId.Current, targetedValue.Target);
+        await Assert.ThrowsAsync<NotSupportedException>(
+            () => targetedPassband.ReadPassbandAsync(VfoId.B).AsTask());
 
         await driver.SetModeAsync(RadioMode.Am);
-        await receiverPassband.SetPassbandAsync(ReceiverId.Main, 6_000);
+        await targetedPassband.SetPassbandAsync(VfoId.Current, 6_000);
         Assert.Equal(6_000, (await passband.ReadPassbandAsync()).WidthHz);
+        Assert.Equal(6_000, (await receiverPassband.ReadPassbandAsync(ReceiverId.Main)).WidthHz);
         Assert.Equal(6_000, (await driver.ReadStateAsync()).Receivers[ReceiverId.Main].PassbandHz);
 
         await driver.SetModeAsync(RadioMode.Fm);

@@ -1006,3 +1006,24 @@ exit
 Either command performs normal asynchronous cleanup. `Ctrl+C` requests the same
 shutdown path. If continuous PTT was active, cleanup requests RX before releasing the
 radio and serial connection.
+
+## 14. Deferred Console audit follow-up
+
+The Console exposes the current generic frequency, mode, split, passband, numeric,
+switch, choice, meter, event, and lease-protected PTT surfaces. A 2026-09-06 audit
+identified presentation and diagnostic follow-up work rather than missing driver
+capabilities:
+
+- do not attempt readback after a successful write-only choice such as the FTDX10
+  tuning-step command;
+- expose the session API's explicit split transmit-VFO operation;
+- print per-VFO modes and complete receiver frequency/mode/passband/topology state;
+- print access, frequency ranges, mode applicability, receiver-specific modes,
+  target-specific choices and meter ranges, and namespaced capability extensions;
+- add an individual targeted meter command and isolate failures while reading a
+  meter batch;
+- report the real TCP endpoint in `radio` output;
+- optionally expose fresh-within state reads; and
+- add simulator-backed tests around extracted command dispatch.
+
+Raw CAT writes and tuner start remain intentionally unavailable.

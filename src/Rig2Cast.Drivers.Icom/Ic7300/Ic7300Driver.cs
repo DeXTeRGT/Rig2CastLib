@@ -11,7 +11,8 @@ using Rig2Cast.Protocols.Civ;
 namespace Rig2Cast.Drivers.Icom.Ic7300;
 
 public sealed partial class Ic7300Driver : IRadioDriver, IRadioReceiverFrequencyDriver,
-    IRadioReceiverModeDriver, IRadioPassbandDriver, IRadioReceiverPassbandDriver,
+    IRadioReceiverModeDriver, IRadioPassbandDriver, IRadioTargetedPassbandDriver,
+    IRadioReceiverPassbandDriver,
     IRadioControlDriver, IRadioReceiverControlDriver, IRadioMeterDriver,
     IRadioReceiverMeterDriver, IRadioSwitchDriver, IRadioReceiverSwitchDriver,
     IRadioChoiceDriver, IRadioReceiverChoiceDriver, IRadioObservationSource
@@ -233,6 +234,20 @@ public sealed partial class Ic7300Driver : IRadioDriver, IRadioReceiverFrequency
         ReceiverId receiver, int widthHz, CancellationToken cancellationToken = default)
     {
         EnsureMainReceiver(receiver);
+        return SetPassbandAsync(widthHz, cancellationToken);
+    }
+
+    public async ValueTask<RadioPassbandValue> ReadPassbandAsync(
+        VfoId target, CancellationToken cancellationToken = default)
+    {
+        EnsureCurrentVfo(target);
+        return (await ReadPassbandAsync(cancellationToken).ConfigureAwait(false)) with { Target = target };
+    }
+
+    public ValueTask SetPassbandAsync(
+        VfoId target, int widthHz, CancellationToken cancellationToken = default)
+    {
+        EnsureCurrentVfo(target);
         return SetPassbandAsync(widthHz, cancellationToken);
     }
 
