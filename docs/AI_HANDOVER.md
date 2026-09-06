@@ -48,7 +48,7 @@ categories later, but do not generalize prematurely.
 - Solution: `Rig2Cast\Rig2Cast.sln`
 - Target framework: .NET 8
 - Shell: PowerShell
-- Current baseline commit: `a789fd3`
+- Current baseline commit: `5044da0`
 - Current expected automated suite: **334 passing tests**.
 
 Git may report dubious ownership because Codex and the interactive Windows user
@@ -70,13 +70,24 @@ background selector, not absolute VFO B. The full runtime test project passes 33
 tests. The milestone was physically validated and committed on 2026-09-06. Always
 inspect the actual status rather than assuming this description is exhaustive.
 
-The worktree after `a789fd3` contains the initial reusable built-in-driver
-conformance suite plus a correction it exposed: the IC-7300 now implements the
-targeted passband interface matching its advertised `VfoId.Current` target. The
-suite validates declared feature access, targets, ranges, choices, modes, meters,
-implemented interfaces, and coherent state topology across FTDX10, Elecraft K3S,
-IC-7300, and G90 simulator/scripted fixtures. The full isolated-output checkpoint
-passes 334 tests; this work remains uncommitted until maintainer review.
+Commit `5044da0` contains the initial reusable built-in-driver conformance suite
+plus a correction it exposed: the IC-7300 now implements the targeted passband
+interface matching its advertised `VfoId.Current` target. The suite validates
+declared feature access, targets, ranges, choices, modes, meters, implemented
+interfaces, and coherent state topology across FTDX10, Elecraft K3S, IC-7300, and
+G90 simulator/scripted fixtures. The full isolated-output checkpoint passes 334
+tests.
+
+The worktree after `5044da0` extends that suite with shared operational checks for
+writable frequency, active mode, split, and representative numeric, switch, choice,
+and passband mutations. Each scenario first proves that its value is allowed by the
+advertised descriptor. FTDX10 and K3S validate exact CAT transcripts; IC-7300 and
+G90 also round-trip supported resulting values through their CI-V simulator. G90
+does not enter the passband path because it does not advertise canonical passband
+support. Active-VFO selection is not inferred because `VfoCapability` currently
+identifies available VFOs but has no separate selectable-target set; for example,
+the FTDX10 advertises Memory as available but does not accept it as an active-VFO
+selection target.
 
 Always run `git status --short` before editing because the state may have changed
 after this document was written.

@@ -24,10 +24,25 @@ public sealed class DriverConformanceTests
         transport.Add("VS;", "VS0;");
         transport.Add("ST;", "ST1;");
         transport.Add("TX;", "TX0;");
+        transport.Add("FA014225000;");
+        transport.Add("MD03;");
+        transport.Add("ST0;");
+        transport.Add("AG0200;");
+        transport.Add("NB00;");
+        transport.Add("RA01;");
         await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
 
         DriverConformance.AssertCapabilities(driver);
-        DriverConformance.AssertState(driver.Capabilities, await driver.ReadStateAsync());
+        RadioState state = await driver.ReadStateAsync();
+        DriverConformance.AssertState(driver.Capabilities, state);
+        await DriverConformance.AssertCoreMutationsAsync(
+            driver, state, new(VfoId.A, 14_225_000, RadioMode.Cw, false), verifyRoundTrip: false);
+        await DriverConformance.AssertFeatureMutationsAsync(
+            driver,
+            new(new(RadioControlId.AfGain, 200), new(RadioSwitchId.NoiseBlanker, false),
+                new(RadioChoiceId.Attenuator, "6db")),
+            RadioMode.Cw,
+            verifyReadback: false);
         transport.AssertComplete();
     }
 
@@ -41,11 +56,28 @@ public sealed class DriverConformanceTests
         transport.Add("IF;", "IF00014250000     +000000 0002001001 ;");
         transport.Add("FT;", "FT1;");
         transport.Add("TQ;", "TQ0;");
+        transport.Add("FA00014060000;");
+        transport.Add("IF;", "IF00014060000     +000000 0002001001 ;");
+        transport.Add("MD3;");
+        transport.Add("FR0;");
+        transport.Add("AG128;");
+        transport.Add("RT1;");
+        transport.Add("RA05;");
+        transport.Add("BW0270;");
         await using ElecraftK3Driver driver = await ElecraftK3Driver.OpenAsync(
             transport, ElecraftK3Profile.Models[ElecraftK3Profile.K3SModelId]);
 
         DriverConformance.AssertCapabilities(driver);
-        DriverConformance.AssertState(driver.Capabilities, await driver.ReadStateAsync());
+        RadioState state = await driver.ReadStateAsync();
+        DriverConformance.AssertState(driver.Capabilities, state);
+        await DriverConformance.AssertCoreMutationsAsync(
+            driver, state, new(VfoId.A, 14_060_000, RadioMode.Cw, false), verifyRoundTrip: false);
+        await DriverConformance.AssertFeatureMutationsAsync(
+            driver,
+            new(new(RadioControlId.AfGain, 128), new(RadioSwitchId.ReceiveClarifier, true),
+                new(RadioChoiceId.Attenuator, "5db"), 2_700),
+            RadioMode.Cw,
+            verifyReadback: false);
         transport.AssertComplete();
     }
 
@@ -59,7 +91,15 @@ public sealed class DriverConformanceTests
                 new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)), transport);
 
         DriverConformance.AssertCapabilities(driver);
-        DriverConformance.AssertState(driver.Capabilities, await driver.ReadStateAsync());
+        RadioState state = await driver.ReadStateAsync();
+        DriverConformance.AssertState(driver.Capabilities, state);
+        await DriverConformance.AssertCoreMutationsAsync(
+            driver, state, new(VfoId.Current, 7_100_000, RadioMode.RttyReverse, true));
+        await DriverConformance.AssertFeatureMutationsAsync(
+            driver,
+            new(new(RadioControlId.AfGain, 143), new(RadioSwitchId.NoiseBlanker, true),
+                new(RadioChoiceId.Attenuator, "20db"), 2_700),
+            RadioMode.RttyReverse);
     }
 
     [Fact]
@@ -73,7 +113,15 @@ public sealed class DriverConformanceTests
                 new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)), transport);
 
         DriverConformance.AssertCapabilities(driver);
-        DriverConformance.AssertState(driver.Capabilities, await driver.ReadStateAsync());
+        RadioState state = await driver.ReadStateAsync();
+        DriverConformance.AssertState(driver.Capabilities, state);
+        await DriverConformance.AssertCoreMutationsAsync(
+            driver, state, new(VfoId.Current, 7_074_000, RadioMode.CwReverse, true));
+        await DriverConformance.AssertFeatureMutationsAsync(
+            driver,
+            new(new(RadioControlId.ClarifierOffsetHz, -1_250),
+                new(RadioSwitchId.NoiseBlanker, true), new(RadioChoiceId.Preamp, "on")),
+            RadioMode.CwReverse);
     }
 
     private static async Task<InMemoryRadioTransport> ConnectedTransportAsync(string name)
@@ -86,6 +134,24 @@ public sealed class DriverConformanceTests
 
 internal static class DriverConformance
 {
+    internal sealed record CoreMutationScenario(
+        VfoId FrequencyTarget,
+        long FrequencyHz,
+        RadioMode Mode,
+        bool SplitEnabled);
+
+    internal sealed record NumericMutation(RadioControlId Id, int Value);
+
+    internal sealed record SwitchMutation(RadioSwitchId Id, bool Enabled);
+
+    internal sealed record ChoiceMutation(RadioChoiceId Id, string Value);
+
+    internal sealed record FeatureMutationScenario(
+        NumericMutation Numeric,
+        SwitchMutation Switch,
+        ChoiceMutation Choice,
+        int? PassbandHz = null);
+
     public static void AssertCapabilities(IRadioDriver driver)
     {
         RadioCapabilities capabilities = driver.Capabilities;
@@ -177,6 +243,91 @@ internal static class DriverConformance
             AssertSignalPath(capabilities, transmitPath);
     }
 
+    public static async Task AssertCoreMutationsAsync(
+        IRadioDriver driver,
+        RadioState initialState,
+        CoreMutationScenario scenario,
+        bool verifyRoundTrip = true)
+    {
+        RadioCapabilities capabilities = driver.Capabilities;
+        AssertWritable(capabilities.Frequency.Feature);
+        Assert.Contains(scenario.FrequencyTarget, capabilities.Frequency.Targets);
+        Assert.True(capabilities.Frequency.CanReceive(scenario.FrequencyHz));
+        AssertWritable(capabilities.Modes.Feature);
+        Assert.Contains(scenario.Mode, capabilities.Modes.Values);
+        AssertWritable(capabilities.Vfos.Split);
+        Assert.NotEqual(initialState.IsSplit, scenario.SplitEnabled);
+
+        await driver.SetFrequencyAsync(scenario.FrequencyTarget, scenario.FrequencyHz);
+        await driver.SetModeAsync(scenario.Mode);
+        await driver.SetSplitAsync(scenario.SplitEnabled);
+
+        if (!verifyRoundTrip)
+            return;
+
+        RadioState changed = await driver.ReadStateAsync();
+        AssertState(capabilities, changed);
+        Assert.Equal(scenario.FrequencyHz, changed.FrequenciesHz[scenario.FrequencyTarget]);
+        Assert.Equal(scenario.Mode, changed.Mode);
+        Assert.Equal(scenario.SplitEnabled, changed.IsSplit);
+    }
+
+    public static async Task AssertFeatureMutationsAsync(
+        IRadioDriver driver,
+        FeatureMutationScenario scenario,
+        RadioMode activeMode,
+        bool verifyReadback = true)
+    {
+        RadioCapabilities capabilities = driver.Capabilities;
+        NumericControlDescriptor numeric = capabilities.Controls[scenario.Numeric.Id];
+        AssertWritable(numeric.Feature);
+        Assert.InRange(scenario.Numeric.Value, numeric.Minimum, numeric.Maximum);
+        Assert.Equal(0, (scenario.Numeric.Value - numeric.Minimum) % numeric.Step);
+
+        SwitchControlDescriptor @switch = capabilities.Switches[scenario.Switch.Id];
+        AssertWritable(@switch.Feature);
+
+        ChoiceControlDescriptor choice = capabilities.Choices[scenario.Choice.Id];
+        AssertWritable(choice.Feature);
+        RadioChoiceOption option = choice.Options[scenario.Choice.Value];
+        Assert.True(option.Writable);
+        if (option.ApplicableModes is { } applicableModes)
+            Assert.Contains(activeMode, applicableModes);
+
+        var controls = Assert.IsAssignableFrom<IRadioControlDriver>(driver);
+        var switches = Assert.IsAssignableFrom<IRadioSwitchDriver>(driver);
+        var choices = Assert.IsAssignableFrom<IRadioChoiceDriver>(driver);
+        await controls.WriteControlAsync(scenario.Numeric.Id, scenario.Numeric.Value);
+        await switches.WriteSwitchAsync(scenario.Switch.Id, scenario.Switch.Enabled);
+        await choices.WriteChoiceAsync(scenario.Choice.Id, scenario.Choice.Value);
+
+        IRadioPassbandDriver? passband = null;
+        if (scenario.PassbandHz is int passbandHz)
+        {
+            AssertWritable(capabilities.Passband.Feature);
+            PassbandConstraint constraint = capabilities.Passband.ByMode[activeMode];
+            Assert.InRange(passbandHz, constraint.MinimumHz, constraint.MaximumHz);
+            if (constraint.DiscreteValuesHz is { } values)
+                Assert.Contains(passbandHz, values);
+            else
+                Assert.Equal(0, (passbandHz - constraint.MinimumHz) % constraint.StepHz);
+            passband = Assert.IsAssignableFrom<IRadioPassbandDriver>(driver);
+            await passband.SetPassbandAsync(passbandHz);
+        }
+
+        if (!verifyReadback)
+            return;
+
+        Assert.Equal(scenario.Numeric.Value,
+            (await controls.ReadControlAsync(scenario.Numeric.Id)).Value);
+        Assert.Equal(scenario.Switch.Enabled,
+            (await switches.ReadSwitchAsync(scenario.Switch.Id)).Enabled);
+        Assert.Equal(scenario.Choice.Value,
+            (await choices.ReadChoiceAsync(scenario.Choice.Id)).Value);
+        if (scenario.PassbandHz is int expectedPassbandHz)
+            Assert.Equal(expectedPassbandHz, (await passband!.ReadPassbandAsync()).WidthHz);
+    }
+
     private static void AssertControls(RadioCapabilities capabilities, IRadioDriver driver)
     {
         if (capabilities.Controls.Count > 0)
@@ -266,6 +417,9 @@ internal static class DriverConformance
         if (feature.Access != FeatureAccess.None)
             Assert.NotEqual(CapabilitySupport.Unsupported, feature.Support);
     }
+
+    private static void AssertWritable(FeatureDescriptor feature) =>
+        Assert.True(feature.Access.HasFlag(FeatureAccess.Write));
 
     private static bool IsAvailable(FeatureDescriptor feature) =>
         (feature.Support is CapabilitySupport.Supported or CapabilitySupport.Experimental) &&

@@ -33,8 +33,14 @@ behavior. It must not merely return whatever makes the driver pass.
 Add the driver to `DriverConformanceTests` using its deterministic scripted or
 simulator-backed fixture. Run the shared `DriverConformance.AssertCapabilities`
 and `AssertState` checks so every built-in driver is held to the same metadata,
-interface, target, and topology rules. Keep model-specific command and boundary
-tests alongside this common check; the conformance helper does not replace them.
+interface, target, and topology rules. Use `AssertCoreMutationsAsync` with safe
+fixture values to exercise advertised frequency, active-mode, and split writes;
+scripted transports must verify exact CAT commands, while stateful simulators also
+verify readback. Use `AssertFeatureMutationsAsync` for representative numeric,
+switch, choice, and passband operations. The scenario value must satisfy its
+advertised descriptor before the helper invokes the driver. Keep model-specific
+command and boundary tests alongside these common checks; the conformance helper
+does not replace them.
 
 For every advertised feature:
 
