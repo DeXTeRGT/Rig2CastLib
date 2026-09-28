@@ -101,5 +101,17 @@ app.Map("/api/v1/radios/{radioId}/events", async (HttpContext context, string ra
     await host.StreamSnapshotsAsync(radioId, clientId, socket, context.RequestAborted);
 });
 
+app.Map("/api/v1/audio/stream", async (HttpContext context) =>
+{
+    if (!context.WebSockets.IsWebSocketRequest)
+    {
+        context.Response.StatusCode = StatusCodes.Status400BadRequest;
+        return;
+    }
+
+    using WebSocket socket = await context.WebSockets.AcceptWebSocketAsync();
+    await AudioStreamBridge.RunAsync(socket, context.RequestAborted);
+});
+
 app.MapFallbackToFile("index.html");
 await app.RunAsync();

@@ -39,13 +39,15 @@
         <div class="header-actions"><button id="ptt" class="ptt" disabled>PTT OFF</button><div id="connection-badge" class="badge offline">OFFLINE</div></div>
       </header>
       <div id="vfo-deck" class="vfo-deck empty"><div class="empty-state">Connect to display the radio's advertised VFO topology.</div></div>
-      <nav><button class="tab active" data-tab="radio">Radio</button><button class="tab" data-tab="controls">Controls</button><button class="tab" data-tab="meters">Meters</button><button class="tab" data-tab="diagnostics">Diagnostics</button><button id="refresh-all" class="refresh" disabled>Refresh all</button></nav>
+      <nav><button class="tab active" data-tab="radio">Radio</button><button class="tab" data-tab="controls">Controls</button><button class="tab" data-tab="meters">Meters</button><button class="tab" data-tab="audio">Audio</button><button class="tab" data-tab="diagnostics">Diagnostics</button><button id="refresh-all" class="refresh" disabled>Refresh all</button></nav>
       <section id="tab-radio" class="tab-page active"><div id="core-card" class="panel empty-state">Runtime capabilities and core state will appear here.</div></section>
       <section id="tab-controls" class="tab-page"><div id="controls-grid" class="control-groups"></div></section>
       <section id="tab-meters" class="tab-page"><div id="meters-grid" class="meter-grid"></div></section>
+      <section id="tab-audio" class="tab-page"><div class="panel audio-panel"><div class="panel-title"><div><h3>GhostLink audio stream</h3><p>Duplex 48 kHz mono audio via the AUDIO_STREAMING_CS_LINUX server.</p></div><div id="audio-badge" class="badge offline">OFFLINE</div></div><div class="audio-grid"><label>Server host<input id="audio-host" value="127.0.0.1"></label><label>Server TX port <small>radio audio → browser</small><input id="audio-tx-port" type="number" min="1" max="65535" value="6001"></label><label>Server RX port <small>browser mic → radio</small><input id="audio-rx-port" type="number" min="1" max="65535" value="6002"></label><label>Opus bitrate<input id="audio-bitrate" type="number" min="6000" max="128000" step="1000" value="16000"></label></div><label class="check"><input id="audio-mic" type="checkbox" checked>Send microphone audio to the server</label><div class="actions audio-actions"><button id="audio-connect" class="primary">Start audio</button><button id="audio-disconnect" disabled>Stop audio</button></div><p class="audio-note">Microphone access requires HTTPS or localhost. Use headphones to prevent feedback.</p></div></section>
       <section id="tab-diagnostics" class="tab-page"><div class="panel"><div class="panel-title"><h3>Session log</h3><button id="clear-log">Clear</button></div><pre id="log"></pre></div></section>
     </main>
   </div>
+  <script src="audio.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

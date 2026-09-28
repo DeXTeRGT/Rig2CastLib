@@ -409,6 +409,12 @@ nav {
     font-size: 16px
 }
 
+.panel-title p { margin: 4px 0 16px; color: var(--muted) }
+.audio-grid { display: grid; grid-template-columns: repeat(4, minmax(140px, 1fr)); gap: 14px }
+.audio-grid small { color: var(--muted); font-weight: 400 }
+.audio-actions { max-width: 360px; margin-top: 18px }
+.audio-note { color: var(--muted); font-size: 12px; margin: 16px 0 0 }
+
 .core-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
@@ -590,12 +596,15 @@ body.busy {
         grid-template-columns: 1fr
     }
 
+    .audio-grid { grid-template-columns: 1fr 1fr }
+
     .control-groups {
         grid-template-columns: 1fr
     }
 }
 
 @media(max-width:540px) {
+    .audio-grid { grid-template-columns: 1fr }
     .control-table {
         grid-template-columns: 1fr 90px 64px
     }

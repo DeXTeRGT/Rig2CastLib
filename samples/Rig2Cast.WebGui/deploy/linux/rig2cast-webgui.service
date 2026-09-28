@@ -1,0 +1,33 @@
+[Unit]
+Description=Rig2Cast Web GUI
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=rig2cast
+Group=rig2cast
+SupplementaryGroups=dialout
+WorkingDirectory=/opt/rig2cast-webgui
+ExecStart=/opt/rig2cast-webgui/Rig2Cast.WebGui
+EnvironmentFile=-/etc/rig2cast-webgui.env
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+SyslogIdentifier=rig2cast-webgui
+
+# The application needs network and serial-device access, but no writable system files.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

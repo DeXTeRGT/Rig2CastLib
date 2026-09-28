@@ -5,6 +5,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Concentus" Version="2.2.2" />
     <ProjectReference Include="..\..\src\Rig2Cast.Abstractions\Rig2Cast.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\Rig2Cast.Core\Rig2Cast.Core.csproj" />
     <ProjectReference Include="..\..\src\Rig2Cast.Runtime\Rig2Cast.Runtime.csproj" />

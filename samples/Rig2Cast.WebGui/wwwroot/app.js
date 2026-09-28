@@ -9,7 +9,9 @@ let models = [],
     pttLeaseActive = false,
     pttRenewalTimer = null;
 const frequencyWriteTimers = new Map();
-const clientId = sessionStorage.getItem('rig2castClientId') || crypto.randomUUID();
+const clientId = sessionStorage.getItem('rig2castClientId') ||
+    globalThis.crypto?.randomUUID?.() ||
+    `client-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 sessionStorage.setItem('rig2castClientId', clientId);
 const ui = {
     model: $('model'),
