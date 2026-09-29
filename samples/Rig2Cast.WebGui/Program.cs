@@ -97,16 +97,18 @@ api.MapPost("/radios/{radioId}/meters/{id}/read", async (string radioId, string 
 api.MapPost("/radios/{radioId}/passband/read", async (string radioId, HttpContext context, RadioWebHost host, CancellationToken ct) => Results.Ok(await host.ReadPassbandAsync(radioId, ApiClientIdentity.Require(context), ct)));
 api.MapPut("/radios/{radioId}/passband", async (string radioId, IntValue body, HttpContext context, RadioWebHost host, CancellationToken ct) => { await host.WritePassbandAsync(radioId, ApiClientIdentity.Require(context), body.Value, ct); return Results.NoContent(); });
 
-app.Map("/api/v1/radios/{radioId}/events", async (HttpContext context, string radioId, RadioWebHost host) =>
+app.Map("/api/v1/radios/{radioId}/events", async (HttpContext context, string radioId, RadioWebHost host, IHostApplicationLifetime lifetime) =>
 {
     if (!context.WebSockets.IsWebSocketRequest) { context.Response.StatusCode = StatusCodes.Status400BadRequest; return; }
     string clientId = context.Request.Query["clientId"].ToString();
     if (string.IsNullOrWhiteSpace(clientId)) throw new ArgumentException("The WebSocket clientId query parameter is required.");
     using WebSocket socket = await context.WebSockets.AcceptWebSocketAsync();
-    await host.StreamSnapshotsAsync(radioId, clientId, socket, context.RequestAborted);
+    using CancellationTokenSource shutdown = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, lifetime.ApplicationStopping);
+    using CancellationTokenRegistration abort = lifetime.ApplicationStopping.Register(socket.Abort);
+    await host.StreamSnapshotsAsync(radioId, clientId, socket, shutdown.Token);
 });
 
-app.Map("/api/v1/audio/stream", async (HttpContext context, StationConfiguration stationConfig, GhostLinkAudioCoordinator audio) =>
+app.Map("/api/v1/audio/stream", async (HttpContext context, StationConfiguration stationConfig, GhostLinkAudioCoordinator audio, IHostApplicationLifetime lifetime) =>
 {
     if (!context.WebSockets.IsWebSocketRequest)
     {
@@ -115,10 +117,12 @@ app.Map("/api/v1/audio/stream", async (HttpContext context, StationConfiguration
     }
 
     using WebSocket socket = await context.WebSockets.AcceptWebSocketAsync();
+    using CancellationTokenSource shutdown = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, lifetime.ApplicationStopping);
+    using CancellationTokenRegistration abort = lifetime.ApplicationStopping.Register(socket.Abort);
     if (stationConfig.IsLocked)
-        await audio.AttachBrowserAsync(socket, context.RequestAborted);
+        await audio.AttachBrowserAsync(socket, shutdown.Token);
     else
-        await AudioStreamBridge.RunAsync(socket, context.RequestAborted);
+        await AudioStreamBridge.RunAsync(socket, shutdown.Token);
 });
 
 app.MapFallbackToFile("index.html");

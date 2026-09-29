@@ -37,11 +37,59 @@
     </aside>
 
     <main>
-      <header>
-        <div><span class="eyebrow">LIVE RADIO</span><h1 id="radio-title">No radio connected</h1><p id="radio-summary">Capability-driven controls appear after connection.</p></div>
-        <div class="header-actions"><button id="ptt" class="ptt" disabled>PTT OFF</button><div id="connection-badge" class="badge offline">OFFLINE</div></div>
-      </header>
-      <div id="vfo-deck" class="vfo-deck empty"><div class="empty-state">Connect to display the radio's advertised VFO topology.</div></div>
+      <section class="radio-console" aria-label="Radio front panel">
+        <header class="console-header">
+          <div><span class="eyebrow">LIVE RADIO</span><h1 id="radio-title">No radio connected</h1><p id="radio-summary">Capability-driven controls appear after connection.</p></div>
+          <div class="header-actions"><button id="sidebar-toggle" class="view-toggle" type="button" aria-pressed="false" title="Show or hide the connection panel">CONNECTION</button><button id="panels-toggle" class="view-toggle" type="button" aria-pressed="false" title="Show or hide the lower panels">PANELS</button><div id="connection-badge" class="badge offline">OFFLINE</div></div>
+        </header>
+        <div class="console-face">
+          <aside id="common-knobs" class="common-knobs" aria-label="Common gain controls"></aside>
+          <div class="console-main">
+            <div id="vfo-deck" class="vfo-deck empty"><div class="empty-state">Connect to display the radio's advertised VFO topology.</div></div>
+            <div id="front-meters" class="front-meters empty-state">Advertised meters appear after connection.</div>
+            <div class="soft-keys" aria-label="Common radio controls">
+              <button id="mode-open" disabled>MODE</button>
+              <button id="direct-open" disabled>DIRECT</button>
+              <button id="split-soft" disabled>SPLIT</button>
+              <button id="more-open" disabled>MORE</button>
+            </div>
+          </div>
+          <aside class="tuning-cluster" aria-label="Tuning controls">
+            <div class="tuning-heading"><span>MAIN TUNING</span><small id="tuning-step">—</small></div>
+            <div id="tuning-dial" class="tuning-dial" role="slider" aria-label="Main VFO tuning" aria-disabled="true" tabindex="-1">
+              <div id="dial-motion" class="dial-motion"><div class="dial-marker"></div></div><div class="dial-cap"><span>VFO</span></div>
+            </div>
+            <p class="dial-help">Turn with your finger to tune<br>Wheel and arrow keys supported</p>
+            <div class="transmit-controls">
+              <button id="ptt" class="ptt" disabled>PTT OFF</button>
+              <div id="rx-state" class="rx-state">RX</div>
+            </div>
+          </aside>
+        </div>
+      </section>
+      <dialog id="frequency-dialog" class="console-dialog">
+        <form method="dialog" class="dialog-card">
+          <div class="dialog-heading"><div><span class="eyebrow">DIRECT ENTRY</span><h2 id="frequency-dialog-title">Set frequency</h2></div><button class="dialog-close" value="cancel" aria-label="Close">×</button></div>
+          <label>Frequency (Hz)<input id="direct-frequency" inputmode="numeric" type="number"></label>
+          <div class="dialog-actions"><button value="cancel">Cancel</button><button id="direct-apply" value="default" class="primary">Apply</button></div>
+        </form>
+      </dialog>
+      <dialog id="mode-dialog" class="console-dialog">
+        <div class="dialog-card">
+          <div class="dialog-heading"><div><span class="eyebrow">OPERATING MODE</span><h2>Select mode</h2></div><button class="dialog-close" data-close-dialog="mode-dialog" aria-label="Close">×</button></div>
+          <div id="primary-modes" class="mode-buttons"></div>
+          <button id="more-modes-toggle" class="more-modes-toggle" hidden>MORE MODES</button>
+          <div id="more-modes" class="mode-buttons secondary-modes" hidden></div>
+        </div>
+      </dialog>
+      <dialog id="more-dialog" class="console-dialog">
+        <div class="dialog-card wide-dialog">
+          <div class="dialog-heading"><div><span class="eyebrow">RADIO CAPABILITIES</span><h2>More controls</h2></div><button class="dialog-close" data-close-dialog="more-dialog" aria-label="Close">×</button></div>
+          <div id="more-capabilities" class="capability-summary"></div>
+          <section class="meter-picker-section"><h3>Front-panel meters <small>Choose up to three</small></h3><div id="meter-picker" class="meter-picker"></div></section>
+          <button id="advanced-controls-open" class="primary">Open advanced controls</button>
+        </div>
+      </dialog>
       <nav><button class="tab active" data-tab="radio">Radio</button><button class="tab" data-tab="controls">Controls</button><button class="tab" data-tab="meters">Meters</button><button class="tab" data-tab="audio">Audio</button><button class="tab" data-tab="diagnostics">Diagnostics</button><button id="refresh-all" class="refresh" disabled>Refresh all</button></nav>
       <section id="tab-radio" class="tab-page active"><div id="core-card" class="panel empty-state">Runtime capabilities and core state will appear here.</div></section>
       <section id="tab-controls" class="tab-page"><div id="controls-grid" class="control-groups"></div></section>

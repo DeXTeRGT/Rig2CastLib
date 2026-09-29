@@ -214,6 +214,21 @@ main {
     min-width: 0
 }
 
+.radio-console { overflow: hidden; border: 1px solid #526070; border-radius: 14px; background: linear-gradient(145deg, #202a32, #0b1117 72%); box-shadow: 0 22px 50px #0008, inset 0 1px #ffffff1f, inset 0 -1px #000 }
+.console-header { padding: 18px 22px; border-bottom: 1px solid #34445f; background: linear-gradient(180deg, #182333, #111a28) }
+.console-face { display: grid; grid-template-columns: 178px minmax(0, 1fr) 248px; min-height: 390px }
+.console-main { min-width: 0; padding-bottom: 16px }
+.common-knobs { padding: 22px 16px; border-right: 1px solid #34445f; background: linear-gradient(145deg, #151f28, #0b1219); display: flex; flex-direction: column; align-items: center; gap: 22px }
+.common-knobs:empty { display: none }
+.knob-control { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 7px; color: #c8d6e3; font-size: 11px; letter-spacing: .06em }
+.control-knob { --knob-angle: -135deg; width: 92px; height: 92px; position: relative; border: 4px solid #263746; border-radius: 50%; background: radial-gradient(circle at 38% 32%, #344454, #0b1117 68%); box-shadow: 0 7px 16px #0008, inset -6px -8px 14px #0009 }
+.control-knob::before { content: ""; position: absolute; inset: -7px; z-index: -1; border-radius: 50%; background: conic-gradient(from 225deg, var(--cyan) 0 var(--knob-fill, 0%), #263746 var(--knob-fill, 0%) 75%, transparent 75%) }
+.knob-pointer { position: absolute; left: 50%; top: 8px; width: 4px; height: 25px; border-radius: 3px; background: #d5f5ff; box-shadow: 0 0 8px var(--cyan); transform-origin: 2px 38px; transform: translateX(-50%) rotate(var(--knob-angle)) }
+.control-knob { cursor: grab; touch-action: none; user-select: none; outline: none }
+.control-knob.turning { cursor: grabbing; border-color: var(--cyan); box-shadow: 0 0 18px #26b8ff42, 0 7px 16px #0008, inset -6px -8px 14px #0009 }
+.control-knob:focus-visible { box-shadow: 0 0 0 3px #26b8ff66, 0 7px 16px #0008, inset -6px -8px 14px #0009 }
+.knob-value { color: #d5f5ff; font-size: 14px; font-weight: 800; letter-spacing: 0 }
+
 header {
     display: flex;
     justify-content: space-between;
@@ -244,10 +259,21 @@ header p {
     gap: 12px
 }
 
+.view-toggle { min-width: 108px; min-height: 44px; background: linear-gradient(180deg, #26333e, #121a22); border-color: #465768; font-size: 11px; letter-spacing: .05em }
+.view-toggle[aria-pressed="true"] { color: #8deaff; border-color: var(--cyan); box-shadow: inset 0 -3px var(--cyan) }
+
+body.hide-sidebar .app-shell { grid-template-columns: 1fr }
+body.hide-sidebar .sidebar { display: none }
+body.hide-bottom-panels main > nav,
+body.hide-bottom-panels main > .tab-page { display: none }
+
 .ptt {
-    min-width: 104px;
+    min-width: 118px;
+    min-height: 58px;
+    font-size: 17px;
     border-color: #70404a;
-    color: #ffb2bd
+    color: #ffb2bd;
+    background: linear-gradient(145deg, #3a2029, #23151b)
 }
 
 .ptt.transmitting {
@@ -274,22 +300,29 @@ header p {
 .vfo-deck {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-    gap: 14px;
-    margin: 26px 0
+    gap: 12px;
+    margin: 0;
+    padding: 18px
 }
 
 .vfo-card {
-    padding: 20px;
+    padding: 22px;
     border: 1px solid var(--line);
     background: linear-gradient(145deg, #111d32, #0d1729);
-    border-radius: 14px;
-    position: relative
+    border-radius: 12px;
+    position: relative;
+    min-width: 0
 }
 
 .vfo-card.active {
     border-color: var(--cyan);
-    box-shadow: inset 0 0 0 1px #26b8ff33
+    background: radial-gradient(circle at 30% 0, #103746, #0b1721 60%);
+    box-shadow: inset 0 0 0 1px #26b8ff66, 0 0 16px #26b8ff2e
 }
+
+.vfo-card.selectable { cursor: pointer; touch-action: manipulation }
+.vfo-card.selectable:active { transform: translateY(1px) }
+.vfo-card.selectable:focus-visible { outline: 3px solid #26b8ff88; outline-offset: 2px }
 
 .vfo-card.split-tx {
     border-color: var(--danger);
@@ -305,29 +338,34 @@ header p {
 }
 
 .vfo-role {
-    position: absolute;
-    right: 18px;
-    top: 17px;
+    padding: 7px 11px;
+    border: 1px solid #38506e;
+    border-radius: 7px;
     color: var(--cyan);
     font-size: 11px;
     font-weight: 800
 }
 
+.vfo-card-header { display: flex; justify-content: space-between; align-items: center; gap: 12px }
+
 .vfo-name {
     color: #9eb2d3;
-    font-weight: 800
+    font-size: 20px;
+    font-weight: 900;
+    letter-spacing: .08em
 }
 
 .frequency {
-    font-size: 29px;
-    font-weight: 800;
-    margin: 17px 0 14px;
-    letter-spacing: .02em
+    font: 800 clamp(28px, 3vw, 47px)/1.05 ui-monospace, SFMono-Regular, Consolas, monospace;
+    margin: 28px 0 24px;
+    letter-spacing: .025em;
+    white-space: nowrap
 }
 
 .frequency.tunable {
-    cursor: ns-resize;
-    user-select: none
+    cursor: ew-resize;
+    user-select: none;
+    touch-action: none
 }
 
 .frequency.tunable:hover {
@@ -344,6 +382,65 @@ header p {
     flex: 1;
     min-width: 0
 }
+
+.vfo-details { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 14px }
+.vfo-detail { padding: 10px; border: 1px solid #21324a; border-radius: 8px; background: #08121f; text-align: center }
+.vfo-detail small, .vfo-detail strong { display: block }
+.vfo-detail small { color: var(--muted); font-size: 10px; letter-spacing: .08em }
+.vfo-detail strong { margin-top: 5px; color: #aeeaff; font-size: 15px }
+.vfo-step-select { width: 100%; height: 32px; margin-top: 3px; padding: 0 7px; border-color: #33536a; background: #0a1b28; color: #aeeaff; font-weight: 800; text-align: center }
+
+.tuning-cluster { padding: 22px 20px; border-left: 1px solid #34445f; background: linear-gradient(155deg, #141e2c, #0c131e); display: flex; flex-direction: column; align-items: center }
+.tuning-heading { width: 100%; display: flex; justify-content: space-between; color: #dce8fb; font-weight: 900; letter-spacing: .08em }
+.tuning-heading small { color: var(--cyan); letter-spacing: 0 }
+.tuning-dial { width: 190px; height: 190px; margin: 28px 0 14px; border: 5px solid #26364a; border-radius: 50%; position: relative; display: grid; place-items: center; background: repeating-conic-gradient(#536278 0 1deg, #111926 1deg 5deg); box-shadow: 0 10px 28px #000a, inset 0 0 0 7px #080d14; cursor: ew-resize; touch-action: none; user-select: none; outline: none }
+.tuning-dial[aria-disabled="true"] { opacity: .42; cursor: not-allowed }
+.tuning-dial:not([aria-disabled="true"]):focus-visible { box-shadow: 0 0 0 3px #26b8ff77, 0 10px 28px #000a, inset 0 0 0 7px #080d14 }
+.tuning-dial.tuning { border-color: var(--cyan); box-shadow: 0 0 24px #26b8ff3d, inset 0 0 0 7px #080d14 }
+.dial-cap { width: 150px; height: 150px; border-radius: 50%; display: grid; place-items: center; position: relative; z-index: 2; background: radial-gradient(circle at 38% 32%, #354255, #0b111a 68%); box-shadow: inset -10px -12px 24px #0009, inset 6px 6px 15px #ffffff0c }
+.dial-cap span { color: #71829a; font-size: 12px; font-weight: 900; letter-spacing: .18em }
+.dial-motion { position: absolute; inset: 0; z-index: 3; pointer-events: none; transition: transform 90ms linear }
+.dial-marker { position: absolute; top: 10px; left: 50%; width: 5px; height: 25px; border-radius: 4px; background: #bceeff; box-shadow: 0 0 12px var(--cyan); transform: translateX(-50%) }
+.dial-help { margin: 0; color: var(--muted); text-align: center; font-size: 11px; line-height: 1.5 }
+.transmit-controls { width: 100%; display: grid; grid-template-columns: 1fr 64px; gap: 9px; margin-top: auto; padding-top: 22px }
+.rx-state { display: grid; place-items: center; min-height: 58px; border: 1px solid #1f8056; border-radius: 8px; color: var(--green); background: #0b2b23; font-size: 18px; font-weight: 900 }
+.rx-state.transmitting { color: #ffb2bd; border-color: #70404a; background: #351820 }
+
+.front-meters { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 1px; min-height: 98px; margin: 0 18px 12px; overflow: hidden; border: 1px solid #334457; border-radius: 10px; background: #334457 }
+.front-meter { min-width: 0; padding: 14px; background: linear-gradient(180deg, #0b151d, #071016) }
+.front-meter-head { display: flex; justify-content: space-between; gap: 8px; color: #b9c9d7; font-size: 11px; font-weight: 800; letter-spacing: .06em }
+.front-meter-value { margin: 8px 0; color: #bff5ff; text-align: center; font-size: 17px; font-weight: 900 }
+.front-meter-track { height: 9px; overflow: hidden; border-radius: 2px; background: repeating-linear-gradient(90deg, #33404b 0 7px, #101820 7px 9px) }
+.front-meter-fill { width: 0; height: 100%; background: linear-gradient(90deg, #31e66f 0 65%, #ffd34f 65% 82%, #f44747 82%); transition: width .2s ease }
+
+.soft-keys { display: grid; grid-template-columns: repeat(4, minmax(92px, 1fr)); gap: 10px; padding: 0 18px }
+.soft-keys button { min-height: 52px; background: linear-gradient(180deg, #26333e, #121a22); border-color: #465768; box-shadow: inset 0 1px #ffffff14, 0 3px 5px #0005 }
+.soft-keys button.active { color: #89eaff; border-color: var(--cyan); box-shadow: inset 0 -3px var(--cyan), 0 0 10px #26b8ff2e }
+
+.console-dialog { width: min(620px, calc(100vw - 28px)); padding: 0; border: 1px solid #526477; border-radius: 14px; background: transparent; color: var(--text); box-shadow: 0 30px 90px #000c }
+.console-dialog::backdrop { background: #02060dcc; backdrop-filter: blur(4px) }
+.dialog-card { padding: 22px; background: linear-gradient(145deg, #1c2832, #0b1219) }
+.wide-dialog { width: 100% }
+.dialog-heading { display: flex; justify-content: space-between; align-items: start; gap: 18px; margin-bottom: 22px }
+.dialog-heading h2 { margin: 5px 0 0; color: white; font-size: 24px; letter-spacing: 0; text-transform: none }
+.dialog-close { width: 48px; height: 48px; padding: 0; font-size: 28px }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 10px }
+.dialog-actions button { min-width: 110px; min-height: 48px }
+.mode-buttons { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 10px }
+.mode-buttons button { min-height: 56px; font-size: 16px }
+.mode-buttons button.active { color: #7ce9ff; border-color: var(--cyan); box-shadow: inset 0 -3px var(--cyan) }
+.more-modes-toggle { width: 100%; min-height: 48px; margin-top: 14px }
+.secondary-modes { margin-top: 10px; padding-top: 14px; border-top: 1px solid #354454 }
+.capability-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 9px; margin-bottom: 18px }
+.capability-chip { min-height: 48px; padding: 12px; border: 1px solid #334657; border-radius: 8px; background: #0b151d }
+.capability-chip strong, .capability-chip small { display: block }
+.capability-chip small { margin-top: 4px; color: var(--muted) }
+.meter-picker-section { padding: 16px 0; margin: 4px 0 18px; border-top: 1px solid #354454; border-bottom: 1px solid #354454 }
+.meter-picker-section h3 { margin: 0 0 12px }
+.meter-picker-section h3 small { color: var(--muted); font-weight: 400 }
+.meter-picker { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px }
+.meter-choice { min-height: 48px; margin: 0; padding: 10px; display: flex; align-items: center; gap: 9px; border: 1px solid #334657; border-radius: 8px; background: #0b151d }
+.meter-choice input { width: 20px; height: 20px; margin: 0; accent-color: var(--cyan) }
 
 .empty-state {
     color: var(--muted);
@@ -362,7 +459,7 @@ nav {
     align-items: end;
     gap: 24px;
     border-bottom: 1px solid var(--line);
-    margin-bottom: 20px
+    margin: 26px 0 20px
 }
 
 .tab {
@@ -606,9 +703,31 @@ body.busy {
     .control-groups {
         grid-template-columns: 1fr
     }
+
+    .console-face { grid-template-columns: 1fr }
+    .common-knobs { border-right: 0; border-bottom: 1px solid #34445f; flex-direction: row; justify-content: center; flex-wrap: wrap }
+    .tuning-cluster { border-left: 0; border-top: 1px solid #34445f; display: grid; grid-template-columns: 1fr 190px 1fr; gap: 20px }
+    .tuning-heading { align-self: start; flex-direction: column; gap: 8px }
+    .tuning-dial { margin: 0 }
+    .dial-help { align-self: center }
+    .transmit-controls { grid-column: 1 / -1; padding-top: 0 }
 }
 
 @media(max-width:540px) {
+    .console-header { align-items: flex-start; flex-direction: column }
+    .header-actions { width: 100%; flex-wrap: wrap }
+    .view-toggle { flex: 1; min-width: 96px }
+    .header-actions .badge { width: 100%; text-align: center }
+    .vfo-deck { grid-template-columns: 1fr; padding: 10px }
+    .front-meters { margin: 0 10px 10px; grid-template-columns: repeat(2, 1fr) }
+    .soft-keys { padding: 0 10px; grid-template-columns: repeat(2, 1fr) }
+    .vfo-card { padding: 16px }
+    .frequency { font-size: clamp(27px, 10vw, 40px) }
+    .frequency-editor button { min-width: 72px }
+    .tuning-cluster { display: flex }
+    .tuning-heading { flex-direction: row }
+    .tuning-dial { width: 180px; height: 180px; margin: 22px 0 12px }
+    .transmit-controls { padding-top: 20px }
     .audio-grid { grid-template-columns: 1fr }
     .control-table {
         grid-template-columns: 1fr 90px 64px

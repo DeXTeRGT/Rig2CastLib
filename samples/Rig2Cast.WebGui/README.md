@@ -105,7 +105,13 @@ PTT is available only to the owning Operator page when the radio advertises writ
 - `PUT /api/v1/radios/{radioId}/ptt` toggles lease-protected PTT and `POST /ptt/renew` renews an active browser-owned transmit lease.
 - WebSocket `/api/v1/radios/{radioId}/events?clientId=...` sends an initial snapshot and updated snapshots for that radio.
 
-Writable VFO frequency displays support mouse-wheel tuning using the driver's smallest advertised step. Hold Shift for 10x or Ctrl for 100x. Split transmit VFO cards use a red border while the active receive VFO remains cyan.
+The main tuning dial and promoted gain controls follow circular finger/pointer motion like physical knobs. Mouse-wheel and keyboard-arrow operation remain available, using the advertised tuning/control step; Shift provides 10x and Ctrl 100x acceleration on devices with keyboards. Split transmit VFO cards use a red border while the active receive VFO remains cyan.
+
+VFO writes use a per-VFO coalescing pipeline rather than a stop-to-send debounce. The first value is sent immediately, continued movement sends at most eight writes per second with only one request in flight, intermediate pending values are replaced by the newest value, and the final value is always delivered. Incoming event snapshots cannot overwrite a newer optimistic frequency while a write is pending.
+
+When the driver advertises a tuning-step choice, each visible VFO card provides a touch-friendly step selector and tuning gestures use that selected value. The front panel omits the rarely used Memory VFO card, promotes advertised AF/RF gain and squelch controls to rotary-style controls, and polls only the one-to-three meters selected under More. Signal strength, power, and SWR are preferred by default when available; transmit-only meters remain idle while receiving. Open radio and audio WebSockets are linked to host shutdown and are aborted when the application stops, so a connected browser cannot delay service termination.
+
+The CONNECTION and PANELS buttons in the radio header independently hide the setup sidebar and the complete lower tab area for a compact radio-focused view. These browser-local preferences persist across reloads, and the header buttons remain available to restore either area.
 
 These interactions were physically validated on an FTDX10 on 2026-09-06: wheel
 tuning addressed the intended VFO with each modifier, the split transmit border
