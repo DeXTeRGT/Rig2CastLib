@@ -1,0 +1,33 @@
+{
+  "Station": {
+    "Id": "main",
+    "DisplayName": "Main Remote Station",
+    "Locked": true,
+    "AutoConnect": true
+  },
+  "Radio": {
+    "ModelId": "yaesu.ftdx10",
+    "Transport": "Serial",
+    "SerialPort": "/dev/serial/by-id/replace-with-your-radio-device",
+    "BaudRate": 38400,
+    "Settings": {
+      "yaesu.autoInformation": "false"
+    },
+    "ModeRestrictions": "Enforce"
+  },
+  "Audio": {
+    "Host": "192.168.0.70",
+    "ServerTxPort": 6001,
+    "ServerRxPort": 6002,
+    "OpusBitrate": 16000,
+    "AllowMicrophone": true,
+    "ConnectionPolicy": "OnDemand",
+    "DisconnectGraceSeconds": 15
+  },
+  "Access": {
+    "AllowRadioWrites": true,
+    "AllowPtt": true,
+    "AllowAudioReceive": true,
+    "AllowAudioTransmit": true
+  }
+}

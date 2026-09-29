@@ -1,5 +1,5 @@
 (() => {
-    let socket, context, mediaStream, source, processor, nextPlayTime = 0;
+    let socket, context, mediaStream, source, processor, nextPlayTime = 0, active = false, reconnectTimer;
     const byId = id => document.getElementById(id);
 
     function badge(text, online = false) {
@@ -10,6 +10,7 @@
 
     async function start() {
         byId('audio-connect').disabled = true;
+        active = true;
         try {
             context = new AudioContext({ sampleRate: 48000 });
             await context.resume();
@@ -23,18 +24,7 @@
                 source.connect(processor);
                 processor.connect(silence).connect(context.destination);
             }
-            const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-            socket = new WebSocket(`${protocol}://${location.host}/api/v1/audio/stream`);
-            socket.binaryType = 'arraybuffer';
-            socket.onopen = () => socket.send(JSON.stringify({
-                host: byId('audio-host').value.trim(),
-                txPort: Number(byId('audio-tx-port').value),
-                rxPort: Number(byId('audio-rx-port').value),
-                bitrate: Number(byId('audio-bitrate').value)
-            }));
-            socket.onmessage = event => typeof event.data === 'string' ? handleStatus(event.data) : playPcm(event.data);
-            socket.onerror = () => badge('ERROR');
-            socket.onclose = stop;
+            connectSocket();
             byId('audio-disconnect').disabled = false;
             badge('CONNECTING');
         } catch (error) {
@@ -44,11 +34,39 @@
         }
     }
 
+    function connectSocket() {
+            const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+            socket = new WebSocket(`${protocol}://${location.host}/api/v1/audio/stream`);
+            socket.binaryType = 'arraybuffer';
+            socket.onopen = () => socket.send(JSON.stringify({
+                clientId: sessionStorage.getItem('rig2castClientId') || 'audio-browser',
+                host: byId('audio-host').value.trim(),
+                txPort: Number(byId('audio-tx-port').value),
+                rxPort: Number(byId('audio-rx-port').value),
+                bitrate: Number(byId('audio-bitrate').value)
+            }));
+            socket.onmessage = event => typeof event.data === 'string' ? handleStatus(event.data) : playPcm(event.data);
+            socket.onerror = () => badge('ERROR');
+            socket.onclose = () => {
+                socket = null;
+                if (!active) return;
+                badge('RECONNECTING');
+                clearTimeout(reconnectTimer);
+                reconnectTimer = setTimeout(connectSocket, 1500);
+            };
+    }
+
     function handleStatus(value) {
         const message = JSON.parse(value);
         if (message.state === 'connected') {
             badge('STREAMING', true);
             globalThis.log?.('Audio stream connected.');
+        } else if (message.state === 'connecting' || message.state === 'reconnecting') {
+            badge(message.state.toUpperCase());
+            if (message.message) globalThis.log?.(`Audio: ${message.message}`, 'WARN');
+        } else if (message.state === 'busy') {
+            badge('BUSY');
+            globalThis.log?.(`Audio: ${message.message}`, 'WARN');
         } else if (message.state === 'error') {
             badge('ERROR');
             globalThis.log?.(`Audio: ${message.message}`, 'ERROR');
@@ -84,7 +102,13 @@
     }
 
     function stop() {
-        if (socket) { socket.onclose = null; socket.close(); socket = null; }
+        active = false;
+        clearTimeout(reconnectTimer);
+        if (socket) {
+            socket.onclose = null;
+            try { socket.close(1000, 'user-stop'); } catch { socket.close(); }
+            socket = null;
+        }
         if (processor) { processor.disconnect(); processor = null; }
         if (source) { source.disconnect(); source = null; }
         if (mediaStream) { mediaStream.getTracks().forEach(track => track.stop()); mediaStream = null; }

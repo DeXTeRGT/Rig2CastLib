@@ -84,11 +84,20 @@ async function run(action, label) {
     }
 }
 async function bootstrap() {
+    const s = await api('/status');
     models = await api('/models');
     ui.model.innerHTML = models.map(m => `<option value="${esc(m.id)}">${esc(m.manufacturer)} ${esc(m.model)}</option>`).join('');
     await loadPorts();
     renderModel();
-    const s = await api('/status');
+    if (s.station?.locked) {
+        $('connection-form').hidden = true;
+        $('station-lock-summary').hidden = false;
+        $('station-lock-summary').textContent = s.station.displayName;
+        $('audio-config').hidden = true;
+        $('audio-mic').checked = !!s.station.audioAllowMicrophone;
+        $('audio-mic').disabled = !s.station.audioAllowMicrophone;
+        ui.connect.textContent = 'Attach station';
+    }
     if (!s.serverAllowsWrites) {
         $('enable-writes').disabled = true;
         $('enable-writes').title = 'Start with Rig2Cast__AllowWrites=true to permit operator sessions.'
@@ -155,7 +164,7 @@ async function connect() {
     renderSnapshot();
     openSocket();
     await refreshAll();
-    status(result.result === 'attached' ? 'Attached read-only' : 'Connected', result.message, 'online');
+    status(result.readOnly ? 'Attached read-only' : 'Connected as operator', result.message, 'online');
     log(`${result.message} Radio ID: ${radioId}.`)
 }
 async function disconnect() {
@@ -236,7 +245,7 @@ function renderVfos(c, s, writes) {
 }
 
 function canControlPtt() {
-    return !!snapshot && isOwner && clientRole.toLowerCase() === 'operator' &&
+    return !!snapshot && clientRole.toLowerCase() === 'operator' &&
         snapshot.authorization.canControl && access(snapshot.capabilities.transmit, 'write')
 }
 
@@ -246,7 +255,7 @@ function renderPtt(c, s) {
     button.classList.toggle('transmitting', s.isTransmitting);
     button.disabled = busy || !canControlPtt();
     button.title = button.disabled
-        ? 'PTT requires the owning Operator page and writable transmit capability.'
+        ? 'PTT requires an Operator session and writable transmit capability.'
         : 'Toggle PTT. A 10-second safety lease is renewed every 5 seconds while active.';
     if (!s.isTransmitting) {
         pttLeaseActive = false;

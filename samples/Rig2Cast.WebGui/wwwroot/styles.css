@@ -17,6 +17,10 @@
     box-sizing: border-box
 }
 
+[hidden] {
+    display: none !important
+}
+
 body {
     margin: 0;
     background: radial-gradient(circle at 75% -10%, #123154 0, transparent 36%), var(--bg);
@@ -414,6 +418,7 @@ nav {
 .audio-grid small { color: var(--muted); font-weight: 400 }
 .audio-actions { max-width: 360px; margin-top: 18px }
 .audio-note { color: var(--muted); font-size: 12px; margin: 16px 0 0 }
+.station-lock-summary { margin-bottom: 16px; padding: 12px; border: 1px solid var(--cyan); border-radius: 9px; background: #092238; color: #d9f4ff }
 
 .core-grid {
     display: grid;

@@ -45,14 +45,16 @@ public sealed class RadioWebHost : IAsyncDisposable
     private readonly Dictionary<string, RadioEntry> _radios = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> _radioIdsByEndpoint = new(StringComparer.OrdinalIgnoreCase);
     private readonly bool _serverAllowsWrites;
+    private readonly StationConfiguration _station;
     private readonly JsonSerializerOptions _json = new(JsonSerializerDefaults.Web)
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         Converters = { new JsonStringEnumConverter() }
     };
 
-    public RadioWebHost(IConfiguration configuration)
+    public RadioWebHost(IConfiguration configuration, StationConfiguration station)
     {
+        _station = station;
         _serverAllowsWrites = configuration.GetValue("Rig2Cast:AllowWrites", false);
         _catalog.Register(new Ftdx10DriverFactory());
         _catalog.Register(new ElecraftK3DriverFactory());
@@ -71,13 +73,22 @@ public sealed class RadioWebHost : IAsyncDisposable
                 activeRadios = _radios.Count,
                 serverAllowsWrites = _serverAllowsWrites,
                 pttAvailable = true,
-                rawCatAvailable = false
+                rawCatAvailable = false,
+                station = _station.IsLocked ? new
+                {
+                    locked = true,
+                    _station.Station.Id,
+                    _station.Station.DisplayName,
+                    audioAllowMicrophone = _station.Audio.AllowMicrophone && _station.Access.AllowAudioTransmit
+                } : null
             };
         }
         finally { _registryGate.Release(); }
     }
 
-    public object GetModels() => _catalog.Models.Select(item => new
+    public object GetModels() => _catalog.Models
+        .Where(item => !_station.IsLocked || item.Model.Id.Equals(_station.Radio.ModelId, StringComparison.OrdinalIgnoreCase))
+        .Select(item => new
     {
         id = item.Model.Id,
         item.Model.Manufacturer,
@@ -89,7 +100,7 @@ public sealed class RadioWebHost : IAsyncDisposable
         simulatorAvailable = item.Model.Id.Equals(Ftdx10CatProfile.ModelId, StringComparison.OrdinalIgnoreCase)
     });
 
-    public IReadOnlyList<SerialPortDescriptor> GetSerialPorts() => _ports.GetPorts();
+    public IReadOnlyList<SerialPortDescriptor> GetSerialPorts() => _station.IsLocked ? [] : _ports.GetPorts();
 
     public object GetRadios()
     {
@@ -101,6 +112,7 @@ public sealed class RadioWebHost : IAsyncDisposable
     public async Task<WebConnectionResult> ConnectOrAttachAsync(ConnectRequest request, CancellationToken cancellationToken)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(request.ClientId);
+        if (_station.IsLocked) request = _station.RadioRequest(request.ClientId);
         await _registryGate.WaitAsync(cancellationToken);
         try
         {
@@ -123,7 +135,7 @@ public sealed class RadioWebHost : IAsyncDisposable
                 created = new RadioEntry(
                     radioId, endpointKey, EndpointDisplay(transportKind, request), registration.Model.Id,
                     registration.Model.Manufacturer, registration.Model.Model, transportKind, radio,
-                    request.ClientId, ownerCanWrite);
+                    _station.IsLocked ? "station-service" : request.ClientId, ownerCanWrite, _station.IsLocked);
                 ClientAttachment attachment = Attach(created, request.ClientId);
                 _radios.Add(radioId, created);
                 _radioIdsByEndpoint.Add(endpointKey, radioId);
@@ -138,14 +150,48 @@ public sealed class RadioWebHost : IAsyncDisposable
         finally { _registryGate.Release(); }
     }
 
+    public async Task EnsureStationStartedAsync(CancellationToken cancellationToken)
+    {
+        if (!_station.IsLocked) return;
+        ConnectRequest request = _station.RadioRequest("station-service");
+        await _registryGate.WaitAsync(cancellationToken);
+        try
+        {
+            RadioModelRegistration registration = _catalog.Find(request.ModelId);
+            RadioTransportKind transportKind = Enum.Parse<RadioTransportKind>(request.Transport, true);
+            string endpointKey = GetEndpointKey(registration.Model, transportKind, request);
+            if (_radioIdsByEndpoint.ContainsKey(endpointKey)) return;
+            ManagedRadio radio = await OpenRadioAsync(registration, transportKind, request, cancellationToken);
+            string radioId = $"station-{_station.Station.Id}";
+            var entry = new RadioEntry(radioId, endpointKey, EndpointDisplay(transportKind, request),
+                registration.Model.Id, registration.Model.Manufacturer, registration.Model.Model,
+                transportKind, radio, "station-service",
+                _serverAllowsWrites && _station.Access.AllowRadioWrites, true);
+            _radios.Add(radioId, entry);
+            _radioIdsByEndpoint.Add(endpointKey, radioId);
+        }
+        finally { _registryGate.Release(); }
+    }
+
     private static ClientAttachment Attach(RadioEntry entry, string clientId)
     {
         if (entry.Attachments.TryGetValue(clientId, out ClientAttachment? current)) return current;
         bool owner = StringComparer.Ordinal.Equals(clientId, entry.OwnerClientId);
-        ClientRole role = owner && entry.OwnerCanWrite ? ClientRole.Operator : ClientRole.Observer;
-        IRadioSession session = entry.Radio.OpenSession(
-            new ClientIdentity(clientId, owner ? "Web radio owner" : "Web observer"), role);
-        var attachment = new ClientAttachment(clientId, session, owner, role);
+        bool stationOperator = entry.StationManaged && entry.OwnerCanWrite && entry.OperatorClientId is null;
+        ClientRole role = (owner || stationOperator) && entry.OwnerCanWrite ? ClientRole.Operator : ClientRole.Observer;
+        if (stationOperator) entry.OperatorClientId = clientId;
+        IRadioSession session;
+        try
+        {
+            session = entry.Radio.OpenSession(
+                new ClientIdentity(clientId, role == ClientRole.Operator ? "Web station operator" : "Web observer"), role);
+        }
+        catch
+        {
+            if (stationOperator) entry.OperatorClientId = null;
+            throw;
+        }
+        var attachment = new ClientAttachment(clientId, session, owner || stationOperator, role);
         entry.Attachments.Add(clientId, attachment);
         return attachment;
     }
@@ -155,9 +201,11 @@ public sealed class RadioWebHost : IAsyncDisposable
         entry.RadioId,
         attachedExisting ? "attached" : "opened",
         attachment.Role,
-        attachment.IsOwner,
+        attachment.IsOwner && !entry.StationManaged,
         attachment.Role == ClientRole.Observer,
-        attachedExisting
+        entry.StationManaged && attachment.Role == ClientRole.Operator
+            ? "Attached to the locked station with operator access."
+            : attachedExisting
             ? "This physical radio is already open. This page was attached to the existing connection read-only."
             : attachment.Role == ClientRole.Operator
                 ? "The radio was opened and this page has operator access."
@@ -173,6 +221,7 @@ public sealed class RadioWebHost : IAsyncDisposable
             RadioEntry entry = FindRadio(radioId);
             if (!entry.Attachments.Remove(clientId, out attachment))
                 throw new KeyNotFoundException("This browser is not attached to that radio.");
+            if (StringComparer.Ordinal.Equals(entry.OperatorClientId, clientId)) entry.OperatorClientId = null;
         }
         finally { _registryGate.Release(); }
         await attachment.DisposeAsync();
@@ -185,6 +234,8 @@ public sealed class RadioWebHost : IAsyncDisposable
         try
         {
             entry = FindRadio(radioId);
+            if (entry.StationManaged)
+                throw new UnauthorizedAccessException("The locked station radio is owned by the service and cannot be closed by a browser.");
             if (!StringComparer.Ordinal.Equals(entry.OwnerClientId, clientId))
                 throw new UnauthorizedAccessException("Only the page that opened this physical radio may close it.");
             _radios.Remove(entry.RadioId);
@@ -372,8 +423,10 @@ public sealed class RadioWebHost : IAsyncDisposable
         }
     }
 
-    private static void EnsurePttAuthorized(ClientAttachment attachment)
+    private void EnsurePttAuthorized(ClientAttachment attachment)
     {
+        if (_station.IsLocked && !_station.Access.AllowPtt)
+            throw new UnauthorizedAccessException("PTT is disabled by station policy.");
         if (!attachment.IsOwner || attachment.Role != ClientRole.Operator)
             throw new UnauthorizedAccessException("Only the owning Operator page may control PTT.");
     }
@@ -399,14 +452,56 @@ public sealed class RadioWebHost : IAsyncDisposable
 
     public async Task StreamSnapshotsAsync(string radioId, string clientId, WebSocket socket, CancellationToken cancellationToken)
     {
-        IRadioSession session = Session(radioId, clientId);
-        await SendAsync(socket, new { type = "snapshot", snapshot = await session.GetSnapshotAsync(cancellationToken) }, cancellationToken);
-        await foreach (var radioEvent in session.WatchEventsAsync(cancellationToken))
+        ClientAttachment attachment = GetAttachment(radioId, clientId);
+        long generation = Interlocked.Increment(ref attachment.EventStreamGeneration);
+        try
         {
-            if (socket.State != WebSocketState.Open) break;
-            RadioSnapshot snapshot = await session.GetSnapshotAsync(cancellationToken);
-            await SendAsync(socket, new { type = "radioEvent", radioEvent.Sequence, radioEvent.Kind, radioEvent.OccurredAt, snapshot }, cancellationToken);
+            await SendAsync(socket, new { type = "snapshot", snapshot = await attachment.Session.GetSnapshotAsync(cancellationToken) }, cancellationToken);
+            await foreach (var radioEvent in attachment.Session.WatchEventsAsync(cancellationToken))
+            {
+                if (socket.State != WebSocketState.Open) break;
+                RadioSnapshot snapshot = await attachment.Session.GetSnapshotAsync(cancellationToken);
+                await SendAsync(socket, new { type = "radioEvent", radioEvent.Sequence, radioEvent.Kind, radioEvent.OccurredAt, snapshot }, cancellationToken);
+            }
         }
+        finally
+        {
+            await ForceReceiveAfterEventDisconnectAsync(attachment).ConfigureAwait(false);
+            _ = ReleaseDisconnectedAttachmentAsync(radioId, clientId, attachment, generation);
+        }
+    }
+
+    private static async Task ForceReceiveAfterEventDisconnectAsync(ClientAttachment attachment)
+    {
+        if (attachment.TransmitLease is null) return;
+        await attachment.PttGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (attachment.TransmitLease is not null)
+                await StopPttCoreAsync(attachment, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is InvalidLeaseException or ObjectDisposedException) { }
+        finally { attachment.PttGate.Release(); }
+    }
+
+    private async Task ReleaseDisconnectedAttachmentAsync(
+        string radioId, string clientId, ClientAttachment attachment, long generation)
+    {
+        await Task.Delay(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+        ClientAttachment? removed = null;
+        await _registryGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (!_radios.TryGetValue(radioId, out RadioEntry? entry) ||
+                !entry.Attachments.TryGetValue(clientId, out ClientAttachment? current) ||
+                !ReferenceEquals(current, attachment) ||
+                Volatile.Read(ref attachment.EventStreamGeneration) != generation) return;
+            entry.Attachments.Remove(clientId);
+            if (StringComparer.Ordinal.Equals(entry.OperatorClientId, clientId)) entry.OperatorClientId = null;
+            removed = attachment;
+        }
+        finally { _registryGate.Release(); }
+        if (removed is not null) await removed.DisposeAsync().ConfigureAwait(false);
     }
 
     private Task SendAsync(WebSocket socket, object value, CancellationToken ct) =>
@@ -431,6 +526,7 @@ public sealed class RadioWebHost : IAsyncDisposable
         public ClientRole Role { get; } = role;
         public SemaphoreSlim PttGate { get; } = new(1, 1);
         public LeaseToken? TransmitLease { get; set; }
+        public long EventStreamGeneration;
 
         public async ValueTask DisposeAsync()
         {
@@ -466,7 +562,8 @@ public sealed class RadioWebHost : IAsyncDisposable
 
     private sealed class RadioEntry(
         string radioId, string endpointKey, string endpointDisplay, string modelId, string manufacturer,
-        string model, RadioTransportKind transportKind, ManagedRadio radio, string ownerClientId, bool ownerCanWrite)
+        string model, RadioTransportKind transportKind, ManagedRadio radio, string ownerClientId, bool ownerCanWrite,
+        bool stationManaged)
         : IAsyncDisposable
     {
         public string RadioId { get; } = radioId;
@@ -479,6 +576,8 @@ public sealed class RadioWebHost : IAsyncDisposable
         public ManagedRadio Radio { get; } = radio;
         public string OwnerClientId { get; } = ownerClientId;
         public bool OwnerCanWrite { get; } = ownerCanWrite;
+        public bool StationManaged { get; } = stationManaged;
+        public string? OperatorClientId { get; set; }
         public Dictionary<string, ClientAttachment> Attachments { get; } = new(StringComparer.Ordinal);
 
         public async ValueTask DisposeAsync()

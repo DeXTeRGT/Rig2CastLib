@@ -12,6 +12,8 @@
       <div class="brand"><span class="brand-mark">R2C</span><div><strong>Rig2Cast</strong><small>Web console POC</small></div></div>
       <section>
         <h2>Connection</h2>
+        <div id="station-lock-summary" class="station-lock-summary" hidden></div>
+        <div id="connection-form">
         <label>Radio model<select id="model"></select></label>
         <label>Transport<select id="transport"></select></label>
         <div id="serial-fields">
@@ -27,6 +29,7 @@
         <div id="model-settings"></div>
         <label>Mode restrictions<select id="mode-policy"><option>Enforce</option><option>Advisory</option></select></label>
         <label class="check"><input id="enable-writes" type="checkbox">Enable radio writes, including PTT</label>
+        </div>
         <div class="actions"><button id="connect" class="primary">Connect</button><button id="disconnect" disabled>Disconnect</button></div>
       </section>
       <div id="status-card" class="status-card"><span class="dot"></span><div><strong id="status-title">Offline</strong><small id="status-text">Select a radio and transport.</small></div></div>
@@ -43,7 +46,7 @@
       <section id="tab-radio" class="tab-page active"><div id="core-card" class="panel empty-state">Runtime capabilities and core state will appear here.</div></section>
       <section id="tab-controls" class="tab-page"><div id="controls-grid" class="control-groups"></div></section>
       <section id="tab-meters" class="tab-page"><div id="meters-grid" class="meter-grid"></div></section>
-      <section id="tab-audio" class="tab-page"><div class="panel audio-panel"><div class="panel-title"><div><h3>GhostLink audio stream</h3><p>Duplex 48 kHz mono audio via the AUDIO_STREAMING_CS_LINUX server.</p></div><div id="audio-badge" class="badge offline">OFFLINE</div></div><div class="audio-grid"><label>Server host<input id="audio-host" value="127.0.0.1"></label><label>Server TX port <small>radio audio → browser</small><input id="audio-tx-port" type="number" min="1" max="65535" value="6001"></label><label>Server RX port <small>browser mic → radio</small><input id="audio-rx-port" type="number" min="1" max="65535" value="6002"></label><label>Opus bitrate<input id="audio-bitrate" type="number" min="6000" max="128000" step="1000" value="16000"></label></div><label class="check"><input id="audio-mic" type="checkbox" checked>Send microphone audio to the server</label><div class="actions audio-actions"><button id="audio-connect" class="primary">Start audio</button><button id="audio-disconnect" disabled>Stop audio</button></div><p class="audio-note">Microphone access requires HTTPS or localhost. Use headphones to prevent feedback.</p></div></section>
+      <section id="tab-audio" class="tab-page"><div class="panel audio-panel"><div class="panel-title"><div><h3>GhostLink audio stream</h3><p>Duplex 48 kHz mono audio via the AUDIO_STREAMING_CS_LINUX server.</p></div><div id="audio-badge" class="badge offline">OFFLINE</div></div><div id="audio-config" class="audio-grid"><label>Server host<input id="audio-host" value="127.0.0.1"></label><label>Server TX port <small>radio audio → browser</small><input id="audio-tx-port" type="number" min="1" max="65535" value="6001"></label><label>Server RX port <small>browser mic → radio</small><input id="audio-rx-port" type="number" min="1" max="65535" value="6002"></label><label>Opus bitrate<input id="audio-bitrate" type="number" min="6000" max="128000" step="1000" value="16000"></label></div><label class="check"><input id="audio-mic" type="checkbox" checked>Send microphone audio to the server</label><div class="actions audio-actions"><button id="audio-connect" class="primary">Start audio</button><button id="audio-disconnect" disabled>Stop audio</button></div><p class="audio-note">Microphone access requires HTTPS or localhost. Use headphones to prevent feedback.</p></div></section>
       <section id="tab-diagnostics" class="tab-page"><div class="panel"><div class="panel-title"><h3>Session log</h3><button id="clear-log">Clear</button></div><pre id="log"></pre></div></section>
     </main>
   </div>

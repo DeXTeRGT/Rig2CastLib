@@ -127,3 +127,25 @@ Only the FTDX10 simulator is included in this first POC. All built-in models can
 The Audio tab is a duplex client for a GhostLink/AUDIO_STREAMING_CS_LINUX server. The WebGui process bridges browser WebSocket PCM to the server's dual TCP streams and uses the same Concentus 2.2.2 Opus codec and wire format as that server. Configure the ports from the server's perspective: **TX port** carries radio audio to the browser and **RX port** receives browser microphone audio. Defaults are 6001 and 6002.
 
 Audio is fixed at the server-compatible 48 kHz, mono, 20 ms format. Browser microphone access works on localhost or an HTTPS origin. This endpoint has no authentication and can open outbound TCP connections, so keep the WebGui on a trusted LAN/VPN and do not expose it directly to the Internet.
+
+## Locked station mode
+
+Set `Rig2Cast__StationConfig` to a server-side JSON file to turn the WebGui into a single-station appliance. See `deploy/linux/station.example.json`. The configured model, CAT endpoint, GhostLink host and ports are enforced by the server and are not accepted from the browser. The service owns and auto-opens the radio, while the first attached browser receives operator access and later browsers remain observers.
+
+In locked mode Rig2Cast is GhostLink's single client while browser audio is active. With the default `OnDemand` policy, Start audio connects both GhostLink TCP directions and an explicit Stop releases both immediately so another native client can use GhostLink. An unexpected browser loss keeps a configurable reconnect grace window before release. Backend failures reconnect both directions together with exponential backoff only while browser audio is requested. A second browser identity is refused audio while the current audio lease is active, and queues are cleared across failures so stale speech is not replayed.
+
+Example Linux deployment:
+
+```bash
+sudo install -d -o root -g rig2cast -m 0750 /etc/rig2cast
+sudo install -o root -g rig2cast -m 0640 \
+  samples/Rig2Cast.WebGui/deploy/linux/station.example.json \
+  /etc/rig2cast/station.json
+```
+
+Then set these values in `/etc/rig2cast-webgui.env` and restart the service:
+
+```ini
+Rig2Cast__AllowWrites=true
+Rig2Cast__StationConfig=/etc/rig2cast/station.json
+```

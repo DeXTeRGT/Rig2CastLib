@@ -14,7 +14,12 @@ builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.Converters.Add(new JsonStringEnumConverter());
     options.SerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
 });
+StationConfiguration station = StationConfiguration.Load(builder.Configuration);
+builder.Services.AddSingleton(station);
 builder.Services.AddSingleton<RadioWebHost>();
+builder.Services.AddHostedService<StationStartupService>();
+builder.Services.AddSingleton<GhostLinkAudioCoordinator>();
+builder.Services.AddHostedService(provider => provider.GetRequiredService<GhostLinkAudioCoordinator>());
 
 WebApplication app = builder.Build();
 app.UseDefaultFiles();
@@ -101,7 +106,7 @@ app.Map("/api/v1/radios/{radioId}/events", async (HttpContext context, string ra
     await host.StreamSnapshotsAsync(radioId, clientId, socket, context.RequestAborted);
 });
 
-app.Map("/api/v1/audio/stream", async (HttpContext context) =>
+app.Map("/api/v1/audio/stream", async (HttpContext context, StationConfiguration stationConfig, GhostLinkAudioCoordinator audio) =>
 {
     if (!context.WebSockets.IsWebSocketRequest)
     {
@@ -110,7 +115,10 @@ app.Map("/api/v1/audio/stream", async (HttpContext context) =>
     }
 
     using WebSocket socket = await context.WebSockets.AcceptWebSocketAsync();
-    await AudioStreamBridge.RunAsync(socket, context.RequestAborted);
+    if (stationConfig.IsLocked)
+        await audio.AttachBrowserAsync(socket, context.RequestAborted);
+    else
+        await AudioStreamBridge.RunAsync(socket, context.RequestAborted);
 });
 
 app.MapFallbackToFile("index.html");
