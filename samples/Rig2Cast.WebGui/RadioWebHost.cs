@@ -79,7 +79,8 @@ public sealed class RadioWebHost : IAsyncDisposable
                     locked = true,
                     _station.Station.Id,
                     _station.Station.DisplayName,
-                    audioAllowMicrophone = _station.Audio.AllowMicrophone && _station.Access.AllowAudioTransmit
+                    audioAllowMicrophone = _station.Audio.AllowMicrophone && _station.Access.AllowAudioTransmit,
+                    remoteFrequencyRanges = _station.RemoteFrequencyPolicy.AllowedRanges
                 } : null
             };
         }
@@ -344,7 +345,11 @@ public sealed class RadioWebHost : IAsyncDisposable
     private IRadioSession Session(string radioId, string clientId) => GetAttachment(radioId, clientId).Session;
     public ValueTask<RadioSnapshot> GetSnapshotAsync(string radioId, string clientId, CancellationToken ct) => Session(radioId, clientId).GetSnapshotAsync(ct);
     public async Task<RadioSnapshot> RefreshAsync(string radioId, string clientId, CancellationToken ct) { IRadioSession session = Session(radioId, clientId); await session.RefreshStateAsync(ct); return await session.GetSnapshotAsync(ct); }
-    public ValueTask SetFrequencyAsync(string radioId, string clientId, VfoId vfo, long value, CancellationToken ct) => Session(radioId, clientId).SetFrequencyAsync(vfo, value, ct);
+    public ValueTask SetFrequencyAsync(string radioId, string clientId, VfoId vfo, long value, CancellationToken ct)
+    {
+        EnsureRemoteFrequencyAllowed(value);
+        return Session(radioId, clientId).SetFrequencyAsync(vfo, value, ct);
+    }
     public ValueTask SetActiveVfoAsync(string radioId, string clientId, VfoId vfo, CancellationToken ct) => Session(radioId, clientId).SetActiveVfoAsync(vfo, ct);
     public ValueTask SetModeAsync(string radioId, string clientId, RadioMode mode, CancellationToken ct) => Session(radioId, clientId).SetModeAsync(mode, ct);
     public ValueTask SetSplitAsync(string radioId, string clientId, bool value, CancellationToken ct) => Session(radioId, clientId).SetSplitAsync(value, ct);
@@ -363,6 +368,11 @@ public sealed class RadioWebHost : IAsyncDisposable
     {
         ClientAttachment attachment = GetAttachment(radioId, clientId);
         EnsurePttAuthorized(attachment);
+        if (enabled)
+        {
+            RadioSnapshot current = await attachment.Session.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
+            EnsureRemotePttAllowed(current);
+        }
         await attachment.PttGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
@@ -405,6 +415,12 @@ public sealed class RadioWebHost : IAsyncDisposable
         await attachment.PttGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            RadioSnapshot snapshot = await attachment.Session.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
+            if (RemotePttViolation(snapshot) is string violation)
+            {
+                await StopPttCoreAsync(attachment, cancellationToken).ConfigureAwait(false);
+                throw new UnauthorizedAccessException(violation);
+            }
             LeaseToken current = attachment.TransmitLease
                 ?? throw new InvalidOperationException("PTT is not active for this browser.");
             LeaseToken renewed = await attachment.Session.RenewLeaseAsync(
@@ -429,6 +445,36 @@ public sealed class RadioWebHost : IAsyncDisposable
             throw new UnauthorizedAccessException("PTT is disabled by station policy.");
         if (!attachment.IsOwner || attachment.Role != ClientRole.Operator)
             throw new UnauthorizedAccessException("Only the owning Operator page may control PTT.");
+    }
+
+    private void EnsureRemoteFrequencyAllowed(long frequencyHz)
+    {
+        if (!_station.IsLocked || _station.RemoteFrequencyPolicy.AllowedRanges.Count == 0) return;
+        if (_station.RemoteFrequencyPolicy.AllowedRanges.Any(range =>
+                frequencyHz >= range.MinimumHz && frequencyHz <= range.MaximumHz)) return;
+        throw new ArgumentOutOfRangeException(nameof(frequencyHz), frequencyHz,
+            "Frequency is outside the ranges assigned to this remote station.");
+    }
+
+    private void EnsureRemotePttAllowed(RadioSnapshot snapshot)
+    {
+        if (RemotePttViolation(snapshot) is string violation)
+            throw new UnauthorizedAccessException(violation);
+    }
+
+    private string? RemotePttViolation(RadioSnapshot snapshot)
+    {
+        if (!_station.IsLocked || _station.RemoteFrequencyPolicy.AllowedRanges.Count == 0) return null;
+        foreach (VfoId vfo in snapshot.Capabilities.Vfos.Available.Where(vfo => vfo != VfoId.Memory))
+        {
+            long? frequency = snapshot.State.FrequenciesHz.TryGetValue(vfo, out long value)
+                ? value
+                : snapshot.State.Vfos.TryGetValue(vfo, out RadioVfoState? state) ? state.FrequencyHz : null;
+            if (frequency is null || !_station.RemoteFrequencyPolicy.AllowedRanges.Any(range =>
+                    frequency.Value >= range.MinimumHz && frequency.Value <= range.MaximumHz))
+                return $"PTT is unavailable because VFO {vfo} is outside the assigned remote frequency range.";
+        }
+        return null;
     }
 
     private static async ValueTask StopPttCoreAsync(
@@ -456,11 +502,14 @@ public sealed class RadioWebHost : IAsyncDisposable
         long generation = Interlocked.Increment(ref attachment.EventStreamGeneration);
         try
         {
-            await SendAsync(socket, new { type = "snapshot", snapshot = await attachment.Session.GetSnapshotAsync(cancellationToken) }, cancellationToken);
+            RadioSnapshot initial = await attachment.Session.GetSnapshotAsync(cancellationToken);
+            initial = await EnforceRemotePttPolicyAsync(attachment, initial, cancellationToken).ConfigureAwait(false);
+            await SendAsync(socket, new { type = "snapshot", snapshot = initial }, cancellationToken);
             await foreach (var radioEvent in attachment.Session.WatchEventsAsync(cancellationToken))
             {
                 if (socket.State != WebSocketState.Open) break;
                 RadioSnapshot snapshot = await attachment.Session.GetSnapshotAsync(cancellationToken);
+                snapshot = await EnforceRemotePttPolicyAsync(attachment, snapshot, cancellationToken).ConfigureAwait(false);
                 await SendAsync(socket, new { type = "radioEvent", radioEvent.Sequence, radioEvent.Kind, radioEvent.OccurredAt, snapshot }, cancellationToken);
             }
         }
@@ -469,6 +518,20 @@ public sealed class RadioWebHost : IAsyncDisposable
             await ForceReceiveAfterEventDisconnectAsync(attachment).ConfigureAwait(false);
             _ = ReleaseDisconnectedAttachmentAsync(radioId, clientId, attachment, generation);
         }
+    }
+
+    private async ValueTask<RadioSnapshot> EnforceRemotePttPolicyAsync(
+        ClientAttachment attachment, RadioSnapshot snapshot, CancellationToken cancellationToken)
+    {
+        if (attachment.TransmitLease is null || RemotePttViolation(snapshot) is null) return snapshot;
+        await attachment.PttGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (attachment.TransmitLease is not null)
+                await StopPttCoreAsync(attachment, cancellationToken).ConfigureAwait(false);
+        }
+        finally { attachment.PttGate.Release(); }
+        return await attachment.Session.GetSnapshotAsync(cancellationToken).ConfigureAwait(false);
     }
 
     private static async Task ForceReceiveAfterEventDisconnectAsync(ClientAttachment attachment)

@@ -20,6 +20,8 @@ builder.Services.AddSingleton<RadioWebHost>();
 builder.Services.AddHostedService<StationStartupService>();
 builder.Services.AddSingleton<GhostLinkAudioCoordinator>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<GhostLinkAudioCoordinator>());
+builder.Services.AddSingleton<SpectrumStreamService>();
+builder.Services.AddHostedService(provider => provider.GetRequiredService<SpectrumStreamService>());
 
 WebApplication app = builder.Build();
 app.UseDefaultFiles();
@@ -40,6 +42,7 @@ app.UseExceptionHandler(handler => handler.Run(async context =>
 
 RouteGroupBuilder api = app.MapGroup("/api/v1");
 api.MapGet("/status", (RadioWebHost host) => host.GetStatus());
+api.MapGet("/spectrum/status", (SpectrumStreamService spectrum) => spectrum.GetStatus());
 api.MapGet("/models", (RadioWebHost host) => host.GetModels());
 api.MapGet("/serial-ports", (RadioWebHost host) => host.GetSerialPorts());
 api.MapGet("/radios", (RadioWebHost host) => host.GetRadios());
@@ -123,6 +126,20 @@ app.Map("/api/v1/audio/stream", async (HttpContext context, StationConfiguration
         await audio.AttachBrowserAsync(socket, shutdown.Token);
     else
         await AudioStreamBridge.RunAsync(socket, shutdown.Token);
+});
+
+app.Map("/api/v1/spectrum/stream", async (HttpContext context, SpectrumStreamService spectrum, IHostApplicationLifetime lifetime) =>
+{
+    if (!context.WebSockets.IsWebSocketRequest)
+    {
+        context.Response.StatusCode = StatusCodes.Status400BadRequest;
+        return;
+    }
+
+    using WebSocket socket = await context.WebSockets.AcceptWebSocketAsync();
+    using CancellationTokenSource shutdown = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, lifetime.ApplicationStopping);
+    using CancellationTokenRegistration abort = lifetime.ApplicationStopping.Register(socket.Abort);
+    await spectrum.StreamAsync(socket, shutdown.Token);
 });
 
 app.MapFallbackToFile("index.html");

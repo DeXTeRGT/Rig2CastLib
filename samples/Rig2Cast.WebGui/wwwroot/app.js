@@ -11,7 +11,26 @@ let models = [],
     dialRotation = 0,
     directEntryVfo = null,
     meterPollTimer = null,
-    meterPollInFlight = false;
+    meterPollInFlight = false,
+    remoteFrequencyRanges = [],
+    spectrumSocket = null,
+    spectrumFrame = null,
+    spectrumDragVfo = null,
+    spectrumDisplaySamples = null,
+    spectrumAverageRows = [],
+    spectrumAverageSums = null,
+    spectrumAverageGeometry = null,
+    spectrumTurboGradient = null,
+    spectrumTurboGradientHeight = 0,
+    waterfallInitialized = false,
+    waterfallLastRowAt = 0;
+const waterfallBuffer = document.createElement('canvas');
+const turboPalette = (() => {
+    const encoded = 'MBI7MRVCMhhKNBtRNR5YNiFfNyNlOCZsOSlyOix5Oy9/PDKFPDWLPTeRPjqWPz2cQEChQEOmQUWrQUiwQku1Q066Q1C+Q1PCRFbHRFjLRVvORV7SRWDWRWPZRmbdRmjgRmvjRm3mRnDoRnPrRnXtRnjwRnryRn30Rn/2RoL4RYT5RYf7RYn8RIz9Q479QpH+QZP+QJb+P5j+Ppv+PJ39O6D8OaL8OKX7Nqj5NKr4M6z2Ma/1L7HzLbTxK7bvKrntKLvrJr3pJcDmI8LkIcThIMbfHsncHcvaHM3XG8/UGtHSGdPPGNXMGNfKF9nHF9rEF9zCF96/GOC9GOG6GeO4GuS2G+W0HeexHuivIOmsIuupJOymJ+2jKe6gLO+dL/CaMvGXNfOUOPSRO/SNP/WKQvaHRveDSviATfl8Ufl5Vfp2WftyXftvYfxsZfxoaf1lbf1icf1fdP5ceP5ZfP5WgP5ThP5Qh/5Ni/5Ljv5Ikv5Glf5EmP5Cm/1Anv0+ofw9pPw7pvs6qfs5rPo3rvk3sfg2s/g1tvc1ufU0u/Q0vvM0wPIzw/Ezxe8zyO4zyu0zzes0z+o00eg01Oc11uU12OM12uI23eA239424dw349o35dg459c46NU46tM57NE57c8578058Ms68sg688Y69MQ69sI698A5+L45+bw5+bo4+rc3+7U3+7M2/LA1/K40/asz/aky/aYx/aMw/qEv/p4u/pst/pgs/ZUr/ZIp/Y8o/Ywn/Ikm/IYk+4Mj+4Ai+n0g+nof+Xce+HQc93Eb924a9msY9WgX9GUW82MV8mAU8V0T71oR7lgQ7VUP7FIO6lAN6U0N6EsM5kkL5UYK40QK4kIJ4EAI3j4I3TwH2zoH2TgG1zYG1jQF1DIF0jAF0C8Ezi0EyysDySkDxygDxSYCwyQCwCMCviECux8BuR4BthwBtBsBsRkBrhgBrBYBqRUBphQBoxIBoBEBnRABmg4Blw0BlAwBkQsBjgoBiwkBhwgBhAcBgQYCfQUCegQC';
+    const binary = atob(encoded), bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes
+})();
 const frequencyWriters = new Map();
 const controlWriteTimers = new Map();
 const frequencyWriteIntervalMs = 125;
@@ -110,6 +129,7 @@ async function run(action, label) {
 async function bootstrap() {
     applyViewPreferences();
     const s = await api('/status');
+    remoteFrequencyRanges = s.station?.remoteFrequencyRanges || [];
     models = await api('/models');
     ui.model.innerHTML = models.map(m => `<option value="${esc(m.id)}">${esc(m.manufacturer)} ${esc(m.model)}</option>`).join('');
     await loadPorts();
@@ -128,6 +148,246 @@ async function bootstrap() {
         $('enable-writes').title = 'Start with Rig2Cast__AllowWrites=true to permit operator sessions.'
     }
     status('Offline', `${s.activeRadios} server-owned radio(s) active. ${s.serverAllowsWrites ? 'Writes may be requested.' : 'Server is read-only.'}`);
+    openSpectrumSocket();
+}
+
+function openSpectrumSocket() {
+    if (spectrumSocket) spectrumSocket.close();
+    const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
+    spectrumSocket = new WebSocket(`${protocol}://${location.host}/api/v1/spectrum/stream`);
+    spectrumSocket.onmessage = event => {
+        spectrumFrame = JSON.parse(event.data);
+        initializeSpectrumAverage(spectrumFrame.defaultAverage);
+        initializeWaterfall(spectrumFrame);
+        spectrumDisplaySamples = averageSpectrumSamples(spectrumFrame);
+        appendWaterfallRow(spectrumDisplaySamples, spectrumFrame);
+        $('spectrum-state').textContent = 'LIVE';
+        $('spectrum-state').className = 'badge online';
+        renderSpectrum()
+    };
+    spectrumSocket.onerror = () => {
+        $('spectrum-state').textContent = 'OFFLINE';
+        $('spectrum-state').className = 'badge offline'
+    };
+    spectrumSocket.onclose = () => {
+        spectrumSocket = null;
+        $('spectrum-state').textContent = 'OFFLINE';
+        $('spectrum-state').className = 'badge offline';
+        setTimeout(openSpectrumSocket, 2000)
+    }
+}
+
+function spectrumVfo(frame, name) {
+    if (frame.activeVfo === name) return { name, mode: frame.activeMode, frequencyHz: frame.activeFrequencyHz, active: true };
+    return { name, mode: frame.inactiveMode, frequencyHz: frame.inactiveFrequencyHz, active: false }
+}
+
+function spectrumX(frequency, width, frame = spectrumFrame) {
+    return (frequency - frame.leftHz) / (frame.rightHz - frame.leftHz) * width
+}
+
+function spectrumFrequency(clientX, canvas) {
+    const rect = canvas.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    return Math.round(spectrumFrame.leftHz + ratio * (spectrumFrame.rightHz - spectrumFrame.leftHz))
+}
+
+function decodeSpectrumSamples(value) {
+    const binary = atob(value), samples = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) samples[i] = binary.charCodeAt(i);
+    return samples
+}
+
+function initializeSpectrumAverage(defaultValue) {
+    const select = $('spectrum-average');
+    if (!select.options.length) {
+        select.innerHTML = Array.from({ length: 10 }, (_, index) => `<option>${index + 1}</option>`).join('');
+        const stored = Number(localStorage.getItem('rig2castSpectrumAverage'));
+        select.value = String(stored >= 1 && stored <= 10 ? stored : defaultValue)
+    }
+}
+
+function resetSpectrumAverage() {
+    spectrumAverageRows = [];
+    spectrumAverageSums = null;
+    spectrumAverageGeometry = null;
+    resetWaterfall()
+}
+
+function averageSpectrumSamples(frame) {
+    const samples = decodeSpectrumSamples(frame.samples);
+    const geometry = `${frame.leftHz}:${frame.rightHz}:${samples.length}`;
+    if (geometry !== spectrumAverageGeometry) {
+        resetSpectrumAverage();
+        spectrumAverageGeometry = geometry
+    }
+    const depth = Math.max(1, Math.min(10, Number($('spectrum-average').value) || frame.defaultAverage || 1));
+    if (!spectrumAverageSums) spectrumAverageSums = new Uint32Array(samples.length);
+    spectrumAverageRows.push(samples);
+    for (let i = 0; i < samples.length; i++) spectrumAverageSums[i] += samples[i];
+    while (spectrumAverageRows.length > depth) {
+        const removed = spectrumAverageRows.shift();
+        for (let i = 0; i < removed.length; i++) spectrumAverageSums[i] -= removed[i]
+    }
+    const averaged = new Uint8Array(samples.length);
+    for (let i = 0; i < averaged.length; i++) averaged[i] = Math.round(spectrumAverageSums[i] / spectrumAverageRows.length);
+    return averaged
+}
+
+function turboColorAt(normalized) {
+    const index = Math.trunc(Math.max(0, Math.min(1, normalized)) * 255) * 3;
+    return `rgb(${turboPalette[index]},${turboPalette[index + 1]},${turboPalette[index + 2]})`
+}
+
+function turboGradient(ctx, height) {
+    if (spectrumTurboGradient && spectrumTurboGradientHeight === height) return spectrumTurboGradient;
+    const gradient = ctx.createLinearGradient(0, 0, 0, height);
+    for (let index = 0; index < 9; index++) {
+        const position = index / 8;
+        gradient.addColorStop(position, turboColorAt(1 - position))
+    }
+    spectrumTurboGradient = gradient;
+    spectrumTurboGradientHeight = height;
+    return gradient
+}
+
+function initializeWaterfall(frame) {
+    const height = Math.max(100, Math.min(800, Number(frame.waterfallHeight) || 260));
+    $('waterfall-canvas').style.height = `${height}px`;
+    if (waterfallBuffer.height !== height) {
+        waterfallBuffer.height = height;
+        resetWaterfall()
+    }
+    if (waterfallInitialized) return;
+    waterfallInitialized = true;
+    const stored = localStorage.getItem('rig2castShowWaterfall');
+    setWaterfallVisible(stored === null ? !!frame.showWaterfall : stored === 'true')
+}
+
+function setWaterfallVisible(visible) {
+    $('waterfall-wrap').hidden = !visible;
+    $('waterfall-toggle').setAttribute('aria-pressed', String(visible));
+    if (visible) requestAnimationFrame(renderWaterfall)
+}
+
+function resetWaterfall() {
+    waterfallLastRowAt = 0;
+    if (!waterfallBuffer.width || !waterfallBuffer.height) return;
+    const ctx = waterfallBuffer.getContext('2d');
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, waterfallBuffer.width, waterfallBuffer.height)
+}
+
+function appendWaterfallRow(samples, frame) {
+    if (!samples?.length) return;
+    const now = performance.now(), rate = Math.max(1, Math.min(60, Number(frame.waterfallRate) || 15));
+    if (waterfallLastRowAt && now - waterfallLastRowAt < 1000 / rate) return;
+    waterfallLastRowAt = now;
+    if (waterfallBuffer.width !== samples.length) {
+        waterfallBuffer.width = samples.length;
+        resetWaterfall()
+    }
+    const ctx = waterfallBuffer.getContext('2d'), width = waterfallBuffer.width, height = waterfallBuffer.height;
+    if (height > 1) ctx.drawImage(waterfallBuffer, 0, 0, width, height - 1, 0, 1, width, height - 1);
+    const row = ctx.createImageData(width, 1);
+    const range = Math.max(1, frame.maximumLevel - frame.minimumLevel);
+    for (let i = 0; i < width; i++) {
+        const normalized = Math.max(0, Math.min(1, (samples[i] - frame.minimumLevel) / range));
+        const paletteIndex = Math.trunc(normalized * 255) * 3, pixel = i * 4;
+        row.data[pixel] = turboPalette[paletteIndex];
+        row.data[pixel + 1] = turboPalette[paletteIndex + 1];
+        row.data[pixel + 2] = turboPalette[paletteIndex + 2];
+        row.data[pixel + 3] = 255
+    }
+    ctx.putImageData(row, 0, 0)
+}
+
+function renderWaterfall() {
+    if (!spectrumFrame || $('waterfall-wrap').hidden || !waterfallBuffer.width) return;
+    const canvas = $('waterfall-canvas'), rect = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    const width = Math.max(1, Math.round(rect.width)), height = Math.max(1, Math.round(rect.height));
+    if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
+        canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr)
+    }
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(waterfallBuffer, 0, 0, width, height);
+    drawWaterfallMarker(ctx, spectrumVfo(spectrumFrame, 'A'), width, height, '#55d7ff');
+    drawWaterfallMarker(ctx, spectrumVfo(spectrumFrame, 'B'), width, height, '#ffbd55')
+}
+
+function drawWaterfallMarker(ctx, vfo, width, height, color) {
+    if (!Number.isFinite(vfo.frequencyHz) || vfo.frequencyHz < spectrumFrame.leftHz || vfo.frequencyHz > spectrumFrame.rightHz) return;
+    const x = spectrumX(vfo.frequencyHz, width);
+    ctx.strokeStyle = color; ctx.globalAlpha = vfo.active ? .65 : .45; ctx.lineWidth = vfo.active ? 1.5 : 1;
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke(); ctx.globalAlpha = 1
+}
+
+function renderSpectrum() {
+    if (!spectrumFrame) return;
+    const canvas = $('spectrum-canvas'), rect = canvas.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    const width = Math.max(1, Math.round(rect.width)), height = Math.max(1, Math.round(rect.height));
+    if (canvas.width !== Math.round(width * dpr) || canvas.height !== Math.round(height * dpr)) {
+        canvas.width = Math.round(width * dpr); canvas.height = Math.round(height * dpr);
+        spectrumTurboGradient = null
+    }
+    const ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, width, height);
+    const gradient = ctx.createLinearGradient(0, 0, 0, height);
+    gradient.addColorStop(0, '#0c1921'); gradient.addColorStop(1, '#03070a');
+    ctx.fillStyle = gradient; ctx.fillRect(0, 0, width, height);
+    ctx.strokeStyle = '#17303c'; ctx.lineWidth = 1;
+    for (let i = 1; i < 10; i++) { const x = i * width / 10; ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke() }
+    for (let i = 1; i < 5; i++) { const y = i * height / 5; ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke() }
+    const samples = spectrumDisplaySamples || decodeSpectrumSamples(spectrumFrame.samples);
+    const levelRange = Math.max(1, spectrumFrame.maximumLevel - spectrumFrame.minimumLevel);
+    const point = i => {
+        const normalized = Math.max(0, Math.min(1, (samples[i] - spectrumFrame.minimumLevel) / levelRange));
+        return [i * width / (samples.length - 1), height - normalized * height]
+    };
+    ctx.beginPath();
+    for (let i = 0; i < samples.length; i++) { const [x, y] = point(i); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y) }
+    ctx.lineTo(width, height); ctx.lineTo(0, height); ctx.closePath();
+    ctx.fillStyle = turboGradient(ctx, height); ctx.fill();
+    ctx.beginPath();
+    for (let i = 0; i < samples.length; i++) { const [x, y] = point(i); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y) }
+    ctx.strokeStyle = 'rgba(245,245,245,.92)'; ctx.lineWidth = 1; ctx.stroke();
+    drawSpectrumMarker(ctx, spectrumVfo(spectrumFrame, 'A'), width, height, '#55d7ff');
+    drawSpectrumMarker(ctx, spectrumVfo(spectrumFrame, 'B'), width, height, '#ffbd55');
+    $('spectrum-range').textContent = `${frequencyText(spectrumFrame.leftHz)} – ${frequencyText(spectrumFrame.rightHz)} Hz · span ${frequencyText(spectrumFrame.spanHz)} Hz`;
+    const a = spectrumVfo(spectrumFrame, 'A'), b = spectrumVfo(spectrumFrame, 'B');
+    $('spectrum-vfo-a').textContent = `VFO A ${frequencyText(a.frequencyHz)} ${a.mode}${a.active ? ' · ACTIVE' : ''}`;
+    $('spectrum-vfo-b').textContent = `VFO B ${frequencyText(b.frequencyHz)} ${b.mode}${b.active ? ' · ACTIVE' : ''}`;
+    renderWaterfall()
+}
+
+function drawSpectrumMarker(ctx, vfo, width, height, color) {
+    if (!Number.isFinite(vfo.frequencyHz) || vfo.frequencyHz < spectrumFrame.leftHz || vfo.frequencyHz > spectrumFrame.rightHz) return;
+    const x = spectrumX(vfo.frequencyHz, width);
+    ctx.strokeStyle = color; ctx.lineWidth = vfo.active ? 2 : 1.25; ctx.setLineDash(vfo.active ? [] : [5, 4]);
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = color; ctx.beginPath(); ctx.moveTo(x - 7, 0); ctx.lineTo(x + 7, 0); ctx.lineTo(x, 10); ctx.closePath(); ctx.fill();
+    ctx.font = '800 11px system-ui'; ctx.fillText(`VFO ${vfo.name} · ${vfo.mode}`, Math.max(4, Math.min(width - 78, x + 6)), 18)
+}
+
+function spectrumCanTune(vfo) {
+    if (!snapshot || !radioId || !snapshot.authorization.canControl) return false;
+    const c = snapshot.capabilities;
+    return access(c.frequency.feature, 'write') && c.frequency.targets.some(value => String(value).toLowerCase() === vfo.toLowerCase())
+}
+
+function nearestSpectrumMarker(clientX, canvas) {
+    const rect = canvas.getBoundingClientRect();
+    let nearest = null, distance = 15;
+    for (const name of ['A', 'B']) {
+        const vfo = spectrumVfo(spectrumFrame, name);
+        if (!Number.isFinite(vfo.frequencyHz)) continue;
+        const current = Math.abs(clientX - rect.left - spectrumX(vfo.frequencyHz, rect.width));
+        if (current < distance) { nearest = name; distance = current }
+    }
+    return nearest
 }
 async function loadPorts() {
     const ports = await api('/serial-ports');
@@ -246,7 +506,8 @@ function renderSnapshot(rebuild = true) {
         s = snapshot.state,
         writes = snapshot.authorization.canControl;
     $('radio-title').textContent = `${c.manufacturer} ${c.model}`;
-    $('radio-summary').textContent = `VFO ${s.activeVfo} · ${s.mode} · Split ${s.isSplit ? 'ON' : 'OFF'} · ${s.isTransmitting ? 'TX' : 'RX'} · ${clientRole}`;
+    const rangeViolation = remotePttViolation(c, s);
+    $('radio-summary').textContent = `VFO ${s.activeVfo} · ${s.mode} · Split ${s.isSplit ? 'ON' : 'OFF'} · ${s.isTransmitting ? 'TX' : 'RX'} · ${clientRole}${rangeViolation ? ` · ${rangeViolation}` : ''}`;
     $('connection-badge').textContent = `${s.connection} · ${clientRole.toUpperCase()}`;
     $('connection-badge').className = 'badge online';
     renderPtt(c, s);
@@ -480,7 +741,23 @@ window.setTuningStep = (event, id) => {
 
 function canControlPtt() {
     return !!snapshot && clientRole.toLowerCase() === 'operator' &&
-        snapshot.authorization.canControl && access(snapshot.capabilities.transmit, 'write')
+        snapshot.authorization.canControl && access(snapshot.capabilities.transmit, 'write') &&
+        !remotePttViolation(snapshot.capabilities, snapshot.state)
+}
+
+function frequencyInRemoteRange(frequency) {
+    return !remoteFrequencyRanges.length || remoteFrequencyRanges.some(range =>
+        frequency >= range.minimumHz && frequency <= range.maximumHz)
+}
+
+function remotePttViolation(c, s) {
+    if (!remoteFrequencyRanges.length) return '';
+    for (const vfo of c.vfos.available.filter(vfo => String(vfo).toLowerCase() !== 'memory')) {
+        const frequency = s.frequenciesHz[vfo] ?? s.vfos?.[vfo]?.frequencyHz;
+        if (!Number.isFinite(frequency) || !frequencyInRemoteRange(frequency))
+            return `VFO ${vfo} OUTSIDE REMOTE RANGE`
+    }
+    return ''
 }
 
 function renderPtt(c, s) {
@@ -488,8 +765,9 @@ function renderPtt(c, s) {
     button.textContent = s.isTransmitting ? 'PTT ON' : 'PTT OFF';
     button.classList.toggle('transmitting', s.isTransmitting);
     button.disabled = busy || !canControlPtt();
+    const rangeViolation = remotePttViolation(c, s);
     button.title = button.disabled
-        ? 'PTT requires an Operator session and writable transmit capability.'
+        ? rangeViolation || 'PTT requires an Operator session and writable transmit capability.'
         : 'Toggle PTT. A 10-second safety lease is renewed every 5 seconds while active.';
     if (!s.isTransmitting) {
         pttLeaseActive = false;
@@ -546,6 +824,15 @@ function nearestAllowedFrequency(value, ranges) {
         Math.abs(candidate - value) < Math.abs(nearest - value) ? candidate : nearest)
 }
 
+function effectiveFrequencyRanges(driverRanges) {
+    if (!remoteFrequencyRanges.length) return driverRanges;
+    return driverRanges.flatMap(driver => remoteFrequencyRanges.map(policy => ({
+        ...driver,
+        minimumHz: Math.max(driver.minimumHz, policy.minimumHz),
+        maximumHz: Math.min(driver.maximumHz, policy.maximumHz)
+    }))).filter(range => range.minimumHz <= range.maximumHz)
+}
+
 function tuningMultiplier(event) {
     return event.ctrlKey ? 100 : event.shiftKey ? 10 : 1
 }
@@ -557,7 +844,10 @@ function tuneBy(vfo, direction, multiplier = 1) {
     const step = selectedTuningStep(snapshot.capabilities) * multiplier;
     const current = snapshot.state.frequenciesHz[vfo] ?? snapshot.state.vfos?.[vfo]?.frequencyHz;
     if (!Number.isFinite(current)) return false;
-    const next = nearestAllowedFrequency(current + direction * step, c.ranges);
+    if (remoteFrequencyRanges.length && !frequencyInRemoteRange(current)) return false;
+    const ranges = effectiveFrequencyRanges(c.ranges);
+    if (remoteFrequencyRanges.length && !ranges.length) return false;
+    const next = nearestAllowedFrequency(current + direction * step, ranges);
     snapshot.state.frequenciesHz[vfo] = next;
     if (snapshot.state.vfos?.[vfo]) snapshot.state.vfos[vfo].frequencyHz = next;
     const display = $(`frequency-${vfo}`), input = $(`freq-${vfo}`);
@@ -1032,6 +1322,10 @@ $('direct-apply').onclick = event => {
     event.preventDefault();
     const value = Number($('direct-frequency').value), vfo = directEntryVfo;
     if (!vfo || !Number.isFinite(value)) return;
+    if (!frequencyInRemoteRange(value)) {
+        status('Frequency blocked', 'The requested frequency is outside the ranges assigned to this remote station.', 'error');
+        return
+    }
     frequencyDialog.close();
     run(async () => {
         snapshot = await api(`/radios/${radioId}/frequency/${vfo}`, {
@@ -1068,6 +1362,54 @@ tuningDial.addEventListener('pointerdown', event => {
     const vfo = tuningDial.dataset.vfo;
     if (vfo) window.startTuningKnob(event, vfo)
 });
+$('spectrum-average').addEventListener('change', event => {
+    const value = Math.max(1, Math.min(10, Number(event.target.value) || 1));
+    event.target.value = String(value);
+    localStorage.setItem('rig2castSpectrumAverage', String(value));
+    resetSpectrumAverage();
+    if (spectrumFrame) {
+        spectrumDisplaySamples = averageSpectrumSamples(spectrumFrame);
+        renderSpectrum()
+    }
+});
+$('waterfall-toggle').addEventListener('click', () => {
+    const visible = $('waterfall-wrap').hidden;
+    localStorage.setItem('rig2castShowWaterfall', String(visible));
+    setWaterfallVisible(visible)
+});
+function bindSpectrumTuning(canvas) {
+    canvas.addEventListener('pointerdown', event => {
+        if (!spectrumFrame) return;
+        spectrumDragVfo = nearestSpectrumMarker(event.clientX, canvas) || spectrumFrame.activeVfo;
+        if (!spectrumCanTune(spectrumDragVfo)) {
+            status('Spectrum tuning unavailable', `VFO ${spectrumDragVfo} is not writable for this browser session.`, 'error');
+            spectrumDragVfo = null;
+            return
+        }
+        event.preventDefault();
+        canvas.setPointerCapture(event.pointerId);
+        canvas.classList.add('dragging');
+        const frequency = spectrumFrequency(event.clientX, canvas);
+        if (frequencyInRemoteRange(frequency)) queueFrequencyWrite(spectrumDragVfo, frequency)
+    });
+    canvas.addEventListener('pointermove', event => {
+        if (!spectrumDragVfo || !spectrumFrame || !canvas.hasPointerCapture(event.pointerId)) return;
+        event.preventDefault();
+        const frequency = spectrumFrequency(event.clientX, canvas);
+        if (frequencyInRemoteRange(frequency)) queueFrequencyWrite(spectrumDragVfo, frequency)
+    });
+    const end = event => {
+        if (!canvas.hasPointerCapture(event.pointerId)) return;
+        canvas.releasePointerCapture(event.pointerId);
+        spectrumDragVfo = null;
+        canvas.classList.remove('dragging')
+    };
+    canvas.addEventListener('pointerup', end);
+    canvas.addEventListener('pointercancel', end)
+}
+bindSpectrumTuning($('spectrum-canvas'));
+bindSpectrumTuning($('waterfall-canvas'));
+window.addEventListener('resize', () => requestAnimationFrame(renderSpectrum));
 $('clear-log').onclick = () => $('log').textContent = '';
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
     document.querySelectorAll('.tab,.tab-page').forEach(x => x.classList.remove('active'));

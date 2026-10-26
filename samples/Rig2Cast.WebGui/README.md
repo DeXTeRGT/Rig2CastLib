@@ -4,6 +4,28 @@ This independent sample hosts multiple Rig2Cast radios behind an ASP.NET Core RE
 
 The server owns physical connections. A canonical serial port or raw TCP endpoint can be opened only once. The first browser opens and owns the radio; another browser requesting the same endpoint is attached to that existing `ManagedRadio` with a separate read-only observer session. Different endpoints create independent managed radios and may operate simultaneously.
 
+## FTDX10 spectrum
+
+Locked-station configuration can enable the FTDX10 SPI-adapter spectrum receiver. The source may be the adapter itself or an FTDX10 Spectrum UDP relay because both use the same three-fragment protocol. The browser displays the 790-bin live spectrum and the VFO A/B frequencies and modes embedded in that stream. Clicking the plot tunes the stream's active VFO through Rig2Cast; dragging either marker tunes that VFO. Normal operator authorization, driver capabilities, and `RemoteFrequencyPolicy` restrictions still apply.
+
+```json
+"Spectrum": {
+  "Enabled": true,
+  "SourceHost": "192.168.0.29",
+  "UdpPort": 51235,
+  "HelloIntervalSeconds": 2,
+  "MaximumFramesPerSecond": 30,
+  "Average": 4,
+  "MinimumLevel": 70,
+  "MaximumLevel": 150,
+  "ShowWaterfall": true,
+  "WaterfallHeight": 260,
+  "WaterfallRate": 15
+}
+```
+
+The WebGui sends `HELLO` to the configured UDP endpoint and filters incoming datagrams by source address. If the configured UDP port is already occupied locally, it automatically binds an ephemeral receive port. `Average` sets the initial browser averaging depth and must be from 1 through 10; it can also be changed live in the spectrum header. `MinimumLevel` and `MaximumLevel` control the display range using the same clamped normalization as the reference viewer and must be within 0–255, with maximum greater than minimum. `ShowWaterfall` defines its initial visibility, `WaterfallHeight` accepts 100–800 pixels, and `WaterfallRate` accepts 1–60 new rows per second. The display uses the Turbo palette. `GET /api/v1/spectrum/status` reports receiver and frame counters.
+
 ## Run
 
 ```powershell
@@ -155,3 +177,21 @@ Then set these values in `/etc/rig2cast-webgui.env` and restart the service:
 Rig2Cast__AllowWrites=true
 Rig2Cast__StationConfig=/etc/rig2cast/station.json
 ```
+
+### Remote frequency assignment
+
+A locked station can restrict frequency changes requested by web clients to explicit ranges. Add `RemoteFrequencyPolicy` to `station.json`:
+
+```json
+"RemoteFrequencyPolicy": {
+  "AllowedRanges": [
+    {
+      "Name": "20 metres",
+      "MinimumHz": 14000000,
+      "MaximumHz": 14350000
+    }
+  ]
+}
+```
+
+The server rejects web frequency writes outside these inclusive limits, while physical front-panel tuning remains unrestricted and is still reflected in the browser. Web PTT is available only while every advertised non-Memory VFO is inside an allowed range; it becomes available again automatically when all VFOs return. If a physical frequency change violates the policy while a browser-owned PTT lease is active, Rig2Cast releases that lease. An absent or empty `AllowedRanges` list preserves unrestricted behavior.

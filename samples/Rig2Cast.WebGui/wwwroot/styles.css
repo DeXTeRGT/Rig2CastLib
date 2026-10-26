@@ -215,6 +215,22 @@ main {
 }
 
 .radio-console { overflow: hidden; border: 1px solid #526070; border-radius: 14px; background: linear-gradient(145deg, #202a32, #0b1117 72%); box-shadow: 0 22px 50px #0008, inset 0 1px #ffffff1f, inset 0 -1px #000 }
+.spectrum-panel { margin-top: 16px; overflow: hidden; border: 1px solid #344c5c; border-radius: 12px; background: #050b10; box-shadow: 0 16px 36px #0007 }
+.spectrum-header, .spectrum-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 16px; background: linear-gradient(180deg, #13202a, #0a1219) }
+.spectrum-header strong { display: block; margin-top: 4px; color: #ccecf4; font-size: 13px }
+.spectrum-tools { display: flex; align-items: center; gap: 12px }
+.spectrum-tools label { display: flex; align-items: center; gap: 7px; color: #78909d; font-size: 10px; font-weight: 800; letter-spacing: .1em }
+.spectrum-tools select { width: 58px; height: 34px; padding: 0 7px; border-color: #38515f; background: #08141b; color: #d4f5ff; font-weight: 800 }
+#spectrum-canvas { display: block; width: 100%; height: 250px; cursor: crosshair; touch-action: none; user-select: none }
+#spectrum-canvas.dragging, #waterfall-canvas.dragging { cursor: ew-resize }
+.spectrum-toggle { min-width: 98px; min-height: 34px; height: 34px; padding: 0 10px }
+.waterfall-wrap { border-top: 1px solid #29414d; background: #000; overflow: hidden }
+.waterfall-wrap[hidden] { display: none }
+#waterfall-canvas { display: block; width: 100%; height: 260px; cursor: crosshair; touch-action: none; user-select: none }
+.spectrum-footer { min-height: 38px; padding: 7px 16px; border-top: 1px solid #203441; color: #92a9b6; font: 700 11px/1.3 ui-monospace, SFMono-Regular, Consolas, monospace }
+#spectrum-vfo-a { color: #55d7ff }
+#spectrum-vfo-b { color: #ffbd55; text-align: right }
+#spectrum-help { color: #607988; font-family: inherit; text-align: center }
 .console-header { padding: 18px 22px; border-bottom: 1px solid #34445f; background: linear-gradient(180deg, #182333, #111a28) }
 .console-face { display: grid; grid-template-columns: 178px minmax(0, 1fr) 248px; min-height: 390px }
 .console-main { min-width: 0; padding-bottom: 16px }
@@ -714,6 +730,9 @@ body.busy {
 }
 
 @media(max-width:540px) {
+    #spectrum-canvas { height: 190px }
+    .spectrum-footer { align-items: flex-start; flex-direction: column }
+    #spectrum-vfo-b { text-align: left }
     .console-header { align-items: flex-start; flex-direction: column }
     .header-actions { width: 100%; flex-wrap: wrap }
     .view-toggle { flex: 1; min-width: 96px }

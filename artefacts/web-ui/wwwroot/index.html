@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rig2Cast Web Console</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">R2C</span><div><strong>Rig2Cast</strong><small>Web console POC</small></div></div>
+      <section>
+        <h2>Connection</h2>
+        <div id="station-lock-summary" class="station-lock-summary" hidden></div>
+        <div id="connection-form">
+        <label>Radio model<select id="model"></select></label>
+        <label>Transport<select id="transport"></select></label>
+        <div id="serial-fields">
+          <label>Discovered port<div class="inline"><select id="serial-port"></select><button id="refresh-ports" class="icon" title="Refresh ports">↻</button></div></label>
+          <label class="check"><input id="port-override-enabled" type="checkbox">Override discovered port</label>
+          <label id="port-override-row">Port override<input id="port-override" placeholder="COM16 or /dev/ttyUSB0" disabled></label>
+          <label>Baud rate<select id="baud"></select></label>
+        </div>
+        <div id="tcp-fields" hidden>
+          <label>Raw TCP host<input id="tcp-host" value="127.0.0.1"></label>
+          <label>Raw TCP port<input id="tcp-port" type="number" min="1" max="65535" value="5555"></label>
+        </div>
+        <div id="model-settings"></div>
+        <label>Mode restrictions<select id="mode-policy"><option>Enforce</option><option>Advisory</option></select></label>
+        <label class="check"><input id="enable-writes" type="checkbox">Enable radio writes, including PTT</label>
+        </div>
+        <div class="actions"><button id="connect" class="primary">Connect</button><button id="disconnect" disabled>Disconnect</button></div>
+      </section>
+      <div id="status-card" class="status-card"><span class="dot"></span><div><strong id="status-title">Offline</strong><small id="status-text">Select a radio and transport.</small></div></div>
+      <p class="safety">PTT uses a 10-second safety lease renewed by this page. If the page or connection is lost, the lease expires and the runtime forces RX.</p>
+    </aside>
+
+    <main>
+      <section class="radio-console" aria-label="Radio front panel">
+        <header class="console-header">
+          <div><span class="eyebrow">LIVE RADIO</span><h1 id="radio-title">No radio connected</h1><p id="radio-summary">Capability-driven controls appear after connection.</p></div>
+          <div class="header-actions"><button id="sidebar-toggle" class="view-toggle" type="button" aria-pressed="false" title="Show or hide the connection panel">CONNECTION</button><button id="panels-toggle" class="view-toggle" type="button" aria-pressed="false" title="Show or hide the lower panels">PANELS</button><div id="connection-badge" class="badge offline">OFFLINE</div></div>
+        </header>
+        <div class="console-face">
+          <aside id="common-knobs" class="common-knobs" aria-label="Common gain controls"></aside>
+          <div class="console-main">
+            <div id="vfo-deck" class="vfo-deck empty"><div class="empty-state">Connect to display the radio's advertised VFO topology.</div></div>
+            <div id="front-meters" class="front-meters empty-state">Advertised meters appear after connection.</div>
+            <div class="soft-keys" aria-label="Common radio controls">
+              <button id="mode-open" disabled>MODE</button>
+              <button id="direct-open" disabled>DIRECT</button>
+              <button id="split-soft" disabled>SPLIT</button>
+              <button id="more-open" disabled>MORE</button>
+            </div>
+          </div>
+          <aside class="tuning-cluster" aria-label="Tuning controls">
+            <div class="tuning-heading"><span>MAIN TUNING</span><small id="tuning-step">—</small></div>
+            <div id="tuning-dial" class="tuning-dial" role="slider" aria-label="Main VFO tuning" aria-disabled="true" tabindex="-1">
+              <div id="dial-motion" class="dial-motion"><div class="dial-marker"></div></div><div class="dial-cap"><span>VFO</span></div>
+            </div>
+            <p class="dial-help">Turn with your finger to tune<br>Wheel and arrow keys supported</p>
+            <div class="transmit-controls">
+              <button id="ptt" class="ptt" disabled>PTT OFF</button>
+              <div id="rx-state" class="rx-state">RX</div>
+            </div>
+          </aside>
+        </div>
+      </section>
+      <dialog id="frequency-dialog" class="console-dialog">
+        <form method="dialog" class="dialog-card">
+          <div class="dialog-heading"><div><span class="eyebrow">DIRECT ENTRY</span><h2 id="frequency-dialog-title">Set frequency</h2></div><button class="dialog-close" value="cancel" aria-label="Close">×</button></div>
+          <label>Frequency (Hz)<input id="direct-frequency" inputmode="numeric" type="number"></label>
+          <div class="dialog-actions"><button value="cancel">Cancel</button><button id="direct-apply" value="default" class="primary">Apply</button></div>
+        </form>
+      </dialog>
+      <dialog id="mode-dialog" class="console-dialog">
+        <div class="dialog-card">
+          <div class="dialog-heading"><div><span class="eyebrow">OPERATING MODE</span><h2>Select mode</h2></div><button class="dialog-close" data-close-dialog="mode-dialog" aria-label="Close">×</button></div>
+          <div id="primary-modes" class="mode-buttons"></div>
+          <button id="more-modes-toggle" class="more-modes-toggle" hidden>MORE MODES</button>
+          <div id="more-modes" class="mode-buttons secondary-modes" hidden></div>
+        </div>
+      </dialog>
+      <dialog id="more-dialog" class="console-dialog">
+        <div class="dialog-card wide-dialog">
+          <div class="dialog-heading"><div><span class="eyebrow">RADIO CAPABILITIES</span><h2>More controls</h2></div><button class="dialog-close" data-close-dialog="more-dialog" aria-label="Close">×</button></div>
+          <div id="more-capabilities" class="capability-summary"></div>
+          <section class="meter-picker-section"><h3>Front-panel meters <small>Choose up to three</small></h3><div id="meter-picker" class="meter-picker"></div></section>
+          <button id="advanced-controls-open" class="primary">Open advanced controls</button>
+        </div>
+      </dialog>
+      <nav><button class="tab active" data-tab="radio">Radio</button><button class="tab" data-tab="controls">Controls</button><button class="tab" data-tab="meters">Meters</button><button class="tab" data-tab="audio">Audio</button><button class="tab" data-tab="diagnostics">Diagnostics</button><button id="refresh-all" class="refresh" disabled>Refresh all</button></nav>
+      <section id="tab-radio" class="tab-page active"><div id="core-card" class="panel empty-state">Runtime capabilities and core state will appear here.</div></section>
+      <section id="tab-controls" class="tab-page"><div id="controls-grid" class="control-groups"></div></section>
+      <section id="tab-meters" class="tab-page"><div id="meters-grid" class="meter-grid"></div></section>
+      <section id="tab-audio" class="tab-page"><div class="panel audio-panel"><div class="panel-title"><div><h3>GhostLink audio stream</h3><p>Duplex 48 kHz mono audio via the AUDIO_STREAMING_CS_LINUX server.</p></div><div id="audio-badge" class="badge offline">OFFLINE</div></div><div id="audio-config" class="audio-grid"><label>Server host<input id="audio-host" value="127.0.0.1"></label><label>Server TX port <small>radio audio → browser</small><input id="audio-tx-port" type="number" min="1" max="65535" value="6001"></label><label>Server RX port <small>browser mic → radio</small><input id="audio-rx-port" type="number" min="1" max="65535" value="6002"></label><label>Opus bitrate<input id="audio-bitrate" type="number" min="6000" max="128000" step="1000" value="16000"></label></div><label class="check"><input id="audio-mic" type="checkbox" checked>Send microphone audio to the server</label><div class="actions audio-actions"><button id="audio-connect" class="primary">Start audio</button><button id="audio-disconnect" disabled>Stop audio</button></div><p class="audio-note">Microphone access requires HTTPS or localhost. Use headphones to prevent feedback.</p></div></section>
+      <section id="tab-diagnostics" class="tab-page"><div class="panel"><div class="panel-title"><h3>Session log</h3><button id="clear-log">Clear</button></div><pre id="log"></pre></div></section>
+    </main>
+  </div>
+  <script src="audio.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

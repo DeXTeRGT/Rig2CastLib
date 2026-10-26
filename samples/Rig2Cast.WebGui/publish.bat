@@ -1,0 +1,1 @@
+dotnet publish .\Rig2Cast.WebGui.csproj --configuration Release --runtime linux-arm64 --self-contained true --output .\publish\linux-arm64 -p:PublishSingleFile=true -p:PublishTrimmed=false -p:DebugType=None -p:DebugSymbols=false

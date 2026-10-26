@@ -24,10 +24,32 @@
     "ConnectionPolicy": "OnDemand",
     "DisconnectGraceSeconds": 15
   },
+  "Spectrum": {
+    "Enabled": true,
+    "SourceHost": "192.168.0.29",
+    "UdpPort": 51235,
+    "HelloIntervalSeconds": 2,
+    "MaximumFramesPerSecond": 30,
+    "Average": 4,
+    "MinimumLevel": 70,
+    "MaximumLevel": 150,
+    "ShowWaterfall": true,
+    "WaterfallHeight": 260,
+    "WaterfallRate": 15
+  },
   "Access": {
     "AllowRadioWrites": true,
     "AllowPtt": true,
     "AllowAudioReceive": true,
     "AllowAudioTransmit": true
+  },
+  "RemoteFrequencyPolicy": {
+    "AllowedRanges": [
+      {
+        "Name": "20 metres",
+        "MinimumHz": 14000000,
+        "MaximumHz": 14350000
+      }
+    ]
   }
 }

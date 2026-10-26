@@ -1,0 +1,67 @@
+{
+  "Station": {
+    "Id": "main",
+    "DisplayName": "YO3HEX REMOTE RADIO 1",
+    "Locked": true,
+    "AutoConnect": true
+  },
+  "Radio": {
+    "ModelId": "yaesu.ftdx10",
+    "Transport": "Tcp",
+    "TcpHost": "192.168.0.68",
+    "TcpPort": 9001,
+    "Settings": {
+      "yaesu.autoInformation": "false"
+    },
+    "ModeRestrictions": "Enforce"
+  },
+    "Spectrum": {
+    "Enabled": true,
+    "SourceHost": "192.168.0.39",
+    "UdpPort": 51235,
+    "HelloIntervalSeconds": 2,
+    "MaximumFramesPerSecond": 30,
+	"Average": 4,
+    "MinimumLevel": 60,
+    "MaximumLevel": 170
+  },
+    "Audio": {
+    "Host": "192.168.0.68",
+    "ServerTxPort": 6001,
+    "ServerRxPort": 6002,
+    "OpusBitrate": 16000,
+    "AllowMicrophone": true,
+    "ConnectionPolicy": "OnDemand",
+    "DisconnectGraceSeconds": 20
+  },
+  "Access": {
+    "AllowRadioWrites": true,
+    "AllowPtt": true,
+    "AllowAudioReceive": true,
+    "AllowAudioTransmit": true
+  },
+  "RemoteFrequencyPolicy": {
+    "AllowedRanges": [
+      {
+        "Name": "80 metres",
+        "MinimumHz": 3500000,
+        "MaximumHz": 3800000
+      },
+      {
+        "Name": "40 metres",
+        "MinimumHz": 7000000,
+        "MaximumHz": 7200000
+      },
+      {
+        "Name": "20 metres",
+        "MinimumHz": 14000000,
+        "MaximumHz": 14350000
+      },
+      {
+        "Name": "15 metres",
+        "MinimumHz": 21000000,
+        "MaximumHz": 21450000
+      }
+    ]
+  }
+}

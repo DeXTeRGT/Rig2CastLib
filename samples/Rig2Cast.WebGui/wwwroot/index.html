@@ -67,6 +67,15 @@
           </aside>
         </div>
       </section>
+      <section id="spectrum-panel" class="spectrum-panel" aria-label="Live radio spectrum">
+        <div class="spectrum-header">
+          <div><span class="eyebrow">LIVE SPECTRUM</span><strong id="spectrum-range">Waiting for spectrum source</strong></div>
+          <div class="spectrum-tools"><label>AVERAGE <select id="spectrum-average" aria-label="Spectrum frame average"></select></label><button id="waterfall-toggle" class="view-toggle spectrum-toggle" type="button" aria-pressed="false">WATERFALL</button><div id="spectrum-state" class="badge offline">OFFLINE</div></div>
+        </div>
+        <canvas id="spectrum-canvas" aria-label="Spectrum plot with draggable VFO A and B markers"></canvas>
+        <div id="waterfall-wrap" class="waterfall-wrap"><canvas id="waterfall-canvas" aria-label="Scrolling waterfall with draggable VFO A and B markers"></canvas></div>
+        <div class="spectrum-footer"><span id="spectrum-vfo-a">VFO A —</span><span id="spectrum-help">Click to tune the active VFO · drag a marker to tune that VFO</span><span id="spectrum-vfo-b">VFO B —</span></div>
+      </section>
       <dialog id="frequency-dialog" class="console-dialog">
         <form method="dialog" class="dialog-card">
           <div class="dialog-heading"><div><span class="eyebrow">DIRECT ENTRY</span><h2 id="frequency-dialog-title">Set frequency</h2></div><button class="dialog-close" value="cancel" aria-label="Close">×</button></div>
