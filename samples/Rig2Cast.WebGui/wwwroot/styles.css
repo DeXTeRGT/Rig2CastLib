@@ -563,6 +563,16 @@ nav {
     margin-top: 18px
 }
 
+.action-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 10px
+}
+
+.action-grid button {
+    min-width: 0
+}
+
 .field-action {
     display: grid;
     grid-template-columns: 1fr auto;

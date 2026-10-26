@@ -600,7 +600,7 @@ function renderSoftControls(c, s, writes) {
     $('direct-open').disabled = !activeWritableVfo(c, s, writes);
     $('split-soft').disabled = !(writes && access(c.vfos.split, 'write'));
     $('split-soft').classList.toggle('active', s.isSplit);
-    $('more-open').disabled = !(Object.keys(c.controls || {}).length || Object.keys(c.switches || {}).length || Object.keys(c.choices || {}).length);
+    $('more-open').disabled = !(Object.keys(c.actions || {}).length || Object.keys(c.controls || {}).length || Object.keys(c.switches || {}).length || Object.keys(c.choices || {}).length);
     renderModeChoices(c, s, modeWritable)
 }
 
@@ -656,6 +656,7 @@ window.chooseFrontMeter = checkbox => {
 
 function renderMoreCapabilities(c) {
     const items = [
+        ...Object.values(c.actions || {}).map(x => [x.displayName, 'Action']),
         ...Object.values(c.controls || {}).map(x => [x.displayName, 'Level']),
         ...Object.values(c.switches || {}).map(x => [x.displayName, 'Switch']),
         ...Object.values(c.choices || {}).map(x => [x.displayName, 'Choice'])
@@ -1027,8 +1028,10 @@ function renderCore(c, s, writes) {
 function renderControls(c, writes) {
     const numeric = Object.values(c.controls || {}),
         switches = Object.values(c.switches || {}),
-        choices = Object.values(c.choices || {});
+        choices = Object.values(c.choices || {}),
+        actions = Object.values(c.actions || {});
     let html = '';
+    if (actions.length) html += `<div class="panel"><h3>Radio actions</h3><div class="action-grid">${actions.map(x => `<button onclick="executeRadioAction('${x.id}')" ${writes && access(x.feature, 'write') ? '' : 'disabled'}>${esc(x.displayName)}</button>`).join('')}</div></div>`;
     if (numeric.length) html += `<div class="panel"><h3>Numeric controls <small>raw / driver values</small></h3><div class="control-table">${numeric.map(x => `<div class="name">${esc(x.displayName)}<small>${esc(x.unit)} · ${esc(x.feature.access)}</small></div><input data-control-id="${x.id}" id="control-${x.id}" type="number" min="${x.minimum}" max="${x.maximum}" step="${x.step}"><button data-control-write="${x.id}" onclick="writeControl('${x.id}')" ${writes && access(x.feature, 'write') ? '' : 'disabled'}>Apply</button>`).join('')}</div></div>`;
     if (choices.length) html += `<div class="panel"><h3>Choice controls</h3><div class="control-table">${choices.map(x => `<div class="name">${esc(x.displayName)}<small>${esc(x.feature.access)}</small></div><select data-choice-id="${x.id}" id="choice-${x.id}">${Object.values(x.options).map(o => `<option value="${esc(o.value)}">${esc(o.displayName)}</option>`).join('')}</select><button data-choice-write="${x.id}" onclick="writeChoice('${x.id}')" ${writes && access(x.feature, 'write') ? '' : 'disabled'}>Apply</button>`).join('')}</div></div>`;
     if (switches.length) html += `<div class="panel"><h3>Switches</h3><div class="switch-grid">${switches.map(x => `<label class="switch-tile">${esc(x.displayName)}<input data-switch-id="${x.id}" id="switch-${x.id}" class="toggle" type="checkbox" ${writes && access(x.feature, 'write') ? '' : 'disabled'} onchange="writeSwitch('${x.id}')"></label>`).join('')}</div></div>`;
@@ -1196,6 +1199,9 @@ window.writeChoice = id => run(async () => {
         })
     })
 }, `${id} updated.`);
+window.executeRadioAction = id => run(async () => {
+    await api(`/radios/${radioId}/actions/${id}`, { method: 'POST' })
+}, `${id} executed.`);
 window.writePassband = () => run(async () => {
     await api('/radio/passband', {
         method: 'PUT',

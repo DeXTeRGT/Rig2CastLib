@@ -11,7 +11,7 @@ using Rig2Cast.Protocols.Declarative;
 
 namespace Rig2Cast.Drivers.Yaesu.Ftdx10;
 
-public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMeterDriver, IRadioSwitchDriver, IRadioChoiceDriver, IRadioPassbandDriver,
+public sealed class Ftdx10Driver : IRadioDriver, IRadioActionDriver, IRadioControlDriver, IRadioMeterDriver, IRadioSwitchDriver, IRadioChoiceDriver, IRadioPassbandDriver,
     IRadioReceiverControlDriver, IRadioReceiverMeterDriver, IRadioReceiverSwitchDriver,
     IRadioReceiverChoiceDriver, IRadioReceiverPassbandDriver, IRadioReceiverFrequencyDriver,
     IRadioReceiverModeDriver, IRadioObservationSource
@@ -81,6 +81,22 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             ["10db"] = new('0', "10 dB"), ["30db"] = new('1', "30 dB"), ["50db"] = new('2', "50 dB")
         })
     };
+
+    private static readonly Dictionary<string, (string Code, string DisplayName)> Bands =
+        new Dictionary<string, (string Code, string DisplayName)>
+        {
+            ["1.8mhz"] = ("00", "1.8 MHz"),
+            ["3.5mhz"] = ("01", "3.5 MHz"),
+            ["5mhz"] = ("02", "5 MHz"),
+            ["7mhz"] = ("03", "7 MHz"),
+            ["10mhz"] = ("04", "10 MHz"),
+            ["14mhz"] = ("05", "14 MHz"),
+            ["18mhz"] = ("06", "18 MHz"),
+            ["21mhz"] = ("07", "21 MHz"),
+            ["24.5mhz"] = ("08", "24.5 MHz"),
+            ["28mhz"] = ("09", "28 MHz"),
+            ["50mhz"] = ("10", "50 MHz")
+        };
 
     private static readonly Dictionary<RadioControlId, ControlCommand> ControlCommands =
         new Dictionary<RadioControlId, ControlCommand>
@@ -311,6 +327,20 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         };
     }
 
+    public ValueTask ExecuteActionAsync(
+        RadioActionId action,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        return _protocol.SendAsync(action switch
+        {
+            RadioActionId.CopyVfoAToB => "AB",
+            RadioActionId.CopyVfoBToA => "BA",
+            RadioActionId.SwapVfos => "SV",
+            _ => throw new NotSupportedException($"FTDX10 action '{action}' is not supported.")
+        }, cancellationToken);
+    }
+
     public ValueTask SetSplitAsync(bool enabled, CancellationToken cancellationToken = default)
     {
         EnsureActive();
@@ -526,6 +556,9 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         if (control == RadioChoiceId.TuningStep)
             throw new NotSupportedException(
                 "The FTDX10 CAT FS command is write-only; its current tuning-step state cannot be queried.");
+        if (control == RadioChoiceId.Band)
+            throw new NotSupportedException(
+                "The FTDX10 CAT BS command is write-only; the selected band cannot be queried.");
         if (control == RadioChoiceId.FilterWidth)
         {
             RadioMode mode = await ReadActiveModeAsync(cancellationToken).ConfigureAwait(false);
@@ -576,6 +609,12 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             return WriteBreakInDelayAsync(value, cancellationToken);
         if (control == RadioChoiceId.TuningStep)
             return WriteTuningStepAsync(value, cancellationToken);
+        if (control == RadioChoiceId.Band)
+        {
+            if (!Bands.TryGetValue(value, out (string Code, string DisplayName) band))
+                throw new ArgumentOutOfRangeException(nameof(value));
+            return _protocol.SendAsync($"BS{band.Code}", cancellationToken);
+        }
         if (control == RadioChoiceId.FilterWidth)
         {
             return WriteFilterWidthAsync(value, cancellationToken);
@@ -1014,8 +1053,23 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
                 ["rig2cast.coverage"] = "core-vfo-mode-split-ptt-controls-meters-features"
             })
         {
+            Actions = CreateActionCapabilities(),
             Passband = CreatePassbandCapability(readWrite),
             Receivers = ReceiverTopologyCapability.MainOnly(new HashSet<VfoId> { VfoId.A, VfoId.B })
+        };
+    }
+
+    private static Dictionary<RadioActionId, RadioActionDescriptor> CreateActionCapabilities()
+    {
+        var feature = new FeatureDescriptor(CapabilitySupport.Supported, FeatureAccess.Write);
+        return new Dictionary<RadioActionId, RadioActionDescriptor>
+        {
+            [RadioActionId.CopyVfoAToB] = new(RadioActionId.CopyVfoAToB, "VFO A to VFO B", feature)
+                { RefreshStateAfterExecution = true },
+            [RadioActionId.CopyVfoBToA] = new(RadioActionId.CopyVfoBToA, "VFO B to VFO A", feature)
+                { RefreshStateAfterExecution = true },
+            [RadioActionId.SwapVfos] = new(RadioActionId.SwapVfos, "Swap VFOs", feature)
+                { RefreshStateAfterExecution = true }
         };
     }
 
@@ -1102,6 +1156,8 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         };
         choices[RadioChoiceId.TuningStep] = CreateTuningStepCapability(
             new FeatureDescriptor(CapabilitySupport.Supported, FeatureAccess.Write));
+        choices[RadioChoiceId.Band] = CreateBandCapability(
+            new FeatureDescriptor(CapabilitySupport.Supported, FeatureAccess.Write));
         choices[RadioChoiceId.AudioPeakFilterWidth] = choices[RadioChoiceId.AudioPeakFilterWidth] with
         {
             ModeApplicability = CwOnlyApplicability()
@@ -1142,6 +1198,18 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
             options[$"{milliseconds}ms"] = new($"{milliseconds}ms", $"{milliseconds} ms");
         return new ChoiceControlDescriptor(RadioChoiceId.VoxDelay, "VOX delay", feature, options);
     }
+
+    private static ChoiceControlDescriptor CreateBandCapability(FeatureDescriptor feature) =>
+        new(
+            RadioChoiceId.Band,
+            "Band",
+            feature,
+            Bands.ToDictionary(
+                band => band.Key,
+                band => new RadioChoiceOption(band.Key, band.Value.DisplayName)))
+        {
+            RefreshStateAfterWrite = true
+        };
 
     private static ChoiceControlDescriptor CreateBreakInDelayCapability(FeatureDescriptor feature)
     {

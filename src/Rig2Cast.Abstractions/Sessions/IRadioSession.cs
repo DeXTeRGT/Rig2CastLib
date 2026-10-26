@@ -85,6 +85,10 @@ public interface IRadioSession : IAsyncDisposable
         string value,
         CancellationToken cancellationToken = default);
 
+    ValueTask ExecuteActionAsync(
+        RadioActionId action,
+        CancellationToken cancellationToken = default);
+
     ValueTask<RadioChoiceValue> ReadChoiceAsync(
         RadioChoiceId control, VfoId target, CancellationToken cancellationToken = default);
 
@@ -185,6 +189,10 @@ public interface IRadioOperationScope
     ValueTask WriteChoiceAsync(
         RadioChoiceId control,
         string value,
+        CancellationToken cancellationToken = default);
+
+    ValueTask ExecuteActionAsync(
+        RadioActionId action,
         CancellationToken cancellationToken = default);
 
     ValueTask WriteChoiceAsync(

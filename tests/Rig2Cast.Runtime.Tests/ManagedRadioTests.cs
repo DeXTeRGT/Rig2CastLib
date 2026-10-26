@@ -158,6 +158,7 @@ public sealed class ManagedRadioTests
         Assert.Equal(Enum.GetValues<RadioControlId>().Order(), capabilities.Controls.Keys.Order());
         Assert.Equal(Enum.GetValues<RadioSwitchId>().Order(), capabilities.Switches.Keys.Order());
         Assert.Equal(Enum.GetValues<RadioChoiceId>().Order(), capabilities.Choices.Keys.Order());
+        Assert.Equal(Enum.GetValues<RadioActionId>().Order(), capabilities.Actions.Keys.Order());
         Assert.Equal(Enum.GetValues<RadioMeterId>().Order(), capabilities.Meters.Keys.Order());
     }
 

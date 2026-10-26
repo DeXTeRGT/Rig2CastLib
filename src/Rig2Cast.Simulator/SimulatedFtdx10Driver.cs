@@ -10,7 +10,7 @@ using Rig2Cast.Abstractions.Meters;
 
 namespace Rig2Cast.Simulator;
 
-public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMeterDriver, IRadioSwitchDriver, IRadioChoiceDriver, IRadioPassbandDriver,
+public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioActionDriver, IRadioControlDriver, IRadioMeterDriver, IRadioSwitchDriver, IRadioChoiceDriver, IRadioPassbandDriver,
     IRadioReceiverControlDriver, IRadioReceiverMeterDriver, IRadioReceiverSwitchDriver,
     IRadioReceiverChoiceDriver, IRadioReceiverPassbandDriver, IRadioReceiverFrequencyDriver,
     IRadioReceiverModeDriver, IRadioObservationSource
@@ -362,6 +362,32 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
         }
     }
 
+    public async ValueTask ExecuteActionAsync(
+        RadioActionId action,
+        CancellationToken cancellationToken = default)
+    {
+        using IDisposable operation = await BeginOperationAsync($"ExecuteAction:{action}", cancellationToken)
+            .ConfigureAwait(false);
+        lock (_gate)
+        {
+            switch (action)
+            {
+                case RadioActionId.CopyVfoAToB:
+                    _frequencies[VfoId.B] = _frequencies[VfoId.A];
+                    break;
+                case RadioActionId.CopyVfoBToA:
+                    _frequencies[VfoId.A] = _frequencies[VfoId.B];
+                    break;
+                case RadioActionId.SwapVfos:
+                    (_frequencies[VfoId.A], _frequencies[VfoId.B]) =
+                        (_frequencies[VfoId.B], _frequencies[VfoId.A]);
+                    break;
+                default:
+                    throw new NotSupportedException($"Simulator action '{action}' is not supported.");
+            }
+        }
+    }
+
     public async ValueTask WriteChoiceAsync(RadioChoiceId control, string value, CancellationToken cancellationToken = default)
     {
         using IDisposable operation = await BeginOperationAsync($"WriteChoice:{control}:{value}", cancellationToken).ConfigureAwait(false);
@@ -583,9 +609,21 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
             CreateMeterCapabilities(),
             new Dictionary<string, object?>())
         {
+            Actions = CreateActionCapabilities(),
             Passband = CreatePassbandCapability(readWrite),
             Receivers = ReceiverTopologyCapability.MainOnly(new HashSet<VfoId> { VfoId.A, VfoId.B })
         };
+    }
+
+    private static Dictionary<RadioActionId, RadioActionDescriptor> CreateActionCapabilities()
+    {
+        var feature = new FeatureDescriptor(CapabilitySupport.Supported, FeatureAccess.Write);
+        return Enum.GetValues<RadioActionId>().ToDictionary(
+            id => id,
+            id => new RadioActionDescriptor(id, id.ToString(), feature)
+            {
+                RefreshStateAfterExecution = true
+            });
     }
 
     private static PassbandCapability CreatePassbandCapability(FeatureDescriptor feature)
@@ -641,6 +679,11 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioControlDriver, I
                 ("narrow", "Narrow", true), ("medium", "Medium", true), ("wide", "Wide", true)),
             [RadioChoiceId.TuningStep] = CreateChoice(RadioChoiceId.TuningStep,
                 ("10hz", "10 Hz", true), ("100hz", "100 Hz", true), ("1khz", "1 kHz", true)),
+            [RadioChoiceId.Band] = CreateChoice(RadioChoiceId.Band,
+                ("1.8mhz", "1.8 MHz", true), ("3.5mhz", "3.5 MHz", true),
+                ("5mhz", "5 MHz", true), ("7mhz", "7 MHz", true), ("10mhz", "10 MHz", true),
+                ("14mhz", "14 MHz", true), ("18mhz", "18 MHz", true), ("21mhz", "21 MHz", true),
+                ("24.5mhz", "24.5 MHz", true), ("28mhz", "28 MHz", true), ("50mhz", "50 MHz", true)),
             [RadioChoiceId.BreakInDelay] = CreateBreakInDelayChoice(),
             [RadioChoiceId.IfNotchWidth] = CreateChoice(RadioChoiceId.IfNotchWidth,
                 ("narrow", "Narrow", true), ("wide", "Wide", true)),

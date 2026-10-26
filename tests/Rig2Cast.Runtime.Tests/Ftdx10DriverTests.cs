@@ -479,6 +479,53 @@ public sealed class Ftdx10DriverTests
         transport.AssertComplete();
     }
 
+    [Theory]
+    [InlineData(RadioActionId.CopyVfoAToB, "AB;")]
+    [InlineData(RadioActionId.CopyVfoBToA, "BA;")]
+    [InlineData(RadioActionId.SwapVfos, "SV;")]
+    public async Task VfoActionsUseIndependentDocumentedCommands(RadioActionId action, string command)
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add(command);
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+
+        await driver.ExecuteActionAsync(action);
+
+        Assert.Equal(Capabilities.FeatureAccess.Write, driver.Capabilities.Actions[action].Feature.Access);
+        Assert.True(driver.Capabilities.Actions[action].RefreshStateAfterExecution);
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task ManagedVfoActionRefreshesBothVfos()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("IF;", "IF001014200000+000000200000;");
+        transport.Add("OI;", "OI001007100000+000000300000;");
+        transport.Add("VS;", "VS0;");
+        transport.Add("ST;", "ST0;");
+        transport.Add("TX;", "TX0;");
+        transport.Add("AB;");
+        transport.Add("IF;", "IF001014200000+000000200000;");
+        transport.Add("OI;", "OI001014200000+000000200000;");
+        transport.Add("VS;", "VS0;");
+        transport.Add("ST;", "ST0;");
+        transport.Add("TX;", "TX0;");
+        Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+        await using ManagedRadio radio = await ManagedRadio.CreateAsync("ftdx10-actions", driver);
+        await using IRadioSession session = radio.OpenSession(
+            new ClientIdentity("operator"), ClientRole.Operator);
+
+        await session.ExecuteActionAsync(RadioActionId.CopyVfoAToB);
+
+        RadioState state = (await session.GetSnapshotAsync()).State;
+        Assert.Equal(14_200_000, state.FrequenciesHz[VfoId.A]);
+        Assert.Equal(14_200_000, state.FrequenciesHz[VfoId.B]);
+        transport.AssertComplete();
+    }
+
     [Fact]
     public async Task ActiveModeWriteAlwaysUsesForegroundSelector()
     {
@@ -947,6 +994,80 @@ public sealed class Ftdx10DriverTests
             driver.Capabilities.Choices[RadioChoiceId.TuningStep].Options;
         foreach (RadioMode mode in Ftdx10CatProfile.Modes.Values.Distinct())
             Assert.Equal(2, options.Values.Count(candidate => candidate.ApplicableModes!.Contains(mode)));
+        transport.AssertComplete();
+    }
+
+    [Theory]
+    [InlineData("1.8mhz", "BS00;")]
+    [InlineData("3.5mhz", "BS01;")]
+    [InlineData("5mhz", "BS02;")]
+    [InlineData("7mhz", "BS03;")]
+    [InlineData("10mhz", "BS04;")]
+    [InlineData("14mhz", "BS05;")]
+    [InlineData("18mhz", "BS06;")]
+    [InlineData("21mhz", "BS07;")]
+    [InlineData("24.5mhz", "BS08;")]
+    [InlineData("28mhz", "BS09;")]
+    [InlineData("50mhz", "BS10;")]
+    public async Task BandSelectionUsesIndependentActiveVfoCommand(string value, string command)
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add(command);
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+
+        await driver.WriteChoiceAsync(RadioChoiceId.Band, value);
+
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task BandSelectionIsWriteOnlyAndExcludesGeneralCoverageAndMw()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+        ChoiceControlDescriptor descriptor = driver.Capabilities.Choices[RadioChoiceId.Band];
+
+        Assert.Equal(Capabilities.FeatureAccess.Write, descriptor.Feature.Access);
+        Assert.True(descriptor.RefreshStateAfterWrite);
+        Assert.Equal(11, descriptor.Options.Count);
+        Assert.DoesNotContain("gen", descriptor.Options.Keys);
+        Assert.DoesNotContain("mw", descriptor.Options.Keys);
+        await Assert.ThrowsAsync<NotSupportedException>(
+            () => driver.ReadChoiceAsync(RadioChoiceId.Band).AsTask());
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => driver.WriteChoiceAsync(RadioChoiceId.Band, "gen").AsTask());
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(
+            () => driver.WriteChoiceAsync(RadioChoiceId.Band, "mw").AsTask());
+
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task ManagedBandSelectionRefreshesActiveVfoState()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("IF;", "IF001007100000+000000200000;");
+        transport.Add("OI;", "OI001014200000+000000300000;");
+        transport.Add("VS;", "VS0;");
+        transport.Add("ST;", "ST0;");
+        transport.Add("TX;", "TX0;");
+        transport.Add("BS05;");
+        transport.Add("IF;", "IF001014200000+000000200000;");
+        transport.Add("OI;", "OI001014200000+000000300000;");
+        transport.Add("VS;", "VS0;");
+        transport.Add("ST;", "ST0;");
+        transport.Add("TX;", "TX0;");
+        Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+        await using ManagedRadio radio = await ManagedRadio.CreateAsync("ftdx10-band", driver);
+        await using IRadioSession session = radio.OpenSession(
+            new ClientIdentity("operator"), ClientRole.Operator);
+
+        await session.WriteChoiceAsync(RadioChoiceId.Band, "14mhz");
+
+        Assert.Equal(14_200_000, (await session.GetSnapshotAsync()).State.FrequenciesHz[VfoId.A]);
         transport.AssertComplete();
     }
 

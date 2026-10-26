@@ -114,17 +114,15 @@ These need shared IDs/descriptors and sometimes targeting, not a new subsystem.
 | `SS` | Scope settings | Controls/choices/switches; this is **not spectrum sample data** |
 | `UL` | Unlock | Clarify semantics/golden response before mapping to lock/status |
 
-## Missing momentary/action commands (19)
+## Missing momentary/action commands (15)
 
 A generic capability-described `RadioActionId`/driver/session API is preferable to
 misrepresenting these as persistent switches. It should describe parameters,
-destructiveness, required role/lease, expected readback, and cache invalidation.
+required role/lease, expected readback, and cache invalidation.
 
 | CAT | Function | Note |
 | --- | --- | --- |
-| `AB`, `BA` | Copy A→B / B→A | Destructive to destination VFO |
 | `BD`, `BU` | Band down/up | Target-qualified momentary actions |
-| `BS` | Band select | Target plus typed band argument |
 | `CH` | Memory channel up/down | Navigation action |
 | `DN`, `UP` | Microphone down/up | UI emulation; low native priority |
 | `ED`, `EU` | Encoder down/up | Parameterized UI emulation |
@@ -132,7 +130,6 @@ destructiveness, required role/lease, expected readback, and cache invalidation.
 | `QS` | Quick split | Compound state-changing action |
 | `RC` | Clarifier clear | Destructive/reset action |
 | `RD`, `RU` | Clarifier down/up | Relative adjustment; absolute `CF` is safer |
-| `SV` | Swap VFOs | Mutates both VFO assignments |
 | `VM` | Main/VFO to memory | Resolve overlap with memory workflow first |
 | `ZI` | CW zero-in | CW-only momentary action |
 

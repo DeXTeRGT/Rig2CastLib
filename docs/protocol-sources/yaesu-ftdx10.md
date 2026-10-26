@@ -64,6 +64,12 @@ The manual revision above documents the `PR` speech-processor state as `1` for o
   - Active-VFO selection sends `VS0;ST0;` or `VS1;ST0;` in one packed transport
     write. The trailing split-off command works around affected firmware retaining
     stale state from the previously selected VFO until another tuning command.
+  - Band selection uses the write-only `BS` command against the active VFO. Rig2Cast
+    advertises amateur-band codes `00` through `10`; general coverage (`11`) and MW
+    (`12`) are intentionally not exposed. A full state refresh follows the write.
+  - The write-only `AB`, `BA`, and `SV` actions copy A to B, copy B to A, and swap
+    the VFOs respectively. Each is sent independently and followed by a full state
+    refresh; none adds a split or active-VFO-selection CAT command.
   - On 2026-08-31, rigctld mode/passband reads and atomic setters passed; native `SH0` width selection was confirmed on the physical radio
   - On 2026-08-31, automatic-information traffic was observed to emit undocumented
     `FDxxx#########;` frames only when VFO tuning reached a visible spectrum edge and

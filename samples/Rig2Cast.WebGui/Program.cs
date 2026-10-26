@@ -96,6 +96,12 @@ api.MapPost("/radios/{radioId}/switches/{id}/read", async (string radioId, strin
 api.MapPut("/radios/{radioId}/switches/{id}", async (string radioId, string id, BoolValue body, HttpContext context, RadioWebHost host, CancellationToken ct) => { await host.WriteSwitchAsync(radioId, ApiClientIdentity.Require(context), Enum.Parse<RadioSwitchId>(id, true), body.Value, ct); return Results.NoContent(); });
 api.MapPost("/radios/{radioId}/choices/{id}/read", async (string radioId, string id, HttpContext context, RadioWebHost host, CancellationToken ct) => Results.Ok(await host.ReadChoiceAsync(radioId, ApiClientIdentity.Require(context), Enum.Parse<RadioChoiceId>(id, true), ct)));
 api.MapPut("/radios/{radioId}/choices/{id}", async (string radioId, string id, EnumValue body, HttpContext context, RadioWebHost host, CancellationToken ct) => { await host.WriteChoiceAsync(radioId, ApiClientIdentity.Require(context), Enum.Parse<RadioChoiceId>(id, true), body.Value, ct); return Results.NoContent(); });
+api.MapPost("/radios/{radioId}/actions/{id}", async (string radioId, string id, HttpContext context, RadioWebHost host, CancellationToken ct) =>
+{
+    await host.ExecuteActionAsync(
+        radioId, ApiClientIdentity.Require(context), Enum.Parse<RadioActionId>(id, true), ct);
+    return Results.NoContent();
+});
 api.MapPost("/radios/{radioId}/meters/{id}/read", async (string radioId, string id, HttpContext context, RadioWebHost host, CancellationToken ct) => Results.Ok(await host.ReadMeterAsync(radioId, ApiClientIdentity.Require(context), Enum.Parse<RadioMeterId>(id, true), ct)));
 api.MapPost("/radios/{radioId}/passband/read", async (string radioId, HttpContext context, RadioWebHost host, CancellationToken ct) => Results.Ok(await host.ReadPassbandAsync(radioId, ApiClientIdentity.Require(context), ct)));
 api.MapPut("/radios/{radioId}/passband", async (string radioId, IntValue body, HttpContext context, RadioWebHost host, CancellationToken ct) => { await host.WritePassbandAsync(radioId, ApiClientIdentity.Require(context), body.Value, ct); return Results.NoContent(); });

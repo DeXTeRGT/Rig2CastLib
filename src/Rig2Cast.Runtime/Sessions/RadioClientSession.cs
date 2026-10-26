@@ -205,6 +205,14 @@ internal sealed class RadioClientSession(
         return radio.WriteChoiceAsync(authorization, control, value, cancellationToken);
     }
 
+    public ValueTask ExecuteActionAsync(
+        RadioActionId action,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureActive();
+        return radio.ExecuteActionAsync(authorization, action, cancellationToken);
+    }
+
     public ValueTask<RadioChoiceValue> ReadChoiceAsync(
         RadioChoiceId control, VfoId target, CancellationToken cancellationToken = default)
     {

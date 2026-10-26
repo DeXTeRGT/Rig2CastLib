@@ -3,6 +3,25 @@ using Rig2Cast.Abstractions.Radios;
 
 namespace Rig2Cast.Abstractions.Controls;
 
+public enum RadioActionId
+{
+    CopyVfoAToB,
+    CopyVfoBToA,
+    SwapVfos
+}
+
+public sealed record RadioActionDescriptor(
+    RadioActionId Id,
+    string DisplayName,
+    FeatureDescriptor Feature)
+{
+    public bool RefreshStateAfterExecution { get; init; }
+}
+
+public sealed record RadioActionExecution(
+    RadioActionId Id,
+    DateTimeOffset ExecutedAt);
+
 public enum RadioSwitchId
 {
     NoiseBlanker,
@@ -52,6 +71,7 @@ public enum RadioChoiceId
     VoxDelay,
     AudioPeakFilterWidth,
     TuningStep,
+    Band,
     BreakInDelay,
     IfNotchWidth,
     NoiseBlankerWidth,
@@ -70,6 +90,8 @@ public sealed record ChoiceControlDescriptor(
     FeatureDescriptor Feature,
     IReadOnlyDictionary<string, RadioChoiceOption> Options)
 {
+    public bool RefreshStateAfterWrite { get; init; }
+
     public ModeApplicabilityDescriptor ModeApplicability { get; init; } = new();
 
     public IReadOnlySet<VfoId> Targets { get; init; } = new HashSet<VfoId>();

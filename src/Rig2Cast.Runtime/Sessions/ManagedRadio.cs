@@ -618,6 +618,27 @@ public sealed class ManagedRadio : IAsyncDisposable
                 ? await choiceDriver.ReadChoiceAsync(control, token).ConfigureAwait(false)
                 : new RadioChoiceValue(control, value, _timeProvider.GetUtcNow());
             _events.Publish(RadioEventKind.ControlChanged, confirmed);
+            if (descriptor.RefreshStateAfterWrite)
+                await RefreshStateCoreAsync(token).ConfigureAwait(false);
+        }, cancellationToken: cancellationToken).ConfigureAwait(false);
+    }
+
+    internal async ValueTask ExecuteActionAsync(
+        ClientAuthorization authorization,
+        RadioActionId action,
+        CancellationToken cancellationToken)
+    {
+        EnsureCanControl(authorization);
+        await ExecuteHardwareAsync(async token =>
+        {
+            RadioActionDescriptor descriptor = _driver.Capabilities.Actions[action];
+            EnsureWritable(descriptor.Feature, action.ToString());
+            await GetActionDriver(action).ExecuteActionAsync(action, token).ConfigureAwait(false);
+            _events.Publish(
+                RadioEventKind.ActionExecuted,
+                new RadioActionExecution(action, _timeProvider.GetUtcNow()));
+            if (descriptor.RefreshStateAfterExecution)
+                await RefreshStateCoreAsync(token).ConfigureAwait(false);
         }, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
@@ -656,6 +677,8 @@ public sealed class ManagedRadio : IAsyncDisposable
                 ? await driver.ReadChoiceAsync(control, target, token).ConfigureAwait(false)
                 : new RadioChoiceValue(control, value, _timeProvider.GetUtcNow(), target);
             _events.Publish(RadioEventKind.ControlChanged, confirmed);
+            if (descriptor.RefreshStateAfterWrite)
+                await RefreshStateCoreAsync(token).ConfigureAwait(false);
         }, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
@@ -694,6 +717,8 @@ public sealed class ManagedRadio : IAsyncDisposable
                 ? await driver.ReadChoiceAsync(control, receiver, token).ConfigureAwait(false)
                 : new RadioChoiceValue(control, value, _timeProvider.GetUtcNow()) { Receiver = receiver };
             _events.Publish(RadioEventKind.ControlChanged, confirmed);
+            if (descriptor.RefreshStateAfterWrite)
+                await RefreshStateCoreAsync(token).ConfigureAwait(false);
         }, cancellationToken: cancellationToken).ConfigureAwait(false);
     }
 
@@ -832,6 +857,11 @@ public sealed class ManagedRadio : IAsyncDisposable
         EnsureConnectedAndGet(_driver.Capabilities.Switches.ContainsKey(control) && _driver is IRadioSwitchDriver driver
             ? driver
             : throw new NotSupportedException($"Radio switch '{control}' is not supported by this driver."));
+
+    private IRadioActionDriver GetActionDriver(RadioActionId action) =>
+        EnsureConnectedAndGet(_driver.Capabilities.Actions.ContainsKey(action) && _driver is IRadioActionDriver driver
+            ? driver
+            : throw new NotSupportedException($"Radio action '{action}' is not supported by this driver."));
 
     private IRadioChoiceDriver GetChoiceDriver(RadioChoiceId control) =>
         EnsureConnectedAndGet(_driver.Capabilities.Choices.ContainsKey(control) && _driver is IRadioChoiceDriver driver
@@ -2262,6 +2292,16 @@ public sealed class ManagedRadio : IAsyncDisposable
             owner.EnsureModeWritable(descriptor.ModeApplicability, owner._state.Mode, control.ToString());
             ValidateChoice(descriptor.Options, value, owner._state.Mode, control);
             return choiceDriver.WriteChoiceAsync(control, value, cancellationToken);
+        }
+
+        public ValueTask ExecuteActionAsync(
+            RadioActionId action,
+            CancellationToken cancellationToken = default)
+        {
+            IRadioActionDriver actionDriver = owner.GetActionDriver(action);
+            RadioActionDescriptor descriptor = driver.Capabilities.Actions[action];
+            EnsureWritable(descriptor.Feature, action.ToString());
+            return actionDriver.ExecuteActionAsync(action, cancellationToken);
         }
 
         public ValueTask WriteChoiceAsync(

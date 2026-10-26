@@ -101,6 +101,13 @@ public interface IRadioControlDriver
         CancellationToken cancellationToken = default);
 }
 
+public interface IRadioActionDriver
+{
+    ValueTask ExecuteActionAsync(
+        RadioActionId action,
+        CancellationToken cancellationToken = default);
+}
+
 public interface IRadioMeterDriver
 {
     ValueTask<RadioMeterReading> ReadMeterAsync(

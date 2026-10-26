@@ -82,6 +82,9 @@ public sealed record RadioCapabilities(
     IReadOnlyDictionary<RadioMeterId, RadioMeterDescriptor> Meters,
     IReadOnlyDictionary<string, object?> Extensions)
 {
+    public IReadOnlyDictionary<RadioActionId, RadioActionDescriptor> Actions { get; init; } =
+        new Dictionary<RadioActionId, RadioActionDescriptor>();
+
     public PassbandCapability Passband { get; init; } = PassbandCapability.Unsupported;
 
     public ReceiverTopologyCapability Receivers { get; init; } =

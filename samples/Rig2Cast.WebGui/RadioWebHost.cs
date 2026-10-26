@@ -359,6 +359,7 @@ public sealed class RadioWebHost : IAsyncDisposable
     public ValueTask WriteSwitchAsync(string radioId, string clientId, RadioSwitchId id, bool value, CancellationToken ct) => Session(radioId, clientId).WriteSwitchAsync(id, value, ct);
     public ValueTask<RadioChoiceValue> ReadChoiceAsync(string radioId, string clientId, RadioChoiceId id, CancellationToken ct) => Session(radioId, clientId).ReadChoiceAsync(id, ct);
     public ValueTask WriteChoiceAsync(string radioId, string clientId, RadioChoiceId id, string value, CancellationToken ct) => Session(radioId, clientId).WriteChoiceAsync(id, value, ct);
+    public ValueTask ExecuteActionAsync(string radioId, string clientId, RadioActionId id, CancellationToken ct) => Session(radioId, clientId).ExecuteActionAsync(id, ct);
     public ValueTask<RadioMeterReading> ReadMeterAsync(string radioId, string clientId, RadioMeterId id, CancellationToken ct) => Session(radioId, clientId).ReadMeterAsync(id, ct);
     public ValueTask<RadioPassbandValue> ReadPassbandAsync(string radioId, string clientId, CancellationToken ct) => Session(radioId, clientId).ReadPassbandAsync(ct);
     public ValueTask WritePassbandAsync(string radioId, string clientId, int value, CancellationToken ct) => Session(radioId, clientId).SetPassbandAsync(value, ct);
