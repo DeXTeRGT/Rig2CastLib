@@ -61,6 +61,9 @@ The manual revision above documents the `PR` speech-processor state as `1` for o
     state refresh; `MD1` is recognized but does not directly mutate state.
   - On 2026-09-06, active-mode writes using `MD0` were physically validated with
     both VFO A and VFO B selected.
+  - Active-VFO selection sends `VS0;ST0;` or `VS1;ST0;` in one packed transport
+    write. The trailing split-off command works around affected firmware retaining
+    stale state from the previously selected VFO until another tuning command.
   - On 2026-08-31, rigctld mode/passband reads and atomic setters passed; native `SH0` width selection was confirmed on the physical radio
   - On 2026-08-31, automatic-information traffic was observed to emit undocumented
     `FDxxx#########;` frames only when VFO tuning reached a visible spectrum edge and

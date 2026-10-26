@@ -25,6 +25,11 @@ public sealed class YaesuAsciiProtocol : IAsyncDisposable
     public ValueTask SendAsync(string command, CancellationToken cancellationToken = default) =>
         _session.SendAsync(command, cancellationToken);
 
+    public ValueTask SendBatchAsync(
+        IReadOnlyList<string> commands,
+        CancellationToken cancellationToken = default) =>
+        _session.SendBatchAsync(commands, cancellationToken);
+
     public ValueTask<string> QueryAsync(
         string command,
         string expectedResponsePrefix,

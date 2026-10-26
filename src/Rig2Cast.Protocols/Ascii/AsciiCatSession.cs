@@ -70,6 +70,28 @@ public sealed class AsciiCatSession : IAsyncDisposable
         }
     }
 
+    public async ValueTask SendBatchAsync(
+        IReadOnlyList<string> commands,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(commands);
+        if (commands.Count == 0)
+            throw new ArgumentException("A CAT command batch must contain at least one command.", nameof(commands));
+
+        EnsureOperational();
+        string framedCommands = string.Concat(commands.Select(_options.FrameCommand));
+        await _transactionGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await WriteFramedAsync(framedCommands, _stopping.Token).ConfigureAwait(false);
+        }
+        finally
+        {
+            _transactionGate.Release();
+        }
+    }
+
     public ValueTask<string> QueryAsync(
         string command,
         string expectedPrefix,

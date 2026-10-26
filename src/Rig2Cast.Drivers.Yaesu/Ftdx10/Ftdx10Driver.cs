@@ -303,8 +303,10 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioControlDriver, IRadioMete
         EnsureActive();
         return vfo switch
         {
-            VfoId.A => _protocol.SendAsync("VS0", cancellationToken),
-            VfoId.B => _protocol.SendAsync("VS1", cancellationToken),
+            // ST0 in the same transport write forces affected FTDX10 firmware to
+            // recalculate the newly selected VFO instead of retaining stale state.
+            VfoId.A => _protocol.SendBatchAsync(["VS0", "ST0"], cancellationToken),
+            VfoId.B => _protocol.SendBatchAsync(["VS1", "ST0"], cancellationToken),
             _ => throw new NotSupportedException($"FTDX10 active-VFO selection does not support '{vfo}'.")
         };
     }

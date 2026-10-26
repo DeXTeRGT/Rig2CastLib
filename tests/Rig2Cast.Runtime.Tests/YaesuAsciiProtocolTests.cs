@@ -30,6 +30,30 @@ public sealed class YaesuAsciiProtocolTests
     }
 
     [Fact]
+    public async Task BatchSendFramesCommandsAndWritesOnePackedPayload()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("VS1;ST0;");
+        await transport.ConnectAsync();
+        await using var protocol = new YaesuAsciiProtocol(transport);
+
+        await protocol.SendBatchAsync(["vs1;", "st0"]);
+
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task BatchSendRejectsEmptyBatch()
+    {
+        var transport = new ScriptedRadioTransport();
+        await transport.ConnectAsync();
+        await using var protocol = new YaesuAsciiProtocol(transport);
+
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => protocol.SendBatchAsync([]).AsTask());
+    }
+
+    [Fact]
     public async Task QueryRejectsUnexpectedResponsePrefix()
     {
         var transport = new ScriptedRadioTransport();

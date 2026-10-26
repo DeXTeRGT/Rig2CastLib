@@ -463,15 +463,17 @@ public sealed class Ftdx10DriverTests
         transport.AssertComplete();
     }
 
-    [Fact]
-    public async Task ActiveVfoSelectionUsesDocumentedCommand()
+    [Theory]
+    [InlineData(VfoId.A, "VS0;ST0;")]
+    [InlineData(VfoId.B, "VS1;ST0;")]
+    public async Task ActiveVfoSelectionUsesPackedFirmwareWorkaround(VfoId vfo, string command)
     {
         var transport = new ScriptedRadioTransport();
         transport.Add("ID;", "ID0761;");
-        transport.Add("VS1;");
+        transport.Add(command);
         await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
 
-        await driver.SetActiveVfoAsync(VfoId.B);
+        await driver.SetActiveVfoAsync(vfo);
 
         Assert.True(driver.Capabilities.Vfos.Selection.Access.HasFlag(Capabilities.FeatureAccess.Write));
         transport.AssertComplete();
