@@ -94,7 +94,7 @@ public sealed class GhostLinkAudioCoordinator(
         await SetStateAsync("offline", null, CancellationToken.None);
     }
 
-    public async Task AttachBrowserAsync(WebSocket socket, CancellationToken requestAborted)
+    public async Task AttachBrowserAsync(WebSocket socket, bool allowTransmit, CancellationToken requestAborted)
     {
         AudioBrowserHello hello;
         try { hello = await ReceiveHelloAsync(socket, requestAborted); }
@@ -151,7 +151,8 @@ public sealed class GhostLinkAudioCoordinator(
                         CancellationToken.None);
                     break;
                 }
-                if (result.MessageType != WebSocketMessageType.Binary || !station.Access.AllowAudioTransmit || !station.Audio.AllowMicrophone) continue;
+                if (result.MessageType != WebSocketMessageType.Binary || !allowTransmit ||
+                    !station.Access.AllowAudioTransmit || !station.Audio.AllowMicrophone) continue;
                 if (!result.EndOfMessage || (result.Count & 1) != 0) throw new InvalidDataException("Invalid browser PCM message.");
                 for (int i = 0; i < result.Count; i += 2)
                     pending.Add(BinaryPrimitives.ReadInt16LittleEndian(message.AsSpan(i, 2)));

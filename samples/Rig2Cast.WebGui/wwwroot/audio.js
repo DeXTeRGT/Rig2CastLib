@@ -1,20 +1,19 @@
 (() => {
     let socket, context, mediaStream, source, processor, nextPlayTime = 0, active = false, reconnectTimer;
-    const byId = id => document.getElementById(id);
+    let allowMicrophone = false;
 
     function badge(text, online = false) {
-        const element = byId('audio-badge');
-        element.textContent = text;
-        element.className = `badge ${online ? 'online' : 'offline'}`;
+        dispatchEvent(new CustomEvent('rig2cast-audio-state', {
+            detail: { active, online, state: text }
+        }));
     }
 
     async function start() {
-        byId('audio-connect').disabled = true;
         active = true;
         try {
             context = new AudioContext({ sampleRate: 48000 });
             await context.resume();
-            if (byId('audio-mic').checked) {
+            if (allowMicrophone) {
                 mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
                 source = context.createMediaStreamSource(mediaStream);
                 processor = context.createScriptProcessor(2048, 1, 1);
@@ -25,7 +24,6 @@
                 processor.connect(silence).connect(context.destination);
             }
             connectSocket();
-            byId('audio-disconnect').disabled = false;
             badge('CONNECTING');
         } catch (error) {
             stop();
@@ -36,14 +34,11 @@
 
     function connectSocket() {
             const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-            socket = new WebSocket(`${protocol}://${location.host}/api/v1/audio/stream`);
+            const browserClientId = sessionStorage.getItem('rig2castClientId') || '';
+            socket = new WebSocket(`${protocol}://${location.host}/api/v1/audio/stream?clientId=${encodeURIComponent(browserClientId)}`);
             socket.binaryType = 'arraybuffer';
             socket.onopen = () => socket.send(JSON.stringify({
-                clientId: sessionStorage.getItem('rig2castClientId') || 'audio-browser',
-                host: byId('audio-host').value.trim(),
-                txPort: Number(byId('audio-tx-port').value),
-                rxPort: Number(byId('audio-rx-port').value),
-                bitrate: Number(byId('audio-bitrate').value)
+                clientId: sessionStorage.getItem('rig2castClientId') || 'audio-browser'
             }));
             socket.onmessage = event => typeof event.data === 'string' ? handleStatus(event.data) : playPcm(event.data);
             socket.onerror = () => badge('ERROR');
@@ -114,14 +109,17 @@
         if (mediaStream) { mediaStream.getTracks().forEach(track => track.stop()); mediaStream = null; }
         if (context) { context.close(); context = null; }
         nextPlayTime = 0;
-        byId('audio-connect').disabled = false;
-        byId('audio-disconnect').disabled = true;
         badge('OFFLINE');
     }
 
+    globalThis.rig2castAudio = {
+        start,
+        stop,
+        configure: options => { allowMicrophone = !!options?.allowMicrophone; },
+        isActive: () => active
+    };
+
     addEventListener('DOMContentLoaded', () => {
-        byId('audio-connect').onclick = start;
-        byId('audio-disconnect').onclick = stop;
         addEventListener('beforeunload', stop);
     });
 })();

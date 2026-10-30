@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-let models = [],
+let stationStatus = null,
     snapshot = null,
     ws = null,
     busy = false,
@@ -8,22 +8,35 @@ let models = [],
     clientRole = 'Observer',
     pttLeaseActive = false,
     pttRenewalTimer = null,
-    dialRotation = 0,
-    directEntryVfo = null,
+    dualDialRotation = { A: 0, B: 0 },
     meterPollTimer = null,
     meterPollInFlight = false,
     remoteFrequencyRanges = [],
+    presentation = null,
     spectrumSocket = null,
+    spectrumReconnectTimer = null,
     spectrumFrame = null,
     spectrumDragVfo = null,
     spectrumDisplaySamples = null,
     spectrumAverageRows = [],
     spectrumAverageSums = null,
     spectrumAverageGeometry = null,
+    radioPoweredOn = null,
     spectrumTurboGradient = null,
     spectrumTurboGradientHeight = 0,
     waterfallInitialized = false,
-    waterfallLastRowAt = 0;
+    waterfallLastRowAt = 0,
+    rotatorStatuses = [],
+    rotatorPollTimer = null,
+    authenticationEnabled = false,
+    currentUser = null,
+    stationSession = null,
+    stationSessionPollTimer = null,
+    adminUsers = [],
+    adminPermissionCatalog = [],
+    adminSelectedUserId = null;
+let confirmationResolve = null,
+    confirmationReturnFocus = null;
 const waterfallBuffer = document.createElement('canvas');
 const turboPalette = (() => {
     const encoded = 'MBI7MRVCMhhKNBtRNR5YNiFfNyNlOCZsOSlyOix5Oy9/PDKFPDWLPTeRPjqWPz2cQEChQEOmQUWrQUiwQku1Q066Q1C+Q1PCRFbHRFjLRVvORV7SRWDWRWPZRmbdRmjgRmvjRm3mRnDoRnPrRnXtRnjwRnryRn30Rn/2RoL4RYT5RYf7RYn8RIz9Q479QpH+QZP+QJb+P5j+Ppv+PJ39O6D8OaL8OKX7Nqj5NKr4M6z2Ma/1L7HzLbTxK7bvKrntKLvrJr3pJcDmI8LkIcThIMbfHsncHcvaHM3XG8/UGtHSGdPPGNXMGNfKF9nHF9rEF9zCF96/GOC9GOG6GeO4GuS2G+W0HeexHuivIOmsIuupJOymJ+2jKe6gLO+dL/CaMvGXNfOUOPSRO/SNP/WKQvaHRveDSviATfl8Ufl5Vfp2WftyXftvYfxsZfxoaf1lbf1icf1fdP5ceP5ZfP5WgP5ThP5Qh/5Ni/5Ljv5Ikv5Glf5EmP5Cm/1Anv0+ofw9pPw7pvs6qfs5rPo3rvk3sfg2s/g1tvc1ufU0u/Q0vvM0wPIzw/Ezxe8zyO4zyu0zzes0z+o00eg01Oc11uU12OM12uI23eA239424dw349o35dg459c46NU46tM57NE57c8578058Ms68sg688Y69MQ69sI698A5+L45+bw5+bo4+rc3+7U3+7M2/LA1/K40/asz/aky/aYx/aMw/qEv/p4u/pst/pgs/ZUr/ZIp/Y8o/Ywn/Ikm/IYk+4Mj+4Ai+n0g+nof+Xce+HQc93Eb924a9msY9WgX9GUW82MV8mAU8V0T71oR7lgQ7VUP7FIO6lAN6U0N6EsM5kkL5UYK40QK4kIJ4EAI3j4I3TwH2zoH2TgG1zYG1jQF1DIF0jAF0C8Ezi0EyysDySkDxygDxSYCwyQCwCMCviECux8BuR4BthwBtBsBsRkBrhgBrBYBqRUBphQBoxIBoBEBnRABmg4Blw0BlAwBkQsBjgoBiwkBhwgBhAcBgQYCfQUCegQC';
@@ -32,23 +45,15 @@ const turboPalette = (() => {
     return bytes
 })();
 const frequencyWriters = new Map();
-const controlWriteTimers = new Map();
+const controlWriters = new Map();
+const activeControlPointers = new Map();
 const frequencyWriteIntervalMs = 125;
-const controlValues = new Map(), choiceValues = new Map();
+const controlWriteIntervalMs = 125;
+const controlValues = new Map(), choiceValues = new Map(), switchValues = new Map();
 const clientId = sessionStorage.getItem('rig2castClientId') ||
     globalThis.crypto?.randomUUID?.() ||
     `client-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 sessionStorage.setItem('rig2castClientId', clientId);
-const ui = {
-    model: $('model'),
-    transport: $('transport'),
-    port: $('serial-port'),
-    baud: $('baud'),
-    settings: $('model-settings'),
-    connect: $('connect'),
-    disconnect: $('disconnect'),
-    refresh: $('refresh-all')
-};
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({
     '&': '&amp;',
     '<': '&lt;',
@@ -58,6 +63,225 @@ const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({
 } [c]));
 const access = (f, kind) => String(f?.access || '').toLowerCase().includes(kind);
 const connected = () => !!snapshot;
+function hasPermission(key, resourceId = null) {
+    if (!authenticationEnabled) return true;
+    const grants = currentUser?.permissions?.filter(item => item.key === key) || [];
+    if (resourceId !== null) {
+        const exact = grants.find(item => item.resourceId === resourceId);
+        if (exact) return !!exact.allowed
+    }
+    return !!grants.find(item => item.resourceId == null)?.allowed
+}
+
+function hasAnyResourcePermission(key) {
+    if (!authenticationEnabled) return true;
+    return (currentUser?.permissions || []).some(item => item.key === key && item.allowed)
+}
+
+const cardPermissions = {
+    vfo: ['radio.view', 'radio.control'],
+    spectrum: ['spectrum.view', 'spectrum.control'],
+    tuning: ['tuning.view', 'tuning.control'],
+    band: ['band.view', 'band.control'],
+    mode: ['mode.view', 'mode.control'],
+    dsp: ['dsp.view', 'dsp.control'],
+    receiver: ['receiver.view', 'receiver.control'],
+    transmit: ['transmit.view', 'transmit.control']
+};
+
+function applyPermissionPresentation() {
+    for (const [cardName, permissions] of Object.entries(cardPermissions)) {
+        const card = document.querySelector(`[data-card="${cardName}"]`);
+        if (!card) continue;
+        const visible = hasPermission(permissions[0]);
+        const writable = hasPermission(permissions[1]);
+        card.hidden = !visible;
+        card.classList.toggle('permission-readonly', visible && !writable);
+        card.setAttribute('data-permission-mode', writable ? 'control' : 'view');
+        if (visible && !writable)
+            for (const element of card.querySelectorAll('button,input,select')) element.disabled = true
+    }
+
+    const canViewRotators = hasAnyResourcePermission('rotator.view');
+    if ($('rotator-view-toggle')) $('rotator-view-toggle').hidden = !canViewRotators;
+    if ($('radio-power-control') && authenticationEnabled)
+        $('radio-power-control').hidden = !stationStatus?.station?.powerControlAvailable ||
+            !(hasPermission('radio.power.on') || hasPermission('radio.power.off'));
+    if ($('header-audio')) $('header-audio').hidden = !hasPermission('audio.view');
+    if ($('station-connect') && authenticationEnabled)
+        $('station-connect').hidden = !hasPermission('radio.connect');
+    if ($('admin-users')) $('admin-users').hidden = !hasPermission('users.manage');
+    if ($('spectrum-minimum')) $('spectrum-minimum').disabled = !hasPermission('spectrum.settings');
+    if ($('spectrum-maximum')) $('spectrum-maximum').disabled = !hasPermission('spectrum.settings');
+    if ($('spectrum-span') && !hasPermission('spectrum.settings')) $('spectrum-span').disabled = true;
+}
+
+function setAdminNotice(message = '', kind = 'error') {
+    const error = $('admin-error'), success = $('admin-success');
+    error.hidden = kind !== 'error' || !message;
+    success.hidden = kind !== 'success' || !message;
+    if (kind === 'error') error.textContent = message;
+    else success.textContent = message
+}
+
+function permissionTitle(key) {
+    return String(key).split('.').map(part => part.charAt(0).toUpperCase() + part.slice(1)).join(' · ')
+}
+
+function renderPermissionEditor(containerId, grants = []) {
+    const container = $(containerId);
+    const allowedGlobals = new Set(grants.filter(grant => grant.allowed && grant.resourceId == null).map(grant => grant.key));
+    const areas = new Map();
+    for (const permission of adminPermissionCatalog) {
+        if (!areas.has(permission.area)) areas.set(permission.area, []);
+        areas.get(permission.area).push(permission)
+    }
+    container.innerHTML = [...areas.entries()].map(([area, permissions]) => `
+      <section class="admin-permission-group"><h3>${esc(area)}</h3>
+        ${permissions.map(permission => `<label class="admin-permission"><input type="checkbox" data-permission-key="${esc(permission.key)}" ${allowedGlobals.has(permission.key) ? 'checked' : ''}><span><strong>${esc(permissionTitle(permission.key))}</strong><small>${esc(permission.description)}${permission.supportsResource ? ' May also be scoped to one rotator.' : ''}</small></span></label>`).join('')}
+      </section>`).join('')
+}
+
+function readGlobalPermissionEditor(containerId) {
+    return [...$(containerId).querySelectorAll('[data-permission-key]:checked')]
+        .map(input => ({ key: input.dataset.permissionKey, resourceId: null, allowed: true }))
+}
+
+function selectedAdminUser() {
+    return adminUsers.find(user => user.id === adminSelectedUserId) || null
+}
+
+function renderAdminUserList() {
+    $('admin-user-items').innerHTML = adminUsers.map(user => `<button type="button" class="admin-user-item ${user.id === adminSelectedUserId ? 'selected' : ''} ${user.enabled ? '' : 'disabled'}" data-admin-user-id="${esc(user.id)}"><strong>${esc(user.displayName || user.username)}</strong><small>@${esc(user.username)}${user.id === currentUser?.id ? ' · YOU' : ''}</small></button>`).join('');
+    for (const button of $('admin-user-items').querySelectorAll('[data-admin-user-id]'))
+        button.onclick = () => selectAdminUser(button.dataset.adminUserId)
+}
+
+function selectAdminUser(userId) {
+    adminSelectedUserId = userId;
+    const user = selectedAdminUser();
+    $('admin-create-form').hidden = true;
+    $('admin-user-empty').hidden = !!user;
+    $('admin-user-form').hidden = !user;
+    renderAdminUserList();
+    if (!user) return;
+    $('admin-user-display-name').textContent = user.displayName || user.username;
+    $('admin-user-username').textContent = `@${user.username}${user.mustChangePassword ? ' · password change required' : ''}`;
+    $('admin-user-enabled').checked = !!user.enabled;
+    $('admin-user-enabled').disabled = user.id === currentUser?.id;
+    $('admin-user-state').textContent = user.enabled ? 'ENABLED' : 'DISABLED';
+    $('admin-user-state').classList.toggle('disabled', !user.enabled);
+    $('admin-delete-user').disabled = user.id === currentUser?.id;
+    renderPermissionEditor('admin-user-permissions', user.permissions || [])
+}
+
+function showAdminCreate() {
+    adminSelectedUserId = null;
+    renderAdminUserList();
+    $('admin-user-empty').hidden = true;
+    $('admin-user-form').hidden = true;
+    $('admin-create-form').hidden = false;
+    renderPermissionEditor('admin-create-permissions');
+    requestAnimationFrame(() => $('admin-create-username').focus())
+}
+
+async function refreshAdminUsers(preferredUserId = adminSelectedUserId) {
+    adminUsers = await api('/admin/users');
+    const nextId = adminUsers.some(user => user.id === preferredUserId)
+        ? preferredUserId
+        : adminUsers[0]?.id || null;
+    selectAdminUser(nextId)
+}
+
+async function openAdminUsers() {
+    if (!hasPermission('users.manage')) return;
+    setAdminNotice();
+    $('admin-modal').hidden = false;
+    document.body.classList.add('modal-open');
+    try {
+        [adminPermissionCatalog, adminUsers] = await Promise.all([api('/admin/permissions'), api('/admin/users')]);
+        selectAdminUser(adminUsers[0]?.id || null)
+    } catch (error) {
+        setAdminNotice(error.message)
+    }
+}
+
+function closeAdminUsers() {
+    $('admin-modal').hidden = true;
+    document.body.classList.remove('modal-open');
+    setAdminNotice();
+    $('admin-users').focus()
+}
+
+async function submitAdminCreate(event) {
+    event.preventDefault();
+    const password = $('admin-create-password').value;
+    if (password !== $('admin-create-password-confirm').value) {
+        setAdminNotice('The passwords do not match.');
+        return
+    }
+    await run(async () => {
+        const created = await api('/admin/users', { method: 'POST', body: JSON.stringify({
+            username: $('admin-create-username').value.trim(),
+            displayName: $('admin-create-display-name').value.trim(),
+            password,
+            mustChangePassword: $('admin-create-must-change').checked,
+            permissions: readGlobalPermissionEditor('admin-create-permissions')
+        }) });
+        $('admin-create-form').reset();
+        $('admin-create-must-change').checked = true;
+        await refreshAdminUsers(created.id);
+        setAdminNotice(`User ${created.username} was created.`, 'success')
+    })
+}
+
+async function submitAdminUser(event) {
+    event.preventDefault();
+    const user = selectedAdminUser();
+    if (!user) return;
+    const globalPermissions = readGlobalPermissionEditor('admin-user-permissions');
+    const resourcePermissions = (user.permissions || []).filter(grant => grant.resourceId != null);
+    await run(async () => {
+        if (user.enabled !== $('admin-user-enabled').checked)
+            await api(`/admin/users/${encodeURIComponent(user.id)}/enabled`, { method: 'PUT', body: JSON.stringify({ enabled: $('admin-user-enabled').checked }) });
+        await api(`/admin/users/${encodeURIComponent(user.id)}/permissions`, { method: 'PUT', body: JSON.stringify({ permissions: [...globalPermissions, ...resourcePermissions] }) });
+        if (user.id === currentUser?.id) {
+            currentUser = await api('/auth/me');
+            applyPermissionPresentation()
+        }
+        await refreshAdminUsers(user.id);
+        setAdminNotice(`Account ${user.username} was updated.`, 'success')
+    })
+}
+
+async function resetAdminPassword() {
+    const user = selectedAdminUser();
+    if (!user) return;
+    const password = $('admin-reset-password').value;
+    if (password.length < 12) { setAdminNotice('The temporary password must contain at least 12 characters.'); return }
+    if (password !== $('admin-reset-confirm').value) { setAdminNotice('The reset passwords do not match.'); return }
+    const confirmed = await requestConfirmation({ title: `Reset ${user.username}'s password?`, message: 'Their current password will no longer be accepted for new sign-ins.', confirmLabel: 'RESET PASSWORD' });
+    if (!confirmed) return;
+    await run(async () => {
+        await api(`/admin/users/${encodeURIComponent(user.id)}/password`, { method: 'PUT', body: JSON.stringify({ password, mustChangePassword: $('admin-reset-must-change').checked }) });
+        $('admin-reset-password').value = '';
+        $('admin-reset-confirm').value = '';
+        await refreshAdminUsers(user.id);
+        setAdminNotice(`Password reset for ${user.username}.`, 'success')
+    })
+}
+
+async function deleteAdminUser() {
+    const user = selectedAdminUser();
+    if (!user || user.id === currentUser?.id) return;
+    const confirmed = await requestConfirmation({ title: `Delete ${user.username}?`, message: 'This permanently removes the account, its permissions, and all active sessions.', confirmLabel: 'DELETE USER' });
+    if (!confirmed) return;
+    await run(async () => {
+        await api(`/admin/users/${encodeURIComponent(user.id)}`, { method: 'DELETE' });
+        await refreshAdminUsers(null);
+        setAdminNotice(`User ${user.username} was deleted.`, 'success')
+    })
+}
 async function api(path, options = {}) {
     const response = await fetch('/api/v1' + path, {
         ...options,
@@ -77,41 +301,205 @@ async function api(path, options = {}) {
     return response.status === 204 ? null : response.json()
 }
 
+async function initializeAuthentication() {
+    const statusResponse = await fetch('/api/v1/auth/status');
+    if (!statusResponse.ok) throw new Error('Unable to read station authentication status.');
+    const authentication = await statusResponse.json();
+    authenticationEnabled = !!authentication.enabled;
+    if (!authenticationEnabled) return true;
+
+    const response = await fetch('/api/v1/auth/me');
+    if (response.ok) {
+        currentUser = await response.json();
+        $('session-logout').hidden = false;
+        if (currentUser.mustChangePassword) {
+            showPasswordChange();
+            return false
+        }
+        applyPermissionPresentation();
+        return true
+    }
+    showLogin();
+    return false
+}
+
+function showLogin(message = '') {
+    $('login-error').textContent = message;
+    $('login-error').hidden = !message;
+    $('login-modal').hidden = false;
+    document.body.classList.add('modal-open');
+    requestAnimationFrame(() => $('login-username').focus())
+}
+
+function hideLogin() {
+    $('login-modal').hidden = true;
+    document.body.classList.remove('modal-open');
+    $('login-password').value = ''
+}
+
+function showPasswordChange(message = '') {
+    $('password-change-error').textContent = message;
+    $('password-change-error').hidden = !message;
+    $('password-change-modal').hidden = false;
+    document.body.classList.add('modal-open');
+    requestAnimationFrame(() => $('password-current').focus())
+}
+
+function hidePasswordChange() {
+    $('password-change-modal').hidden = true;
+    document.body.classList.remove('modal-open');
+    $('password-current').value = '';
+    $('password-new').value = '';
+    $('password-confirm').value = ''
+}
+
+async function submitLogin(event) {
+    event.preventDefault();
+    const button = $('login-submit');
+    button.disabled = true;
+    $('login-error').hidden = true;
+    try {
+        const response = await fetch('/api/v1/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                username: $('login-username').value,
+                password: $('login-password').value
+            })
+        });
+        if (!response.ok) throw new Error(response.status === 401
+            ? 'The username or password is incorrect.'
+            : 'Sign-in failed. Please try again.');
+        currentUser = await response.json();
+        $('session-logout').hidden = false;
+        hideLogin();
+        if (currentUser.mustChangePassword) {
+            showPasswordChange();
+            return
+        }
+        applyPermissionPresentation();
+        await bootstrap()
+    } catch (error) {
+        showLogin(error.message)
+    } finally {
+        button.disabled = false
+    }
+}
+
+async function submitPasswordChange(event) {
+    event.preventDefault();
+    const button = $('password-change-submit');
+    const newPassword = $('password-new').value;
+    if (newPassword !== $('password-confirm').value) {
+        showPasswordChange('The new passwords do not match.');
+        return
+    }
+    button.disabled = true;
+    try {
+        const response = await fetch('/api/v1/auth/change-password', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                currentPassword: $('password-current').value,
+                newPassword
+            })
+        });
+        let responseBody = null;
+        try { responseBody = await response.json() } catch {}
+        if (!response.ok) throw new Error(response.status === 401
+            ? 'The current password is incorrect.'
+            : responseBody?.error || 'The password could not be changed.');
+        currentUser = responseBody;
+        hidePasswordChange();
+        applyPermissionPresentation();
+        await bootstrap()
+    } catch (error) {
+        showPasswordChange(error.message)
+    } finally {
+        button.disabled = false
+    }
+}
+
+async function logout() {
+    if (connected()) {
+        try { await disconnect() } catch { }
+    }
+    if (stationSessionPollTimer !== null) clearInterval(stationSessionPollTimer);
+    try { await fetch('/api/v1/auth/logout', { method: 'POST' }) } catch {}
+    location.reload()
+}
+
 function log(message, type = 'INFO') {
-    const line = `${new Date().toLocaleTimeString()}  ${type.padEnd(5)}  ${message}\n`;
-    $('log').textContent = line + $('log').textContent
+    const method = type === 'ERROR' ? 'error' : type === 'WARN' ? 'warn' : 'info';
+    console[method](`[Rig2Cast] ${message}`)
 }
 
 function status(title, text, kind = '') {
-    $('status-title').textContent = title;
-    $('status-text').textContent = text;
-    $('status-card').className = 'status-card ' + kind
+    const message = $('operator-message');
+    message.hidden = kind !== 'error' && kind !== 'notice';
+    message.className = `operator-message ${kind}`;
+    message.textContent = text ? `${title}: ${text}` : title
+}
+
+function updateHeaderControls() {
+    const attached = connected();
+    const connectButton = $('station-connect');
+    const occupiedByOther = !attached && stationSession && !stationSession.available && !stationSession.ownedByCurrentUser;
+    connectButton.textContent = attached
+        ? 'CONNECTED'
+        : occupiedByOther
+            ? stationSession.canTakeOver ? 'TAKE CONTROL' : 'STATION IN USE'
+            : 'CONNECT RADIO';
+    connectButton.classList.toggle('connected', attached);
+    connectButton.classList.toggle('disconnected', !attached);
+    connectButton.setAttribute('aria-label', attached ? 'Disconnect radio' : occupiedByOther ? `Station in use by ${stationSession.ownerDisplayName}` : 'Connect radio');
+    connectButton.title = attached
+        ? 'Disconnect radio'
+        : occupiedByOther
+            ? `Station in use by ${stationSession.ownerDisplayName}`
+            : radioPoweredOn === false ? 'Power on the physical radio before connecting' : 'Connect radio';
+    connectButton.disabled = busy || (!attached && radioPoweredOn === false) ||
+        (occupiedByOther && !stationSession.canTakeOver);
+
+    const powerButton = $('radio-power-control');
+    powerButton.disabled = busy ||
+        (radioPoweredOn === true && !hasPermission('radio.power.off')) ||
+        (radioPoweredOn === false && !hasPermission('radio.power.on'));
+    $('header-audio').disabled = busy || !attached
+}
+
+function closeConfirmation(result) {
+    if (!confirmationResolve) return;
+    const resolve = confirmationResolve;
+    const returnFocus = confirmationReturnFocus;
+    confirmationResolve = null;
+    confirmationReturnFocus = null;
+    $('confirmation-modal').hidden = true;
+    if ($('admin-modal').hidden) document.body.classList.remove('modal-open');
+    resolve(result);
+    if (returnFocus?.isConnected) returnFocus.focus()
+}
+
+function requestConfirmation({ title, message, confirmLabel, tone = 'danger' }) {
+    if (confirmationResolve) closeConfirmation(false);
+    confirmationReturnFocus = document.activeElement;
+    $('confirmation-title').textContent = title;
+    $('confirmation-message').textContent = message;
+    $('confirmation-accept').textContent = confirmLabel;
+    $('confirmation-dialog').className = `confirmation-dialog ${tone}`;
+    $('confirmation-modal').hidden = false;
+    document.body.classList.add('modal-open');
+    return new Promise(resolve => {
+        confirmationResolve = resolve;
+        requestAnimationFrame(() => $('confirmation-cancel').focus())
+    })
 }
 
 function setBusy(value) {
     busy = value;
     document.body.classList.toggle('busy', value);
-    ui.connect.disabled = value || connected();
-    ui.disconnect.disabled = value || !connected();
-    ui.refresh.disabled = value || !connected();
-    if ($('ptt') && snapshot) $('ptt').disabled = value || !canControlPtt()
-}
-
-function applyViewPreferences() {
-    const sidebarHidden = localStorage.getItem('rig2castHideSidebar') === 'true';
-    const panelsHidden = localStorage.getItem('rig2castHideBottomPanels') === 'true';
-    document.body.classList.toggle('hide-sidebar', sidebarHidden);
-    document.body.classList.toggle('hide-bottom-panels', panelsHidden);
-    $('sidebar-toggle').setAttribute('aria-pressed', String(sidebarHidden));
-    $('sidebar-toggle').title = sidebarHidden ? 'Show the connection panel' : 'Hide the connection panel';
-    $('panels-toggle').setAttribute('aria-pressed', String(panelsHidden));
-    $('panels-toggle').title = panelsHidden ? 'Show the lower panels' : 'Hide the lower panels'
-}
-
-function toggleViewPreference(storageKey, bodyClass) {
-    const hidden = !document.body.classList.contains(bodyClass);
-    localStorage.setItem(storageKey, String(hidden));
-    applyViewPreferences()
+    updateHeaderControls();
+    if ($('operator-ptt') && snapshot) $('operator-ptt').disabled = value || !canControlPtt()
 }
 async function run(action, label) {
     if (busy) return;
@@ -121,40 +509,96 @@ async function run(action, label) {
         if (label) log(label)
     } catch (e) {
         status('Operation failed', e.message, 'error');
+        if (!$('admin-modal').hidden) setAdminNotice(e.message);
         log(e.message, 'ERROR')
     } finally {
         setBusy(false)
     }
 }
 async function bootstrap() {
-    applyViewPreferences();
-    const s = await api('/status');
-    remoteFrequencyRanges = s.station?.remoteFrequencyRanges || [];
-    models = await api('/models');
-    ui.model.innerHTML = models.map(m => `<option value="${esc(m.id)}">${esc(m.manufacturer)} ${esc(m.model)}</option>`).join('');
-    await loadPorts();
-    renderModel();
-    if (s.station?.locked) {
-        $('connection-form').hidden = true;
-        $('station-lock-summary').hidden = false;
-        $('station-lock-summary').textContent = s.station.displayName;
-        $('audio-config').hidden = true;
-        $('audio-mic').checked = !!s.station.audioAllowMicrophone;
-        $('audio-mic').disabled = !s.station.audioAllowMicrophone;
-        ui.connect.textContent = 'Attach station';
+    stationStatus = await api('/status');
+    if (!stationStatus.station?.locked)
+        throw new Error('The operator console requires a configured station.json.');
+    $('station-title').textContent = stationStatus.station.displayName || 'Remote Station';
+    remoteFrequencyRanges = stationStatus.station.remoteFrequencyRanges || [];
+    presentation = stationStatus.station.presentation || null;
+    await refreshStationSession();
+    if (stationSessionPollTimer !== null) clearInterval(stationSessionPollTimer);
+    stationSessionPollTimer = setInterval(() => refreshStationSession().catch(error =>
+        log(`Station session status: ${error.message}`, 'WARN')), 3000);
+    globalThis.rig2castAudio?.configure({
+        allowMicrophone: stationStatus.station.audioAllowMicrophone && hasPermission('audio.transmit')
+    });
+    renderOffline();
+    if (hasPermission('spectrum.view')) await initializeSpectrumLevels();
+    if (hasPermission('radio.view')) await refreshRadioPowerState();
+    await initializeRotators(!!presentation?.showRotatorGui && hasAnyResourcePermission('rotator.view'));
+    applyPermissionPresentation();
+}
+
+async function refreshStationSession() {
+    stationSession = await api('/station-session');
+    updateHeaderControls();
+    if (!connected() && !stationSession.available && !stationSession.ownedByCurrentUser) {
+        status('Station in use', `${stationSession.ownerDisplayName} currently has the active station connection.`, 'notice')
+    } else if ($('operator-message').classList.contains('notice')) {
+        status('', '')
     }
-    if (!s.serverAllowsWrites) {
-        $('enable-writes').disabled = true;
-        $('enable-writes').title = 'Start with Rig2Cast__AllowWrites=true to permit operator sessions.'
+    return stationSession
+}
+
+async function initializeSpectrumLevels() {
+    const levels = await api('/spectrum/levels');
+    $('spectrum-minimum').value = levels.minimumLevel;
+    $('spectrum-maximum').value = levels.maximumLevel
+}
+
+async function updateSpectrumLevels() {
+    const minimumLevel = Number($('spectrum-minimum').value);
+    const maximumLevel = Number($('spectrum-maximum').value);
+    if (!Number.isInteger(minimumLevel) || !Number.isInteger(maximumLevel) || minimumLevel < 0 || maximumLevel > 255 || minimumLevel >= maximumLevel)
+        throw new Error('Spectrum levels require 0 <= minimum < maximum <= 255.');
+    await api('/spectrum/levels', { method: 'PUT', body: JSON.stringify({ minimumLevel, maximumLevel }) })
+}
+
+async function refreshRadioPowerState() {
+    const button = $('radio-power-control');
+    const available = !!stationStatus?.station?.powerControlAvailable;
+    button.hidden = !available;
+    if (!available) return;
+    try {
+        const state = await api('/radio-power');
+        radioPoweredOn = !!state.poweredOn;
+        button.textContent = radioPoweredOn ? 'POWERED ON' : 'POWERED OFF';
+        button.classList.toggle('powered-on', radioPoweredOn);
+        button.classList.toggle('powered-off', !radioPoweredOn);
+        button.classList.remove('power-unknown');
+        button.setAttribute('aria-label', radioPoweredOn ? 'Power off physical radio' : 'Power on physical radio');
+        button.title = radioPoweredOn ? 'Power off physical radio' : 'Power on physical radio'
+    } catch (error) {
+        radioPoweredOn = null;
+        button.textContent = 'POWER UNKNOWN';
+        button.classList.remove('powered-on', 'powered-off');
+        button.classList.add('power-unknown');
+        button.setAttribute('aria-label', 'Read radio power state');
+        button.title = 'Read radio power state';
+        log(`Power state: ${error.message}`, 'WARN')
     }
-    status('Offline', `${s.activeRadios} server-owned radio(s) active. ${s.serverAllowsWrites ? 'Writes may be requested.' : 'Server is read-only.'}`);
-    openSpectrumSocket();
+    updateHeaderControls()
 }
 
 function openSpectrumSocket() {
-    if (spectrumSocket) spectrumSocket.close();
+    if (!connected()) return;
+    if (spectrumReconnectTimer !== null) {
+        clearTimeout(spectrumReconnectTimer);
+        spectrumReconnectTimer = null
+    }
+    if (spectrumSocket) {
+        spectrumSocket.onclose = null;
+        spectrumSocket.close()
+    }
     const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
-    spectrumSocket = new WebSocket(`${protocol}://${location.host}/api/v1/spectrum/stream`);
+    spectrumSocket = new WebSocket(`${protocol}://${location.host}/api/v1/spectrum/stream?clientId=${encodeURIComponent(clientId)}`);
     spectrumSocket.onmessage = event => {
         spectrumFrame = JSON.parse(event.data);
         initializeSpectrumAverage(spectrumFrame.defaultAverage);
@@ -173,8 +617,34 @@ function openSpectrumSocket() {
         spectrumSocket = null;
         $('spectrum-state').textContent = 'OFFLINE';
         $('spectrum-state').className = 'badge offline';
-        setTimeout(openSpectrumSocket, 2000)
+        if (connected()) spectrumReconnectTimer = setTimeout(() => {
+            spectrumReconnectTimer = null;
+            if (connected()) openSpectrumSocket()
+        }, 2000)
     }
+}
+
+function closeSpectrumSocket() {
+    if (spectrumReconnectTimer !== null) clearTimeout(spectrumReconnectTimer);
+    spectrumReconnectTimer = null;
+    if (spectrumSocket) {
+        spectrumSocket.onclose = null;
+        spectrumSocket.close();
+        spectrumSocket = null
+    }
+    spectrumFrame = null;
+    spectrumDisplaySamples = null;
+    spectrumDragVfo = null;
+    resetSpectrumAverage();
+    for (const id of ['spectrum-canvas', 'waterfall-canvas']) {
+        const canvas = $(id), context = canvas.getContext('2d');
+        context.clearRect(0, 0, canvas.width, canvas.height)
+    }
+    $('spectrum-state').textContent = 'OFFLINE';
+    $('spectrum-state').className = 'badge offline';
+    $('spectrum-range').textContent = 'Waiting for station connection';
+    $('spectrum-vfo-a').textContent = 'VFO A —';
+    $('spectrum-vfo-b').textContent = 'VFO B —'
 }
 
 function spectrumVfo(frame, name) {
@@ -389,51 +859,14 @@ function nearestSpectrumMarker(clientX, canvas) {
     }
     return nearest
 }
-async function loadPorts() {
-    const ports = await api('/serial-ports');
-    ui.port.innerHTML = ports.length ? ports.map(p => `<option value="${esc(p.portName)}">${esc(p.displayName)}</option>`).join('') : '<option value="">No ports discovered</option>'
-}
-
-function selectedModel() {
-    return models.find(m => m.id === ui.model.value)
-}
-
-function renderModel() {
-    const m = selectedModel();
-    if (!m) return;
-    const transports = [...m.transports];
-    if (m.simulatorAvailable) transports.push('Simulator');
-    ui.transport.innerHTML = [...new Set(transports)].map(t => `<option>${esc(t)}</option>`).join('');
-    ui.baud.innerHTML = m.baudRates.map(b => `<option ${b === m.defaultBaudRate ? 'selected' : ''}>${b}</option>`).join('');
-    ui.settings.innerHTML = m.connectionSettings.map(s => {
-        const value = s.defaultValue ?? '';
-        if (s.valueType === 'Boolean') return `<label class="check setting"><input data-setting="${esc(s.id)}" type="checkbox" ${String(value).toLowerCase() === 'true' ? 'checked' : ''}>${esc(s.displayName)}</label><small title="${esc(s.description)}"></small>`;
-        return `<label title="${esc(s.description)}">${esc(s.displayName)}<input data-setting="${esc(s.id)}" value="${esc(value)}" ${s.isRequired ? 'required' : ''}></label>`
-    }).join('');
-    renderTransport()
-}
-
-function renderTransport() {
-    const t = ui.transport.value;
-    $('serial-fields').hidden = t !== 'Serial';
-    $('tcp-fields').hidden = t !== 'Tcp'
-}
-
 function connectBody() {
-    const settingValues = {};
-    document.querySelectorAll('[data-setting]').forEach(e => settingValues[e.dataset.setting] = e.type === 'checkbox' ? String(e.checked) : e.value);
-    const override = $('port-override-enabled').checked;
     return {
         clientId,
-        modelId: ui.model.value,
-        transport: ui.transport.value,
-        serialPort: override ? $('port-override').value : ui.port.value,
-        baudRate: Number(ui.baud.value) || null,
-        tcpHost: $('tcp-host').value,
-        tcpPort: Number($('tcp-port').value),
-        settings: settingValues,
-        enableWrites: $('enable-writes').checked,
-        modeRestrictions: $('mode-policy').value
+        modelId: '',
+        transport: '',
+        settings: {},
+        enableWrites: !!stationStatus?.serverAllowsWrites,
+        modeRestrictions: 'Enforce'
     }
 }
 async function connect() {
@@ -445,15 +878,20 @@ async function connect() {
     snapshot = result.snapshot;
     isOwner = result.isOwner;
     clientRole = result.role;
-    ui.disconnect.textContent = isOwner ? 'Close radio' : 'Detach';
     renderSnapshot();
     openSocket();
+    openSpectrumSocket();
     await refreshAll();
+    await initializeTuningStep();
+    await initializeSpectrumSpan();
+    await refreshRadioPowerState();
     startMeterPolling();
+    await refreshStationSession();
     status(result.readOnly ? 'Attached read-only' : 'Connected as operator', result.message, 'online');
     log(`${result.message} Radio ID: ${radioId}.`)
 }
 async function disconnect() {
+    globalThis.rig2castAudio?.stop();
     stopPttRenewal();
     stopMeterPolling();
     if (ws) {
@@ -467,14 +905,15 @@ async function disconnect() {
     else await api(`/radios/${radioId}/detach`, {
         method: 'POST'
     });
+    closeSpectrumSocket();
     const action = isOwner ? 'Radio closed.' : 'Observer detached.';
     snapshot = null;
     radioId = null;
     isOwner = false;
     clientRole = 'Observer';
     pttLeaseActive = false;
-    ui.disconnect.textContent = 'Disconnect';
     renderOffline();
+    await refreshStationSession();
     status('Offline', action);
     log(action)
 }
@@ -490,9 +929,32 @@ function openSocket() {
         renderSnapshot(false)
     };
     ws.onerror = () => log('WebSocket event stream interrupted.', 'WARN');
-    ws.onclose = () => {
+    ws.onclose = async () => {
+        ws = null;
+        if (!connected()) return;
+        try {
+            await refreshStationSession();
+            if (!stationSession.ownedByCurrentUser) {
+                loseStationSession('Your active station session was ended by an administrator.');
+                return
+            }
+        } catch {}
         if (connected()) setTimeout(openSocket, 1500)
     }
+}
+
+function loseStationSession(message) {
+    globalThis.rig2castAudio?.stop();
+    stopPttRenewal();
+    stopMeterPolling();
+    closeSpectrumSocket();
+    snapshot = null;
+    radioId = null;
+    isOwner = false;
+    clientRole = 'Observer';
+    pttLeaseActive = false;
+    renderOffline();
+    status('Station disconnected', message, 'error')
 }
 
 function frequencyText(value) {
@@ -505,57 +967,247 @@ function renderSnapshot(rebuild = true) {
     const c = snapshot.capabilities,
         s = snapshot.state,
         writes = snapshot.authorization.canControl;
-    $('radio-title').textContent = `${c.manufacturer} ${c.model}`;
-    const rangeViolation = remotePttViolation(c, s);
-    $('radio-summary').textContent = `VFO ${s.activeVfo} · ${s.mode} · Split ${s.isSplit ? 'ON' : 'OFF'} · ${s.isTransmitting ? 'TX' : 'RX'} · ${clientRole}${rangeViolation ? ` · ${rangeViolation}` : ''}`;
-    $('connection-badge').textContent = `${s.connection} · ${clientRole.toUpperCase()}`;
-    $('connection-badge').className = 'badge online';
+    updateHeaderControls();
     renderPtt(c, s);
-    renderVfos(c, s, writes);
-    renderTuningDial(c, s, writes);
-    renderCore(c, s, writes);
-    renderSoftControls(c, s, writes);
-    if (rebuild) {
-        renderControls(c, writes);
-        renderMeters(c);
-        renderFrontMeters(c);
-        renderMoreCapabilities(c);
-        renderCommonKnobs(c, writes)
-    }
+    renderTransmit(c, s, writes);
+    renderOperatorVfo(c, s, writes);
+    renderDualTuning(c, s, writes);
+    renderBandMode(c, s, writes);
+    renderDsp(c, s, writes);
+    renderReceiver(c, s, writes);
     applyModeAvailability(c, s.mode, writes);
-    setBusy(false)
+    setBusy(false);
+    applyPermissionPresentation()
 }
 
-function renderVfos(c, s, writes) {
-    const deck = $('vfo-deck');
-    deck.className = 'vfo-deck';
-    const visibleVfos = c.vfos.available.filter(v => String(v).toLowerCase() !== 'memory');
-    const vfos = visibleVfos.length ? visibleVfos : c.vfos.available;
-    deck.innerHTML = vfos.map(v => {
-        const hz = s.frequenciesHz[v] ?? s.vfos?.[v]?.frequencyHz ?? 0;
-        const writable = writes && access(c.frequency.feature, 'write') && c.frequency.targets.some(x => String(x).toLowerCase() === String(v).toLowerCase());
-        const splitTx = s.isSplit && v === s.transmitVfo;
-        const role = v === s.activeVfo ? `ACTIVE · RX${splitTx ? ' · TX' : ''}` : splitTx ? 'SPLIT · TX' : 'STANDBY';
-        const mode = s.vfos?.[v]?.mode ?? s.mode;
-        const step = selectedTuningStep(c);
-        const stepChoice = findChoice(c, 'TuningStep');
-        const stepOptions = stepChoice ? Object.values(stepChoice.options).filter(option => !option.applicableModes || option.applicableModes.some(value => String(value).toLowerCase() === String(mode).toLowerCase())) : [];
-        const stepControl = stepChoice ? `<select class="vfo-step-select" aria-label="VFO tuning step in hertz" ${writes && access(stepChoice.feature, 'write') ? '' : 'disabled'} onclick="event.stopPropagation()" onpointerdown="event.stopPropagation()" onchange="setTuningStep(event, '${stepChoice.id}')">${stepOptions.map(option => `<option value="${esc(option.value)}" ${String(option.value) === String(choiceValues.get(String(stepChoice.id).toLowerCase())) ? 'selected' : ''}>${stepOptionLabel(option.value)}</option>`).join('')}</select>` : `<strong>${formatStep(step)}</strong>`;
-        const hint = writable ? 'Use the tuning knob, mouse wheel, or arrow keys. Shift: 10×; Ctrl: 100×' : 'Read-only VFO';
-        const selectable = writes && access(c.vfos.selection, 'write');
-        return `<article class="vfo-card ${v === s.activeVfo ? 'active' : ''} ${splitTx ? 'split-tx' : ''} ${selectable ? 'selectable' : ''}" ${selectable ? `tabindex="0" role="button" aria-label="Select VFO ${esc(v)}" onclick="selectVfo('${v}')" onkeydown="selectVfoKey(event, '${v}')"` : ''}><div class="vfo-card-header"><div class="vfo-name">VFO ${esc(v)}</div><span class="vfo-role">${role}</span></div><div id="frequency-${v}" class="frequency ${writable ? 'tunable' : ''}" title="${hint}" onclick="event.stopPropagation()" ${writable ? `tabindex="0" role="slider" aria-label="Tune VFO ${esc(v)}" onwheel="tuneFrequency(event, '${v}')" onkeydown="tuneFrequencyKey(event, '${v}')"` : ''}>${frequencyText(hz)}</div><div class="vfo-details"><div class="vfo-detail"><small>MODE</small><strong>${esc(mode)}</strong></div><div class="vfo-detail"><small>STEP</small>${stepControl}</div><div class="vfo-detail"><small>STATE</small><strong>${splitTx ? 'TX' : v === s.activeVfo ? 'RX' : 'READY'}</strong></div></div></article>`
+function isPresented(kind, id) {
+    const configured = presentation?.[kind];
+    return !Array.isArray(configured) || configured.some(value => String(value).toLowerCase() === String(id).toLowerCase())
+}
+
+function compactFrequency(value) {
+    if (!value) return '--.---.---';
+    return Math.trunc(value).toLocaleString('de-DE').replace(/,/g, '.')
+}
+
+function renderOperatorVfo(c, s, writes) {
+    const active = String(s.activeVfo || 'A');
+    const secondary = active.toLowerCase() === 'a' ? 'B' : 'A';
+    const activeHz = s.frequenciesHz?.[active] ?? s.vfos?.[active]?.frequencyHz;
+    const secondaryHz = s.frequenciesHz?.[secondary] ?? s.vfos?.[secondary]?.frequencyHz;
+    $('operator-radio-state').textContent = s.isTransmitting ? 'TRANSMIT' : 'RECEIVE';
+    $('operator-rx-flag').textContent = s.isTransmitting ? 'TX' : 'RX';
+    $('operator-rx-flag').classList.toggle('tx', s.isTransmitting);
+    $('operator-active-vfo').textContent = `VFO ${active}`;
+    $('operator-active-vfo').disabled = !(writes && access(c.vfos.selection, 'write'));
+    $('operator-active-vfo').onclick = () => window.selectVfo(secondary);
+    $('operator-mode').textContent = operatorModeLabel(s.vfos?.[active]?.mode ?? s.mode);
+    $('operator-split').textContent = `SPLIT ${s.isSplit ? 'ON' : 'OFF'}`;
+    $('operator-split').classList.toggle('active', s.isSplit);
+    $('operator-split').disabled = !(writes && access(c.vfos.split, 'write'));
+    $('operator-split').onclick = () => setOperatorSplit(!s.isSplit);
+    $('operator-frequency').textContent = compactFrequency(activeHz);
+    $('operator-secondary-name').textContent = `VFO ${secondary}`;
+    $('operator-secondary-frequency').textContent = compactFrequency(secondaryHz);
+    const actions = Object.values(c.actions || {}).filter(action => isPresented('actions', action.id));
+    $('operator-vfo-actions').innerHTML = actions.map(action => `<button ${writes && access(action.feature, 'write') ? '' : 'disabled'} onclick="executeRadioAction('${esc(action.id)}')">${action.id === 'CopyVfoAToB' ? 'A → B' : action.id === 'CopyVfoBToA' ? 'B → A' : 'SWAP'}</button>`).join('')
+}
+
+window.setOperatorSplit = enabled => run(async () => {
+    snapshot = await api(`/radios/${radioId}/split`, { method: 'PUT', body: JSON.stringify({ value: enabled }) });
+    renderSnapshot(false)
+}, `Split ${enabled ? 'enabled' : 'disabled'}.`);
+
+function renderDualTuning(c, s, writes) {
+    const stepChoice = findChoice(c, 'TuningStep');
+    const stepButtons = $('operator-tuning-step');
+    if (stepChoice && isPresented('choices', stepChoice.id)) {
+        const key = String(stepChoice.id).toLowerCase();
+        const options = tuningStepOptions(c, s.mode);
+        let selected = choiceValues.get(key);
+        if (!options.some(option => String(option.value) === String(selected))) {
+            selected = options.find(option => parseStepHz(option.value) === 10)?.value ?? options[0]?.value;
+            if (selected !== undefined) choiceValues.set(key, selected)
+        }
+        const writable = writes && access(stepChoice.feature, 'write');
+        stepButtons.innerHTML = options.map(option => {
+            const label = stepOptionLabel(option.value);
+            const active = String(option.value) === String(selected);
+            return `<button type="button" class="${active ? 'active' : ''}" aria-pressed="${active}" ${writable ? '' : 'disabled'} onclick="setTuningStep('${esc(stepChoice.id)}','${esc(option.value)}','${esc(label)}')">${label}</button>`
+        }).join('')
+    } else {
+        stepButtons.innerHTML = `<button type="button" class="active" aria-pressed="true" disabled>${formatStep(selectedTuningStep(c))}</button>`
+    }
+    for (const requested of ['A', 'B']) {
+        const vfo = c.vfos.available.find(value => String(value).toLowerCase() === requested.toLowerCase());
+        const dial = $(`operator-tuning-dial-${requested}`);
+        const frequency = vfo ? s.frequenciesHz?.[vfo] ?? s.vfos?.[vfo]?.frequencyHz : null;
+        const writable = !!vfo && writes && access(c.frequency.feature, 'write') && c.frequency.targets.some(value => String(value).toLowerCase() === String(vfo).toLowerCase());
+        dial.dataset.vfo = vfo || requested;
+        dial.setAttribute('aria-disabled', String(!writable));
+        dial.tabIndex = writable ? 0 : -1;
+        $(`operator-tuning-frequency-${requested}`).textContent = compactFrequency(frequency);
+        const state = $(`operator-tuning-state-${requested}`);
+        const isRx = String(s.activeVfo).toLowerCase() === requested.toLowerCase();
+        const isTx = s.isSplit && String(s.transmitVfo).toLowerCase() === requested.toLowerCase();
+        state.textContent = !writable ? 'READ ONLY' : [isRx ? 'RX' : 'STANDBY', isTx ? 'TX' : ''].filter(Boolean).join(' · ');
+        state.className = isTx ? 'tx' : isRx ? 'active' : ''
+    }
+}
+
+function isPresentedMode(mode) {
+    const configured = presentation?.modes;
+    return !Array.isArray(configured) || configured.some(value => String(value).toLowerCase() === String(mode).toLowerCase())
+}
+
+function operatorModeLabel(mode) {
+    const labels = { lsb: 'LSB', usb: 'USB', cw: 'CWU', cwreverse: 'CWR' };
+    return labels[String(mode).toLowerCase()] || String(mode).toUpperCase()
+}
+
+function inferredBand(options, frequencyHz) {
+    if (!Number.isFinite(frequencyHz)) return null;
+    const mhz = frequencyHz / 1000000;
+    return options.map(option => ({ option, nominal: Number.parseFloat(option.value) }))
+        .filter(item => Number.isFinite(item.nominal))
+        .sort((left, right) => Math.abs(left.nominal - mhz) - Math.abs(right.nominal - mhz))[0]?.option.value ?? null
+}
+
+function renderBandMode(c, s, writes) {
+    const band = findChoice(c, 'Band');
+    const bandOptions = band && isPresented('choices', band.id) ? Object.values(band.options) : [];
+    const activeFrequency = s.frequenciesHz?.[s.activeVfo] ?? s.vfos?.[s.activeVfo]?.frequencyHz;
+    const selectedBand = inferredBand(bandOptions, activeFrequency);
+    $('operator-band-buttons').innerHTML = bandOptions.length
+        ? bandOptions.map(option => `<button class="${String(option.value) === String(selectedBand) ? 'active' : ''}" ${writes && access(band.feature, 'write') ? '' : 'disabled'} onclick="setBand('${esc(band.id)}','${esc(option.value)}')">${esc(option.displayName)}</button>`).join('')
+        : '<span class="empty-state">Band selection is not advertised.</span>';
+    const modes = (c.modes.values || []).filter(isPresentedMode);
+    $('operator-mode-buttons').innerHTML = modes.length
+        ? modes.map(mode => `<button class="${String(mode).toLowerCase() === String(s.mode).toLowerCase() ? 'active' : ''}" ${writes && access(c.modes.feature, 'write') ? '' : 'disabled'} onclick="setMode('${esc(mode)}')">${operatorModeLabel(mode)}</button>`).join('')
+        : '<span class="empty-state">No approved modes are advertised.</span>'
+}
+
+window.setBand = (id, value) => run(async () => {
+    await api(`/radios/${radioId}/choices/${id}`, { method: 'PUT', body: JSON.stringify({ value }) });
+    choiceValues.set(String(id).toLowerCase(), value);
+    snapshot = await api(`/radios/${radioId}/snapshot`);
+    renderSnapshot(false)
+}, `Band changed to ${value}.`);
+
+function receiverLabel(id, displayName) {
+    const labels = { noiseblanker: 'NB', noisereduction: 'DNR', autonotch: 'NOTCH', attenuator: 'ATT', preamp: 'FRONT END', agc: 'AGC', roofingfilter: 'ROOFING FILTER', filterwidth: 'FILTER WIDTH', ifshifthz: 'IF SHIFT' };
+    return labels[String(id).toLowerCase()] || String(displayName).toUpperCase()
+}
+
+function renderDsp(c, s, writes) {
+    const dspIds = new Set(['noiseblanker', 'noisereduction', 'autonotch']);
+    const switches = Object.values(c.switches || {}).filter(item => dspIds.has(String(item.id).toLowerCase()) && isPresented('switches', item.id));
+    $('operator-dsp-switches').innerHTML = switches.length ? switches.map(item => {
+        const enabled = switchValues.get(String(item.id).toLowerCase()) === true;
+        const writable = writes && access(item.feature, 'write') && modeAllows(item, 'write', s.mode);
+        return `<button class="${enabled ? 'active' : ''}" ${writable ? '' : 'disabled'} onclick="setReceiverSwitch('${esc(item.id)}',${!enabled})">${receiverLabel(item.id, item.displayName)}</button>`
+    }).join('') : '<span class="empty-state">No approved DSP switches are advertised.</span>'
+}
+
+function renderReceiver(c, s, writes) {
+    if ([...activeControlPointers.values()].some(id => ['afgain', 'rfgain', 'ifshifthz'].includes(String(id).toLowerCase()))) return;
+    const choiceOrder = ['Attenuator', 'Preamp', 'RoofingFilter', 'Agc', 'FilterWidth'];
+    const choices = choiceOrder.map(id => findChoice(c, id)).filter(item => item && isPresented('choices', item.id));
+    $('operator-receiver-choices').innerHTML = choices.map(item => {
+        const selected = choiceValues.get(String(item.id).toLowerCase());
+        const options = Object.values(item.options).filter(option => !option.applicableModes || option.applicableModes.some(mode => String(mode).toLowerCase() === String(s.mode).toLowerCase()));
+        const writable = writes && access(item.feature, 'write') && modeAllows(item, 'write', s.mode);
+        if (['attenuator', 'preamp', 'roofingfilter'].includes(String(item.id).toLowerCase()))
+            return `<div class="operator-receiver-choice-buttons"><span>${receiverLabel(item.id, item.displayName)}</span><div>${options.map(option => `<button class="${String(option.value) === String(selected) ? 'active' : ''}" ${writable && option.writable !== false ? '' : 'disabled'} onclick="setReceiverChoice('${esc(item.id)}','${esc(option.value)}')">${esc(option.displayName)}</button>`).join('')}</div></div>`;
+        return `<label>${receiverLabel(item.id, item.displayName)}<select ${writable ? '' : 'disabled'} onchange="setReceiverChoice('${esc(item.id)}',this.value)">${options.map(option => `<option value="${esc(option.value)}" ${String(option.value) === String(selected) ? 'selected' : ''}>${esc(option.displayName)}</option>`).join('')}</select></label>`
+    }).join('');
+    const levelOrder = ['AfGain', 'RfGain', 'IfShiftHz'];
+    const levels = levelOrder.map(id => Object.values(c.controls || {}).find(item => String(item.id).toLowerCase() === id.toLowerCase())).filter(item => item && isPresented('controls', item.id));
+    $('operator-receiver-levels').innerHTML = levels.map(item => {
+        const value = controlValues.get(String(item.id).toLowerCase()) ?? item.minimum;
+        const writable = writes && access(item.feature, 'write') && modeAllows(item, 'write', s.mode);
+        const slider = sliderPresentation(item, value);
+        return `<label><span class="operator-receiver-level-head"><span>${receiverLabel(item.id, item.displayName)}</span><strong id="operator-level-value-${item.id}">${levelValue(item, value)}</strong></span><input id="operator-level-input-${item.id}" class="${slider.className}" style="${slider.style}" type="range" min="${item.minimum}" max="${item.maximum}" step="${item.step}" value="${value}" ${writable ? '' : 'disabled'} onpointerdown="beginControlDrag(event,'${esc(item.id)}')" oninput="queueOperatorControl('${esc(item.id)}',Number(this.value))"></label>`
     }).join('')
 }
 
+function levelValue(item, value) {
+    if (['transmitpower', 'ifshifthz'].includes(String(item.id).toLowerCase())) return `${value} ${item.unit}`;
+    const ratio = item.maximum === item.minimum ? 0 : (value - item.minimum) / (item.maximum - item.minimum);
+    return `${Math.round(Math.max(0, Math.min(1, ratio)) * 100)}%`
+}
+
+function sliderPresentation(item, value) {
+    if (!(item.minimum < 0 && item.maximum > 0)) return { className: '', style: '' };
+    const position = ((value - item.minimum) / (item.maximum - item.minimum)) * 100;
+    const center = ((0 - item.minimum) / (item.maximum - item.minimum)) * 100;
+    return {
+        className: 'bipolar-range',
+        style: `--slider-low:${Math.min(position, center)}%;--slider-high:${Math.max(position, center)}%`
+    }
+}
+
+window.setReceiverSwitch = (id, enabled) => run(async () => {
+    await api(`/radios/${radioId}/switches/${id}`, { method: 'PUT', body: JSON.stringify({ value: enabled }) });
+    switchValues.set(String(id).toLowerCase(), enabled);
+    renderDsp(snapshot.capabilities, snapshot.state, snapshot.authorization.canControl)
+}, `${id} updated.`);
+
+window.setReceiverChoice = (id, value) => run(async () => {
+    await api(`/radios/${radioId}/choices/${id}`, { method: 'PUT', body: JSON.stringify({ value }) });
+    choiceValues.set(String(id).toLowerCase(), value);
+    renderReceiver(snapshot.capabilities, snapshot.state, snapshot.authorization.canControl)
+}, `${id} updated.`);
+
+
 function findChoice(c, id) {
     return Object.values(c.choices || {}).find(choice => String(choice.id).toLowerCase() === id.toLowerCase())
+}
+
+async function initializeSpectrumSpan() {
+    const select = $('spectrum-span');
+    const choice = snapshot && findChoice(snapshot.capabilities, 'SpectrumSpan');
+    if (!choice) { select.innerHTML = ''; select.disabled = true; return }
+    select.innerHTML = Object.values(choice.options || {}).map(option =>
+        `<option value="${esc(option.value)}">${esc(option.displayName)}</option>`).join('');
+    select.disabled = !(snapshot.authorization.canControl && access(choice.feature, 'write'));
+    if (access(choice.feature, 'read')) try {
+        const current = await api(`/radios/${radioId}/choices/${choice.id}/read`, { method: 'POST' });
+        select.value = current.value
+    } catch (error) { log(`Spectrum span: ${error.message}`, 'WARN') }
 }
 
 function selectedTuningStep(c) {
     const choice = findChoice(c, 'TuningStep');
     const selected = choiceValues.get(String(choice?.id).toLowerCase());
     const parsed = parseStepHz(selected);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : Math.max(1, c.frequency.smallestStepHz || 1)
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 10
+}
+
+function tuningStepOptions(c, mode) {
+    const choice = findChoice(c, 'TuningStep');
+    const advertised = Object.values(choice?.options || {}).filter(option => {
+        const hz = parseStepHz(option.value);
+        const applicable = !option.applicableModes || option.applicableModes.some(value => String(value).toLowerCase() === String(mode).toLowerCase());
+        return applicable && (hz === 10 || hz === 100)
+    });
+    const options = c.frequency.smallestStepHz <= 1 ? [{ value: '1hz', displayName: '1 Hz' }, ...advertised] : advertised;
+    return options.sort((left, right) => parseStepHz(left.value) - parseStepHz(right.value))
+}
+
+async function initializeTuningStep() {
+    const c = snapshot?.capabilities;
+    const choice = c && findChoice(c, 'TuningStep');
+    if (!choice || !isPresented('choices', choice.id)) return;
+    const key = String(choice.id).toLowerCase();
+    const normal = tuningStepOptions(c, snapshot.state.mode).find(option => parseStepHz(option.value) === 10);
+    const selected = normal?.value ?? tuningStepOptions(c, snapshot.state.mode)[0]?.value;
+    if (selected === undefined) return;
+    choiceValues.set(key, selected);
+    if (normal && snapshot.authorization.canControl && access(choice.feature, 'write')) {
+        await api(`/radios/${radioId}/choices/${choice.id}`, { method: 'PUT', body: JSON.stringify({ value: normal.value }) })
+    }
+    renderSnapshot(false)
 }
 
 function parseStepHz(value) {
@@ -582,99 +1234,10 @@ function activeWritableVfo(c, s, writes) {
     return c.frequency.targets.find(v => String(v).toLowerCase() === String(s.activeVfo).toLowerCase()) ?? null
 }
 
-function renderTuningDial(c, s, writes) {
-    const vfo = activeWritableVfo(c, s, writes), dial = $('tuning-dial');
-    const step = selectedTuningStep(c);
-    $('tuning-step').textContent = vfo ? `VFO ${vfo} · ${formatStep(step)}` : 'READ ONLY';
-    dial.dataset.vfo = vfo ?? '';
-    dial.setAttribute('aria-disabled', String(!vfo));
-    dial.tabIndex = vfo ? 0 : -1;
-    $('rx-state').textContent = s.isTransmitting ? 'TX' : 'RX';
-    $('rx-state').classList.toggle('transmitting', s.isTransmitting)
-}
-
-function renderSoftControls(c, s, writes) {
-    const modeWritable = writes && access(c.modes.feature, 'write');
-    $('mode-open').disabled = !c.modes.values?.length;
-    $('mode-open').classList.toggle('active', modeWritable);
-    $('direct-open').disabled = !activeWritableVfo(c, s, writes);
-    $('split-soft').disabled = !(writes && access(c.vfos.split, 'write'));
-    $('split-soft').classList.toggle('active', s.isSplit);
-    $('more-open').disabled = !(Object.keys(c.actions || {}).length || Object.keys(c.controls || {}).length || Object.keys(c.switches || {}).length || Object.keys(c.choices || {}).length);
-    renderModeChoices(c, s, modeWritable)
-}
-
-function renderModeChoices(c, s, writable) {
-    const preferred = ['USB', 'LSB', 'CW', 'AM', 'FM'];
-    const values = [...(c.modes.values || [])].map(String);
-    const primary = preferred.filter(mode => values.some(value => value.toUpperCase() === mode));
-    if (!primary.length) primary.push(...values.slice(0, 5));
-    const secondary = values.filter(value => !primary.includes(value));
-    const buttons = modes => modes.map(mode => `<button class="${String(s.mode).toLowerCase() === mode.toLowerCase() ? 'active' : ''}" ${writable ? '' : 'disabled'} onclick="setMode('${esc(mode)}')">${esc(mode)}</button>`).join('');
-    $('primary-modes').innerHTML = buttons(primary);
-    $('more-modes').innerHTML = buttons(secondary);
-    $('more-modes-toggle').hidden = !secondary.length
-}
-
-function renderFrontMeters(c) {
-    const meters = selectedMeters(c);
-    const panel = $('front-meters');
-    panel.className = meters.length ? 'front-meters' : 'front-meters empty-state';
-    panel.innerHTML = meters.length ? meters.map(m => `<div class="front-meter"><div class="front-meter-head"><span>${esc(m.displayName)}</span><small>${esc(m.rawUnit)}</small></div><div id="front-meter-value-${m.id}" class="front-meter-value">—</div><div class="front-meter-track"><div id="front-meter-fill-${m.id}" class="front-meter-fill"></div></div></div>`).join('') : 'This radio advertises no meters.'
-}
-
 function selectedMeters(c) {
-    const meters = Object.values(c.meters || {}), byId = new Map(meters.map(x => [String(x.id).toLowerCase(), x]));
-    let saved = [];
-    try { saved = JSON.parse(localStorage.getItem('rig2castFrontMeters') || '[]') } catch {}
-    let selected = saved.map(id => byId.get(String(id).toLowerCase())).filter(Boolean).slice(0, 3);
-    if (!selected.length) {
-        const priority = ['signalstrength', 'power', 'swr'];
-        selected = priority.map(id => byId.get(id)).filter(Boolean);
-        if (selected.length < Math.min(3, meters.length))
-            selected.push(...meters.filter(x => !selected.includes(x)).slice(0, 3 - selected.length))
-    }
-    return selected
-}
-
-function renderMeterPicker(c) {
-    const selected = new Set(selectedMeters(c).map(x => String(x.id).toLowerCase()));
-    $('meter-picker').innerHTML = Object.values(c.meters || {}).map(m => `<label class="meter-choice"><input type="checkbox" value="${esc(m.id)}" ${selected.has(String(m.id).toLowerCase()) ? 'checked' : ''} onchange="chooseFrontMeter(this)">${esc(m.displayName)}</label>`).join('') || '<span class="empty-state">No meters advertised.</span>'
-}
-
-window.chooseFrontMeter = checkbox => {
-    const checked = [...document.querySelectorAll('#meter-picker input:checked')];
-    if (checked.length > 3) {
-        checkbox.checked = false;
-        status('Meter limit', 'Choose a maximum of three front-panel meters.', 'error');
-        return
-    }
-    localStorage.setItem('rig2castFrontMeters', JSON.stringify(checked.map(x => x.value)));
-    renderFrontMeters(snapshot.capabilities);
-    refreshSelectedMeters()
-};
-
-function renderMoreCapabilities(c) {
-    const items = [
-        ...Object.values(c.actions || {}).map(x => [x.displayName, 'Action']),
-        ...Object.values(c.controls || {}).map(x => [x.displayName, 'Level']),
-        ...Object.values(c.switches || {}).map(x => [x.displayName, 'Switch']),
-        ...Object.values(c.choices || {}).map(x => [x.displayName, 'Choice'])
-    ];
-    $('more-capabilities').innerHTML = items.length ? items.map(x => `<div class="capability-chip"><strong>${esc(x[0])}</strong><small>${x[1]}</small></div>`).join('') : '<div class="empty-state">No additional controls are advertised.</div>'
-    renderMeterPicker(c)
-}
-
-function renderCommonKnobs(c, writes) {
-    const preferred = ['afgain', 'rfgain', 'squelch'];
-    const controls = preferred.map(id => Object.values(c.controls || {}).find(x => String(x.id).toLowerCase() === id)).filter(Boolean);
-    $('common-knobs').innerHTML = controls.map(x => {
-        const value = controlValues.get(String(x.id).toLowerCase()) ?? x.minimum;
-        const ratio = x.maximum === x.minimum ? 0 : (value - x.minimum) / (x.maximum - x.minimum);
-        const angle = -135 + Math.max(0, Math.min(1, ratio)) * 270;
-        const writable = writes && access(x.feature, 'write') && modeAllows(x, 'write', snapshot.state.mode);
-        return `<div class="knob-control"><span>${esc(x.displayName).toUpperCase()}</span><div id="front-knob-${x.id}" class="control-knob" style="--knob-angle:${angle}deg;--knob-fill:${Math.max(0, Math.min(75, ratio * 75))}%" role="slider" aria-label="${esc(x.displayName)}" aria-valuemin="${x.minimum}" aria-valuemax="${x.maximum}" aria-valuenow="${value}" tabindex="${writable ? '0' : '-1'}" aria-disabled="${!writable}" onpointerdown="startControlKnob(event, '${x.id}')" onwheel="turnControlWheel(event, '${x.id}')" onkeydown="turnControlKey(event, '${x.id}')"><div class="knob-pointer"></div></div><strong id="front-knob-value-${x.id}" class="knob-value">${formatFrontControlValue(x, value)}</strong></div>`
-    }).join('')
+    const meters = Object.values(c.meters || {}).filter(x => isPresented('meters', x.id));
+    const byId = new Map(meters.map(x => [String(x.id).toLowerCase(), x]));
+    return ['signalstrength', 'power', 'swr'].map(id => byId.get(id)).filter(Boolean)
 }
 
 function frontControlDescriptor(id) {
@@ -691,30 +1254,93 @@ function previewFrontControl(id, value) {
     if (!descriptor) return;
     const ratio = (value - descriptor.minimum) / (descriptor.maximum - descriptor.minimum);
     const knob = $(`front-knob-${id}`);
-    knob.style.setProperty('--knob-angle', `${-135 + ratio * 270}deg`);
-    knob.style.setProperty('--knob-fill', `${ratio * 75}%`);
-    knob.setAttribute('aria-valuenow', String(value));
-    $(`front-knob-value-${id}`).textContent = formatFrontControlValue(descriptor, value)
+    if (knob) {
+        knob.style.setProperty('--knob-angle', `${-135 + ratio * 270}deg`);
+        knob.style.setProperty('--knob-fill', `${ratio * 75}%`);
+        knob.setAttribute('aria-valuenow', String(value))
+    }
+    const knobValue = $(`front-knob-value-${id}`);
+    if (knobValue) knobValue.textContent = formatFrontControlValue(descriptor, value);
+    const levelInput = $(`operator-level-input-${id}`), levelOutput = $(`operator-level-value-${id}`);
+    if (levelInput) {
+        if (Number(levelInput.value) !== value) levelInput.value = value;
+        const slider = sliderPresentation(descriptor, value);
+        if (slider.className) {
+            const position = ((value - descriptor.minimum) / (descriptor.maximum - descriptor.minimum)) * 100;
+            const center = ((0 - descriptor.minimum) / (descriptor.maximum - descriptor.minimum)) * 100;
+            levelInput.style.setProperty('--slider-low', `${Math.min(position, center)}%`);
+            levelInput.style.setProperty('--slider-high', `${Math.max(position, center)}%`)
+        }
+    }
+    if (levelOutput) levelOutput.textContent = levelValue(descriptor, value);
+    const receiverInput = $(`operator-receiver-input-${id}`), receiverOutput = $(`operator-receiver-value-${id}`);
+    if (receiverInput && Number(receiverInput.value) !== value) receiverInput.value = value;
+    if (receiverOutput) receiverOutput.textContent = `${value} ${descriptor.unit}`
 }
+
+function controlWriter(id) {
+    const key = String(id).toLowerCase();
+    if (!controlWriters.has(key)) controlWriters.set(key, { id, pending: null, inFlight: false, timer: null, lastStartedAt: 0 });
+    return controlWriters.get(key)
+}
+
+function scheduleControlWrite(writer) {
+    if (writer.inFlight || writer.timer !== null || writer.pending === null || !connected()) return;
+    const delay = Math.max(0, controlWriteIntervalMs - (performance.now() - writer.lastStartedAt));
+    if (delay === 0) flushControlWrite(writer);
+    else writer.timer = setTimeout(() => { writer.timer = null; flushControlWrite(writer) }, delay)
+}
+
+async function flushControlWrite(writer) {
+    if (writer.inFlight || writer.pending === null || !connected()) return;
+    const value = writer.pending, requestRadioId = radioId;
+    writer.pending = null;
+    writer.inFlight = true;
+    writer.lastStartedAt = performance.now();
+    try {
+        await api(`/radios/${requestRadioId}/controls/${writer.id}`, { method: 'PUT', body: JSON.stringify({ value }) })
+    } catch (error) {
+        status(`${writer.id} update failed`, error.message, 'error');
+        log(`${writer.id}: ${error.message}`, 'ERROR')
+    } finally {
+        writer.inFlight = false;
+        if (requestRadioId === radioId) scheduleControlWrite(writer)
+    }
+}
+
+window.queueOperatorControl = (id, value) => {
+    const descriptor = frontControlDescriptor(id);
+    if (!descriptor || !snapshot?.authorization.canControl || !access(descriptor.feature, 'write') || !modeAllows(descriptor, 'write', snapshot.state.mode)) return;
+    const normalized = Math.max(descriptor.minimum, Math.min(descriptor.maximum, value));
+    controlValues.set(String(id).toLowerCase(), normalized);
+    previewFrontControl(id, normalized);
+    const writer = controlWriter(id);
+    writer.pending = normalized;
+    scheduleControlWrite(writer)
+};
+
+window.beginControlDrag = (event, id) => {
+    activeControlPointers.set(event.pointerId, id)
+};
+
+function endControlDrag(event) {
+    if (!activeControlPointers.delete(event.pointerId) || !snapshot) return;
+    renderReceiver(snapshot.capabilities, snapshot.state, snapshot.authorization.canControl);
+    renderTransmit(snapshot.capabilities, snapshot.state, snapshot.authorization.canControl)
+}
+
+window.addEventListener('pointerup', endControlDrag);
+window.addEventListener('pointercancel', endControlDrag);
 
 function adjustFrontControl(id, direction, multiplier = 1) {
     const descriptor = frontControlDescriptor(id);
-    if (!descriptor || !snapshot.authorization.canControl || !access(descriptor.feature, 'write')) return false;
+    if (!descriptor || !snapshot.authorization.canControl || !access(descriptor.feature, 'write') || !modeAllows(descriptor, 'write', snapshot.state.mode)) return false;
     const key = String(id).toLowerCase();
     const current = controlValues.get(key) ?? descriptor.minimum;
     const value = Math.max(descriptor.minimum, Math.min(descriptor.maximum, current + direction * descriptor.step * multiplier));
     if (value === current) return false;
-    controlValues.set(key, value);
-    previewFrontControl(id, value);
-    clearTimeout(controlWriteTimers.get(key));
-    controlWriteTimers.set(key, setTimeout(() => commitFrontControl(id, value), 200));
+    window.queueOperatorControl(id, value);
     return true
-}
-
-async function commitFrontControl(id, value) {
-    controlWriteTimers.delete(String(id).toLowerCase());
-    try { await api(`/radios/${radioId}/controls/${id}`, { method: 'PUT', body: JSON.stringify({ value }) }) }
-    catch (error) { status(`${id} update failed`, error.message, 'error'); log(`${id}: ${error.message}`, 'ERROR') }
 }
 
 window.turnControlWheel = (event, id) => {
@@ -730,18 +1356,18 @@ window.turnControlKey = (event, id) => {
     if (adjustFrontControl(id, direction, tuningMultiplier(event))) event.preventDefault()
 };
 
-window.setTuningStep = (event, id) => {
-    event.stopPropagation();
-    const value = event.target.value;
+window.setTuningStep = (id, value, label) => {
     run(async () => {
-        await api(`/radios/${radioId}/choices/${id}`, { method: 'PUT', body: JSON.stringify({ value }) });
+        if (parseStepHz(value) !== 1)
+            await api(`/radios/${radioId}/choices/${id}`, { method: 'PUT', body: JSON.stringify({ value }) });
         choiceValues.set(String(id).toLowerCase(), value);
         renderSnapshot(false)
-    }, `Tuning step changed to ${event.target.selectedOptions[0].textContent}.`)
+    }, `Tuning step changed to ${label}.`)
 };
 
 function canControlPtt() {
     return !!snapshot && clientRole.toLowerCase() === 'operator' &&
+        hasPermission('transmit.ptt') &&
         snapshot.authorization.canControl && access(snapshot.capabilities.transmit, 'write') &&
         !remotePttViolation(snapshot.capabilities, snapshot.state)
 }
@@ -762,18 +1388,41 @@ function remotePttViolation(c, s) {
 }
 
 function renderPtt(c, s) {
-    const button = $('ptt');
-    button.textContent = s.isTransmitting ? 'PTT ON' : 'PTT OFF';
-    button.classList.toggle('transmitting', s.isTransmitting);
-    button.disabled = busy || !canControlPtt();
     const rangeViolation = remotePttViolation(c, s);
-    button.title = button.disabled
+    const title = busy || !canControlPtt()
         ? rangeViolation || 'PTT requires an Operator session and writable transmit capability.'
         : 'Toggle PTT. A 10-second safety lease is renewed every 5 seconds while active.';
+    const operatorButton = $('operator-ptt');
+    operatorButton.classList.toggle('transmitting', s.isTransmitting);
+    operatorButton.querySelector('span').textContent = s.isTransmitting ? 'PTT ON' : 'PTT';
+    operatorButton.disabled = busy || !canControlPtt();
+    operatorButton.title = title;
+    $('operator-transmit-state').textContent = s.isTransmitting ? 'TX · LEASE ACTIVE' : 'RX · READY';
+    $('operator-ptt-note').textContent = rangeViolation || (operatorButton.disabled ? 'PTT requires an Operator session and writable transmit capability.' : '10-second safety lease · renewed every 5 seconds while transmitting.');
+    $('operator-ptt-note').classList.toggle('warning', !!rangeViolation);
     if (!s.isTransmitting) {
         pttLeaseActive = false;
         stopPttRenewal()
     }
+}
+
+function renderTransmit(c, s, writes) {
+    const meters = ['Power', 'Swr'].map(id => Object.values(c.meters || {}).find(item => String(item.id).toLowerCase() === id.toLowerCase())).filter(item => item && isPresented('meters', item.id));
+    const panel = $('operator-transmit-meters');
+    const signature = meters.map(item => item.id).join('|');
+    if (panel.dataset.signature !== signature) {
+        panel.dataset.signature = signature;
+        panel.innerHTML = meters.length ? meters.map(item => `<div class="operator-transmit-meter"><div class="operator-transmit-meter-head"><span>${esc(item.displayName).toUpperCase()}</span><strong id="operator-transmit-value-${item.id}">${item.requiresTransmit && !s.isTransmitting ? 'TX only' : '—'}</strong></div><div class="operator-transmit-meter-track"><div id="operator-transmit-fill-${item.id}"></div></div></div>`).join('') : '<span class="empty-state">No approved transmit meters are advertised.</span>'
+    }
+    if ([...activeControlPointers.values()].some(id => String(id).toLowerCase() === 'transmitpower')) return;
+    const item = Object.values(c.controls || {}).find(control => String(control.id).toLowerCase() === 'transmitpower' && isPresented('controls', control.id));
+    if (!item) {
+        $('operator-transmit-levels').innerHTML = '';
+        return
+    }
+    const value = controlValues.get(String(item.id).toLowerCase()) ?? item.minimum;
+    const writable = hasPermission('transmit.power') && writes && access(item.feature, 'write') && modeAllows(item, 'write', s.mode);
+    $('operator-transmit-levels').innerHTML = `<label class="operator-level"><span class="operator-level-head"><span>${esc(item.displayName)}</span><strong id="operator-level-value-${item.id}">${levelValue(item, value)}</strong></span><input id="operator-level-input-${item.id}" type="range" min="${item.minimum}" max="${item.maximum}" step="${item.step}" value="${value}" ${writable ? '' : 'disabled'} onpointerdown="beginControlDrag(event,'${esc(item.id)}')" oninput="queueOperatorControl('${esc(item.id)}',Number(this.value))"></label>`
 }
 
 function startPttRenewal() {
@@ -848,26 +1497,36 @@ function tuneBy(vfo, direction, multiplier = 1) {
     if (remoteFrequencyRanges.length && !frequencyInRemoteRange(current)) return false;
     const ranges = effectiveFrequencyRanges(c.ranges);
     if (remoteFrequencyRanges.length && !ranges.length) return false;
-    const next = nearestAllowedFrequency(current + direction * step, ranges);
+    const remainder = ((current % step) + step) % step;
+    const aligned = direction > 0
+        ? (remainder === 0 ? current + step : current + step - remainder)
+        : (remainder === 0 ? current - step : current - remainder);
+    const next = nearestAllowedFrequency(aligned, ranges);
     snapshot.state.frequenciesHz[vfo] = next;
     if (snapshot.state.vfos?.[vfo]) snapshot.state.vfos[vfo].frequencyHz = next;
     const display = $(`frequency-${vfo}`), input = $(`freq-${vfo}`);
     if (display) display.textContent = frequencyText(next);
     if (input) input.value = next;
-    animateDial(direction, multiplier);
-    renderTuningDial(snapshot.capabilities, snapshot.state, true);
+    const dualFrequency = $(`operator-tuning-frequency-${String(vfo).toUpperCase()}`);
+    if (dualFrequency) dualFrequency.textContent = compactFrequency(next);
+    if (String(snapshot.state.activeVfo).toLowerCase() === String(vfo).toLowerCase()) $('operator-frequency').textContent = compactFrequency(next);
+    else $('operator-secondary-frequency').textContent = compactFrequency(next);
+    animateDial(direction, multiplier, vfo);
     queueFrequencyWrite(vfo, next);
     return true
 }
 
-function animateDial(direction, multiplier) {
+function animateDial(direction, multiplier, vfo) {
     const degrees = 7 + Math.min(20, Math.log10(Math.max(1, multiplier)) * 7);
-    dialRotation += direction * degrees;
-    $('dial-motion').style.transform = `rotate(${dialRotation}deg)`;
-    const dial = $('tuning-dial');
-    dial.classList.add('tuning');
-    clearTimeout(dial.animationTimer);
-    dial.animationTimer = setTimeout(() => dial.classList.remove('tuning'), 160)
+    const requested = String(vfo).toUpperCase();
+    const dualMotion = $(`operator-tuning-motion-${requested}`), dualDial = $(`operator-tuning-dial-${requested}`);
+    if (dualMotion && dualDial) {
+        dualDialRotation[requested] = (dualDialRotation[requested] || 0) + direction * degrees;
+        dualMotion.style.transform = `rotate(${dualDialRotation[requested]}deg)`;
+        dualDial.classList.add('tuning');
+        clearTimeout(dualDial.animationTimer);
+        dualDial.animationTimer = setTimeout(() => dualDial.classList.remove('tuning'), 160)
+    }
 }
 
 window.tuneFrequency = (event, vfo) => {
@@ -926,11 +1585,6 @@ window.startControlKnob = (event, id) => {
     if (event.currentTarget.getAttribute('aria-disabled') === 'true') return;
     startRotaryGesture(event, (direction, moveEvent) => adjustFrontControl(id, direction, tuningMultiplier(moveEvent)))
 };
-
-function tuneFromDial(event, direction) {
-    const vfo = $('tuning-dial').dataset.vfo;
-    if (vfo && tuneBy(vfo, direction, tuningMultiplier(event))) event.preventDefault()
-}
 
 function frequencyWriter(vfo) {
     if (!frequencyWriters.has(vfo)) frequencyWriters.set(vfo, {
@@ -1015,28 +1669,8 @@ window.setMode = mode => run(async () => {
     snapshot = await api(`/radios/${radioId}/mode`, {
         method: 'PUT', body: JSON.stringify({ value: mode })
     });
-    $('mode-dialog').close();
     renderSnapshot(false)
 }, `Mode changed to ${mode}.`);
-
-function renderCore(c, s, writes) {
-    const passband = c.passband && String(c.passband.feature?.support).toLowerCase() !== 'unsupported';
-    $('core-card').className = 'panel';
-    $('core-card').innerHTML = `<h3>Radio state</h3><div class="core-grid"><div class="core-item"><small>Driver</small><strong>${esc(c.driverId)}</strong></div><div class="core-item"><small>Capability revision</small><strong>${c.revision}</strong></div><div class="core-item"><small>Connection</small><strong>${esc(s.connection)}</strong></div><div class="core-item"><small>Observed</small><strong>${new Date(s.observedAt).toLocaleTimeString()}</strong></div></div><div class="core-actions"><div class="field-action"><label>Active VFO<select id="active-vfo">${c.vfos.available.map(v => `<option ${v === s.activeVfo ? 'selected' : ''}>${v}</option>`).join('')}</select></label><button ${writes && access(c.vfos.selection, 'write') ? '' : 'disabled'} onclick="writeCore('active-vfo')">Apply</button></div><div class="field-action"><label>Mode<select id="mode">${c.modes.values.map(v => `<option ${v === s.mode ? 'selected' : ''}>${v}</option>`).join('')}</select></label><button ${writes && access(c.modes.feature, 'write') ? '' : 'disabled'} onclick="writeCore('mode')">Apply</button></div><label class="switch-tile">Split enabled<input id="split" class="toggle" type="checkbox" ${s.isSplit ? 'checked' : ''} ${writes && access(c.vfos.split, 'write') ? '' : 'disabled'} onchange="writeCore('split')"></label>${passband ? `<div class="field-action"><label>Passband (Hz)<input id="passband" type="number" min="${c.passband.minimumHz}" max="${c.passband.maximumHz}" step="${c.passband.stepHz}"></label><button onclick="writePassband()" ${writes && access(c.passband.feature, 'write') ? '' : 'disabled'}>Apply</button></div>` : ''}</div>`
-}
-
-function renderControls(c, writes) {
-    const numeric = Object.values(c.controls || {}),
-        switches = Object.values(c.switches || {}),
-        choices = Object.values(c.choices || {}),
-        actions = Object.values(c.actions || {});
-    let html = '';
-    if (actions.length) html += `<div class="panel"><h3>Radio actions</h3><div class="action-grid">${actions.map(x => `<button onclick="executeRadioAction('${x.id}')" ${writes && access(x.feature, 'write') ? '' : 'disabled'}>${esc(x.displayName)}</button>`).join('')}</div></div>`;
-    if (numeric.length) html += `<div class="panel"><h3>Numeric controls <small>raw / driver values</small></h3><div class="control-table">${numeric.map(x => `<div class="name">${esc(x.displayName)}<small>${esc(x.unit)} · ${esc(x.feature.access)}</small></div><input data-control-id="${x.id}" id="control-${x.id}" type="number" min="${x.minimum}" max="${x.maximum}" step="${x.step}"><button data-control-write="${x.id}" onclick="writeControl('${x.id}')" ${writes && access(x.feature, 'write') ? '' : 'disabled'}>Apply</button>`).join('')}</div></div>`;
-    if (choices.length) html += `<div class="panel"><h3>Choice controls</h3><div class="control-table">${choices.map(x => `<div class="name">${esc(x.displayName)}<small>${esc(x.feature.access)}</small></div><select data-choice-id="${x.id}" id="choice-${x.id}">${Object.values(x.options).map(o => `<option value="${esc(o.value)}">${esc(o.displayName)}</option>`).join('')}</select><button data-choice-write="${x.id}" onclick="writeChoice('${x.id}')" ${writes && access(x.feature, 'write') ? '' : 'disabled'}>Apply</button>`).join('')}</div></div>`;
-    if (switches.length) html += `<div class="panel"><h3>Switches</h3><div class="switch-grid">${switches.map(x => `<label class="switch-tile">${esc(x.displayName)}<input data-switch-id="${x.id}" id="switch-${x.id}" class="toggle" type="checkbox" ${writes && access(x.feature, 'write') ? '' : 'disabled'} onchange="writeSwitch('${x.id}')"></label>`).join('')}</div></div>`;
-    $('controls-grid').innerHTML = html || '<div class="panel empty-state">This driver advertises no extended controls.</div>'
-}
 
 function modeAllows(descriptor, kind, mode) {
     const modes = descriptor?.modeApplicability?.[kind + 'Modes'];
@@ -1062,10 +1696,6 @@ function applyModeAvailability(c, mode, writes) {
     }
 }
 
-function renderMeters(c) {
-    const meters = Object.values(c.meters || {});
-    $('meters-grid').innerHTML = meters.length ? meters.map(m => `<article class="meter"><div class="meter-head"><strong>${esc(m.displayName)}</strong><small>${esc(m.rawUnit)}</small></div><div id="meter-value-${m.id}" class="meter-value">—</div><div class="meter-track"><div id="meter-fill-${m.id}" class="meter-fill"></div></div></article>`).join('') : '<div class="panel empty-state">This driver advertises no meters.</div>'
-}
 async function refreshAll() {
     const root = `/radios/${radioId}`;
     snapshot = await api(`${root}/refresh`, {
@@ -1075,47 +1705,33 @@ async function refreshAll() {
     const c = snapshot.capabilities,
         mode = snapshot.state.mode;
     for (const x of Object.values(c.controls || {}))
-        if (access(x.feature, 'read') && modeAllows(x, 'read', mode)) try {
+        if (isPresented('controls', x.id) && access(x.feature, 'read') && modeAllows(x, 'read', mode)) try {
             const v = await api(`${root}/controls/${x.id}/read`, {
                 method: 'POST'
             });
-            const e = $(`control-${x.id}`);
             controlValues.set(String(x.id).toLowerCase(), v.value);
-            if (e) e.value = v.value
         } catch (e) {
             log(`${x.displayName}: ${e.message}`, 'WARN')
         }
     for (const x of Object.values(c.switches || {}))
-        if (access(x.feature, 'read') && modeAllows(x, 'read', mode)) try {
+        if (isPresented('switches', x.id) && access(x.feature, 'read') && modeAllows(x, 'read', mode)) try {
             const v = await api(`${root}/switches/${x.id}/read`, {
                 method: 'POST'
             });
-            const e = $(`switch-${x.id}`);
-            if (e) e.checked = v.enabled
+            switchValues.set(String(x.id).toLowerCase(), v.enabled);
         } catch (e) {
             log(`${x.displayName}: ${e.message}`, 'WARN')
         }
     for (const x of Object.values(c.choices || {}))
-        if (access(x.feature, 'read') && modeAllows(x, 'read', mode)) try {
+        if (isPresented('choices', x.id) && access(x.feature, 'read') && modeAllows(x, 'read', mode)) try {
             const v = await api(`${root}/choices/${x.id}/read`, {
                 method: 'POST'
             });
-            const e = $(`choice-${x.id}`);
             choiceValues.set(String(x.id).toLowerCase(), v.value);
-            if (e) e.value = v.value
         } catch (e) {
             log(`${x.displayName}: ${e.message}`, 'WARN')
         }
-    if (c.passband && access(c.passband.feature, 'read')) try {
-        const v = await api(`${root}/passband/read`, {
-            method: 'POST'
-        });
-        if ($('passband')) $('passband').value = v.widthHz
-    } catch (e) {
-        log(`Passband: ${e.message}`, 'WARN')
-    }
     renderSnapshot(false);
-    renderCommonKnobs(c, snapshot.authorization.canControl);
     await refreshSelectedMeters()
 }
 
@@ -1135,12 +1751,18 @@ async function refreshSelectedMeters() {
     meterPollInFlight = true;
     try {
         const mode = snapshot.state.mode;
-        for (const x of selectedMeters(snapshot.capabilities)) {
+        const selected = selectedMeters(snapshot.capabilities);
+        const transmit = Object.values(snapshot.capabilities.meters || {}).filter(item => ['power', 'swr'].includes(String(item.id).toLowerCase()) && isPresented('meters', item.id));
+        const meters = [...new Map([...selected, ...transmit].map(item => [String(item.id).toLowerCase(), item])).values()];
+        for (const x of meters) {
             const applicable = modeAllows(x, 'read', mode) && (!x.requiresTransmit || snapshot.state.isTransmitting);
-            const frontValue = $(`front-meter-value-${x.id}`), frontFill = $(`front-meter-fill-${x.id}`);
+            const frontValue = $(`front-meter-value-${x.id}`), frontFill = $(`front-meter-fill-${x.id}`),
+                transmitValue = $(`operator-transmit-value-${x.id}`), transmitFill = $(`operator-transmit-fill-${x.id}`);
             if (!applicable) {
                 if (frontValue) frontValue.textContent = x.requiresTransmit ? 'TX only' : '—';
                 if (frontFill) frontFill.style.width = '0%';
+                if (transmitValue) transmitValue.textContent = x.requiresTransmit ? 'TX only' : '—';
+                if (transmitFill) transmitFill.style.width = '0%';
                 continue
             }
             try {
@@ -1148,226 +1770,481 @@ async function refreshSelectedMeters() {
                 const e = $(`meter-value-${x.id}`), f = $(`meter-fill-${x.id}`);
                 if (e) e.textContent = `${v.rawValue} ${x.rawUnit}`;
                 if (frontValue) frontValue.textContent = `${v.rawValue} ${x.rawUnit}`;
+                if (transmitValue) transmitValue.textContent = `${v.rawValue} ${x.rawUnit}`;
                 const width = `${Math.max(0, Math.min(100, v.normalizedValue * 100))}%`;
                 if (f) f.style.width = width;
-                if (frontFill) frontFill.style.width = width
+                if (frontFill) frontFill.style.width = width;
+                if (transmitFill) transmitFill.style.width = width;
+                if (String(x.id).toLowerCase() === 'signalstrength') {
+                    $('operator-signal-value').textContent = `${v.rawValue} ${x.rawUnit}`;
+                    $('operator-signal-fill').style.width = width
+                }
             } catch (error) { log(`${x.displayName}: ${error.message}`, 'WARN') }
         }
     } finally { meterPollInFlight = false }
 }
-window.writeFrequency = v => run(async () => {
-    snapshot = await api(`/radio/frequency/${v}`, {
-        method: 'PUT',
-        body: JSON.stringify({
-            value: Number($(`freq-${v}`).value)
-        })
-    });
-    renderSnapshot(false)
-}, `VFO ${v} frequency updated.`);
-window.writeCore = id => run(async () => {
-    const endpoint = id === 'active-vfo' ? '/radio/active-vfo' : `/radio/${id}`;
-    const value = id === 'split' ? $(id).checked : $(id).value;
-    snapshot = await api(endpoint, {
-        method: 'PUT',
-        body: JSON.stringify({
-            value
-        })
-    });
-    renderSnapshot(false)
-}, `${id} updated.`);
-window.writeControl = id => run(async () => {
-    await api(`/radio/controls/${id}`, {
-        method: 'PUT',
-        body: JSON.stringify({
-            value: Number($(`control-${id}`).value)
-        })
-    })
-}, `${id} updated.`);
-window.writeSwitch = id => run(async () => {
-    await api(`/radio/switches/${id}`, {
-        method: 'PUT',
-        body: JSON.stringify({
-            value: $(`switch-${id}`).checked
-        })
-    })
-}, `${id} updated.`);
-window.writeChoice = id => run(async () => {
-    await api(`/radio/choices/${id}`, {
-        method: 'PUT',
-        body: JSON.stringify({
-            value: $(`choice-${id}`).value
-        })
-    })
-}, `${id} updated.`);
 window.executeRadioAction = id => run(async () => {
     await api(`/radios/${radioId}/actions/${id}`, { method: 'POST' })
 }, `${id} executed.`);
-window.writePassband = () => run(async () => {
-    await api('/radio/passband', {
-        method: 'PUT',
-        body: JSON.stringify({
-            value: Number($('passband').value)
-        })
-    })
-}, 'Passband updated.');
-// Multi-radio routes supersede the initial single-radio POC handlers above.
-window.writeFrequency = v => run(async () => {
-    snapshot = await api(`/radios/${radioId}/frequency/${v}`, {
-        method: 'PUT',
-        body: JSON.stringify({
-            value: Number($(`freq-${v}`).value)
-        })
-    });
-    renderSnapshot(false)
-}, `VFO ${v} frequency updated.`);
-window.writeCore = id => run(async () => {
-    const endpoint = id === 'active-vfo' ? `/radios/${radioId}/active-vfo` : `/radios/${radioId}/${id}`;
-    const value = id === 'split' ? $(id).checked : $(id).value;
-    snapshot = await api(endpoint, {
-        method: 'PUT',
-        body: JSON.stringify({
-            value
-        })
-    });
-    renderSnapshot(false)
-}, `${id} updated.`);
-window.writeControl = id => run(async () => {
-    await api(`/radios/${radioId}/controls/${id}`, {
-        method: 'PUT',
-        body: JSON.stringify({
-            value: Number($(`control-${id}`).value)
-        })
-    })
-}, `${id} updated.`);
-window.writeSwitch = id => run(async () => {
-    await api(`/radios/${radioId}/switches/${id}`, {
-        method: 'PUT',
-        body: JSON.stringify({
-            value: $(`switch-${id}`).checked
-        })
-    })
-}, `${id} updated.`);
-window.writeChoice = id => run(async () => {
-    await api(`/radios/${radioId}/choices/${id}`, {
-        method: 'PUT',
-        body: JSON.stringify({
-            value: $(`choice-${id}`).value
-        })
-    })
-}, `${id} updated.`);
-window.writePassband = () => run(async () => {
-    await api(`/radios/${radioId}/passband`, {
-        method: 'PUT',
-        body: JSON.stringify({
-            value: Number($('passband').value)
-        })
-    })
-}, 'Passband updated.');
-
 function renderOffline() {
     stopPttRenewal();
     stopMeterPolling();
     pttLeaseActive = false;
     controlValues.clear();
     choiceValues.clear();
+    switchValues.clear();
     for (const writer of frequencyWriters.values())
         if (writer.timer !== null) clearTimeout(writer.timer);
     frequencyWriters.clear();
-    for (const timer of controlWriteTimers.values()) clearTimeout(timer);
-    controlWriteTimers.clear();
-    $('radio-title').textContent = 'No radio connected';
-    $('radio-summary').textContent = 'Capability-driven controls appear after connection.';
-    $('connection-badge').textContent = 'OFFLINE';
-    $('connection-badge').className = 'badge offline';
-    $('ptt').textContent = 'PTT OFF';
-    $('ptt').className = 'ptt';
-    $('ptt').disabled = true;
-    $('rx-state').textContent = 'RX';
-    $('rx-state').classList.remove('transmitting');
-    $('tuning-step').textContent = '—';
-    $('tuning-dial').dataset.vfo = '';
-    $('tuning-dial').setAttribute('aria-disabled', 'true');
-    $('tuning-dial').tabIndex = -1;
-    $('dial-motion').style.transform = '';
-    $('front-meters').className = 'front-meters empty-state';
-    $('front-meters').textContent = 'Advertised meters appear after connection.';
-    ['mode-open', 'direct-open', 'split-soft', 'more-open'].forEach(id => {
-        $(id).disabled = true;
-        $(id).classList.remove('active')
-    });
-    $('vfo-deck').className = 'vfo-deck empty';
-    $('vfo-deck').innerHTML = '<div class="empty-state">Connect to display the radio\'s advertised VFO topology.</div>';
-    $('core-card').className = 'panel empty-state';
-    $('core-card').textContent = 'Runtime capabilities and core state will appear here.';
-    $('controls-grid').innerHTML = '';
-    $('meters-grid').innerHTML = '';
+    for (const writer of controlWriters.values()) if (writer.timer !== null) clearTimeout(writer.timer);
+    controlWriters.clear();
+    activeControlPointers.clear();
+    updateHeaderControls();
+    $('operator-ptt').disabled = true;
+    $('operator-ptt').classList.remove('transmitting');
+    $('operator-ptt').querySelector('span').textContent = 'PTT';
+    $('operator-transmit-state').textContent = 'RX · READY';
+    $('operator-ptt-note').textContent = 'PTT requires an Operator session and writable transmit capability.';
+    $('operator-ptt-note').classList.remove('warning');
+    $('operator-transmit-meters').innerHTML = '';
+    $('operator-transmit-meters').dataset.signature = '';
+    $('operator-radio-state').textContent = 'OFFLINE';
+    $('operator-rx-flag').textContent = 'RX';
+    $('operator-rx-flag').classList.remove('tx');
+    $('operator-active-vfo').textContent = 'VFO A';
+    $('operator-active-vfo').disabled = true;
+    $('operator-mode').textContent = '---';
+    $('operator-split').textContent = 'SPLIT OFF';
+    $('operator-split').disabled = true;
+    $('operator-split').classList.remove('active');
+    $('operator-frequency').textContent = '--.---.---';
+    $('operator-secondary-name').textContent = 'VFO B';
+    $('operator-secondary-frequency').textContent = '--.---.---';
+    $('operator-signal-value').textContent = '--';
+    $('operator-signal-fill').style.width = '0%';
+    $('operator-vfo-actions').innerHTML = '';
+    $('operator-band-buttons').innerHTML = '';
+    $('operator-mode-buttons').innerHTML = '';
+    $('operator-dsp-switches').innerHTML = '';
+    $('operator-receiver-choices').innerHTML = '';
+    $('operator-receiver-levels').innerHTML = '';
+    $('operator-transmit-levels').innerHTML = '';
+    $('operator-tuning-step').innerHTML = '';
+    for (const vfo of ['A', 'B']) {
+        $(`operator-tuning-frequency-${vfo}`).textContent = '--.---.---';
+        $(`operator-tuning-state-${vfo}`).textContent = 'READ ONLY';
+        $(`operator-tuning-state-${vfo}`).className = '';
+        $(`operator-tuning-dial-${vfo}`).setAttribute('aria-disabled', 'true');
+        $(`operator-tuning-dial-${vfo}`).tabIndex = -1;
+        $(`operator-tuning-motion-${vfo}`).style.transform = '';
+        dualDialRotation[vfo] = 0
+    }
     setBusy(false)
 }
-ui.model.onchange = renderModel;
-ui.transport.onchange = renderTransport;
-$('port-override-enabled').onchange = e => $('port-override').disabled = !e.target.checked;
-$('refresh-ports').onclick = () => run(loadPorts, 'Serial ports refreshed.');
-ui.connect.onclick = () => run(connect);
-ui.disconnect.onclick = () => run(disconnect);
-ui.refresh.onclick = () => run(refreshAll, 'All readable values refreshed.');
-$('ptt').onclick = window.togglePtt;
-$('sidebar-toggle').onclick = () => toggleViewPreference('rig2castHideSidebar', 'hide-sidebar');
-$('panels-toggle').onclick = () => toggleViewPreference('rig2castHideBottomPanels', 'hide-bottom-panels');
-const frequencyDialog = $('frequency-dialog');
-$('direct-open').onclick = () => {
-    if (!snapshot) return;
-    directEntryVfo = snapshot.state.activeVfo;
-    const hz = snapshot.state.frequenciesHz[directEntryVfo] ?? snapshot.state.vfos?.[directEntryVfo]?.frequencyHz;
-    $('frequency-dialog-title').textContent = `Set VFO ${directEntryVfo}`;
-    $('direct-frequency').value = hz ?? '';
-    frequencyDialog.showModal();
-    $('direct-frequency').focus();
-    $('direct-frequency').select()
+
+async function initializeRotators(visible) {
+    $('rotator-view-toggle').hidden = !visible;
+    if (!visible) return;
+    const configuration = await api('/rotators/configuration');
+    rotatorStatuses = configuration.rotators || [];
+    const dashboard = $('rotator-dashboard');
+    dashboard.innerHTML = rotatorStatuses.map(renderRotatorCard).join('');
+    initializeRotatorCards();
+    initializeRotatorDashboardLayout();
+    $('rotator-view-toggle').onclick = () => showRotatorWorkspace($('rotator-workspace').hidden);
+    renderRotators();
+    rotatorPollTimer = setInterval(refreshRotators, 500)
+}
+
+function renderRotatorCard(item) {
+    const name = esc(item.displayName || item.id);
+    return `<section class="operator-card rotator-unit-card" data-card="${esc(`rotator:${item.id}`)}" data-rotator-id="${esc(item.id)}" aria-label="${name} dial and controls">
+      <div class="operator-card-heading"><span data-role="name">${name}</span><strong data-role="status">OFFLINE</strong></div>
+      <div class="rotator-unit-body"><div class="rotator-dial-pane"><div class="rotator-map" data-role="map">
+        <div class="rotator-map-image" data-role="map-image"></div><div class="rotator-beam" data-role="beam"></div><div class="rotator-compass-ring"></div>
+        <div class="rotator-scale" data-role="scale" aria-hidden="true"></div><div class="rotator-bearing" data-role="bearing"><i></i></div>
+        <div class="rotator-target-bearing" data-role="target-bearing"><i></i></div><div class="rotator-map-center"></div>
+      </div></div><div class="rotator-control-card">
+        <div class="rotator-readout"><span>CURRENT AZIMUTH</span><strong data-role="azimuth">---&deg;</strong><em class="rotator-overlap" data-role="overlap" hidden><i></i>OVERLAP</em></div>
+        <div class="rotator-manual-controls"><button data-action="ccw" type="button">CCW</button><button class="rotator-stop" data-action="stop" type="button">STOP</button><button data-action="cw" type="button">CW</button></div>
+        <label class="rotator-target-entry">TARGET AZIMUTH<div><input data-role="target" type="number" min="0" max="450" step="1"><button data-action="go" type="button">GO</button></div></label>
+        <div class="rotator-presets" aria-label="Azimuth presets">${[0, 60, 90, 180, 270, 360].map(value => `<button type="button" data-rotator-preset="${value}">${value}&deg;</button>`).join('')}</div>
+        <button data-action="park" type="button" hidden>PARK</button><p class="operator-ptt-note warning" data-role="error"></p>
+      </div></div>
+    </section>`
+}
+
+function rotatorPart(card, role) { return card.querySelector(`[data-role="${role}"]`) }
+function rotatorCard(id) { return dashboardCards($('rotator-dashboard')).find(card => card.dataset.rotatorId === id) }
+function rotatorStatus(id) { return rotatorStatuses.find(item => item.id === id) }
+
+function initializeRotatorCards() {
+    for (const card of dashboardCards($('rotator-dashboard'))) {
+        const id = card.dataset.rotatorId;
+        const map = rotatorPart(card, 'map');
+        const chooseTarget = event => {
+            const item = rotatorStatus(id);
+            const bounds = map.getBoundingClientRect();
+            const radians = Math.atan2(event.clientX - (bounds.left + bounds.width / 2), -(event.clientY - (bounds.top + bounds.height / 2)));
+            const heading = (radians * 180 / Math.PI - (item?.mapNorthOffsetDegrees || 0) + 360) % 360;
+            const target = rotatorPart(card, 'target');
+            target.value = String(Math.round(resolveRotatorAzimuth(id, heading)));
+            renderRotatorTarget(id);
+            return Number(target.value)
+        };
+        map.onclick = chooseTarget;
+        map.ondblclick = event => sendRotatorCommand(id, 'azimuth', 'PUT', { value: chooseTarget(event) });
+        rotatorPart(card, 'target').oninput = () => renderRotatorTarget(id);
+        card.querySelector('[data-action="go"]').onclick = () => sendRotatorCommand(id, 'azimuth', 'PUT', { value: Number(rotatorPart(card, 'target').value) });
+        card.querySelectorAll('[data-rotator-preset]').forEach(button => button.onclick = () => {
+            const value = Number(button.dataset.rotatorPreset);
+            rotatorPart(card, 'target').value = String(value);
+            renderRotatorTarget(id);
+            sendRotatorCommand(id, 'azimuth', 'PUT', { value })
+        });
+        for (const [action, command] of [['cw', 'clockwise'], ['ccw', 'counterclockwise'], ['stop', 'stop'], ['park', 'park']])
+            card.querySelector(`[data-action="${action}"]`).onclick = () => sendRotatorCommand(id, command);
+        renderRotatorScale(card)
+    }
+}
+
+function showRotatorWorkspace(show) {
+    setLayoutEditing(false);
+    $('rotator-workspace').hidden = !show;
+    $('operator-dashboard').hidden = show;
+    $('rotator-view-toggle').textContent = show ? 'Radio' : 'Rotators';
+    $('rotator-view-toggle').classList.toggle('active', show)
+}
+
+async function refreshRotators() {
+    try {
+        rotatorStatuses = await api('/rotators');
+        renderRotators()
+    } catch (error) { log(`Rotator: ${error.message}`, 'WARN') }
+}
+
+function resolveRotatorAzimuth(id, heading) {
+    const item = rotatorStatus(id);
+    const minimum = item?.capabilities?.minimumAzimuth ?? 0;
+    const maximum = item?.capabilities?.maximumAzimuth ?? 360;
+    const current = item?.position?.azimuth;
+    const candidates = [];
+    for (let value = heading; value <= maximum + 0.0001; value += 360) {
+        if (value >= minimum - 0.0001) candidates.push(value)
+    }
+    if (!candidates.length) return Math.max(minimum, Math.min(maximum, heading));
+    if (!Number.isFinite(current)) return candidates[0];
+    return candidates.reduce((closest, value) => Math.abs(value - current) < Math.abs(closest - current) ? value : closest)
+}
+
+function renderRotatorScale(card) {
+    const marks = [];
+    for (let degrees = 0; degrees < 360; degrees += 5) {
+        const major = degrees % 30 === 0;
+        marks.push(`<i class="rotator-tick${major ? ' major' : ''}" style="--angle:${degrees}deg"></i>`);
+        if (major) marks.push(`<span class="rotator-degree" style="--angle:${degrees}deg"><b style="--counter-angle:${-degrees}deg">${degrees}°</b></span>`)
+    }
+    rotatorPart(card, 'scale').innerHTML = marks.join('')
+}
+
+function renderRotators() {
+    rotatorStatuses.forEach(item => renderRotator(item, rotatorCard(item.id)))
+}
+
+function renderRotator(item, card) {
+    if (!item || !card) return;
+    rotatorPart(card, 'name').textContent = item.displayName.toUpperCase();
+    const connection = rotatorPart(card, 'status');
+    connection.textContent = item.connected ? 'CONNECTED' : 'OFFLINE';
+    connection.classList.toggle('online', item.connected);
+    rotatorPart(card, 'error').textContent = item.error || '';
+    const azimuth = item.position?.azimuth;
+    rotatorPart(card, 'azimuth').textContent = Number.isFinite(azimuth) ? `${azimuth.toFixed(1)}°` : '---°';
+    const overlap = Number.isFinite(azimuth) && azimuth >= 360 && (item.capabilities?.maximumAzimuth ?? 360) > 360;
+    rotatorPart(card, 'overlap').hidden = !overlap;
+    if (Number.isFinite(azimuth)) {
+        const rotation = azimuth + item.mapNorthOffsetDegrees;
+        rotatorPart(card, 'bearing').style.transform = `rotate(${rotation}deg)`;
+        rotatorPart(card, 'beam').style.transform = `rotate(${rotation}deg)`
+    }
+    const mapImage = rotatorPart(card, 'map-image');
+    mapImage.style.backgroundImage = item.mapImage ? `url("${String(item.mapImage).replace(/["\\]/g, '')}")` : 'none';
+    mapImage.style.opacity = String(item.mapOpacity ?? 0.65);
+    rotatorPart(card, 'map').style.setProperty('--rotator-bezel', item.bezelColor || '#36cfe0');
+    const beam = rotatorPart(card, 'beam');
+    const beamWidth = Math.max(0, Math.min(360, Number(item.beamWidthDegrees) || 0));
+    beam.hidden = !item.showBeam || beamWidth === 0;
+    beam.style.opacity = String(item.beamOpacity ?? 0.28);
+    beam.style.background = `conic-gradient(from ${-beamWidth / 2}deg at 50% 50%, ${item.beamColor || '#ffb548'} 0deg ${beamWidth}deg, transparent ${beamWidth}deg 360deg)`;
+    const capabilities = item.capabilities;
+    const writable = item.connected && item.allowControl;
+    card.querySelector('[data-action="ccw"]').disabled = !(writable && capabilities?.canMoveManually);
+    card.querySelector('[data-action="cw"]').disabled = !(writable && capabilities?.canMoveManually);
+    card.querySelector('[data-action="stop"]').disabled = !(writable && capabilities?.canStop);
+    card.querySelector('[data-action="go"]').disabled = !(writable && capabilities?.canMoveTo);
+    const target = rotatorPart(card, 'target');
+    target.disabled = !(writable && capabilities?.canMoveTo);
+    target.min = capabilities?.minimumAzimuth ?? 0;
+    target.max = capabilities?.maximumAzimuth ?? 360;
+    card.querySelectorAll('[data-rotator-preset]').forEach(button => {
+        const value = Number(button.dataset.rotatorPreset);
+        button.disabled = !(writable && capabilities?.canMoveTo) || value < (capabilities?.minimumAzimuth ?? 0) || value > (capabilities?.maximumAzimuth ?? 360)
+    });
+    const park = card.querySelector('[data-action="park"]');
+    park.hidden = !capabilities?.canPark;
+    park.disabled = !writable
+}
+
+function renderRotatorTarget(id) {
+    const card = rotatorCard(id);
+    const item = rotatorStatus(id);
+    const value = Number(rotatorPart(card, 'target').value);
+    if (Number.isFinite(value) && item) rotatorPart(card, 'target-bearing').style.transform = `rotate(${value + item.mapNorthOffsetDegrees}deg)`
+}
+
+async function sendRotatorCommand(id, action, method = 'POST', body = null) {
+    if (!id) return;
+    try {
+        await api(`/rotators/${encodeURIComponent(id)}/${action}`, {
+            method,
+            ...(body ? { body: JSON.stringify(body) } : {})
+        });
+        await refreshRotators()
+    } catch (error) {
+        status('Rotator command failed', error.message, 'error')
+    }
+}
+
+const dashboardLayoutKey = 'rig2castOperatorLayoutV3';
+const rotatorLayoutKey = 'rig2castRotatorLayoutV2';
+const defaultDashboardLayout = {
+    vfo: { order: 1, span: 4 },
+    spectrum: { order: 2, span: 8 },
+    band: { order: 3, span: 8 },
+    mode: { order: 4, span: 4 },
+    dsp: { order: 5, span: 3 },
+    receiver: { order: 6, span: 9 },
+    tuning: { order: 7, span: 6 },
+    transmit: { order: 8, span: 6 }
 };
-$('direct-apply').onclick = event => {
-    event.preventDefault();
-    const value = Number($('direct-frequency').value), vfo = directEntryVfo;
-    if (!vfo || !Number.isFinite(value)) return;
-    if (!frequencyInRemoteRange(value)) {
-        status('Frequency blocked', 'The requested frequency is outside the ranges assigned to this remote station.', 'error');
+
+function dashboardCards(dashboard = $('operator-dashboard')) {
+    return [...dashboard.querySelectorAll(':scope > [data-card]')]
+}
+
+function readDashboardLayout(storageKey = dashboardLayoutKey, defaults = defaultDashboardLayout) {
+    try {
+        const saved = JSON.parse(localStorage.getItem(storageKey) || '{}');
+        return Object.fromEntries(Object.entries(defaults).map(([id, cardDefaults]) => {
+            const value = saved[id] || {};
+            return [id, {
+                order: Number.isInteger(value.order) ? value.order : cardDefaults.order,
+                span: Math.max(3, Math.min(12, Number(value.span) || cardDefaults.span))
+            }]
+        }))
+    } catch {
+        return structuredClone(defaults)
+    }
+}
+
+function applyDashboardLayout(layout, dashboard = $('operator-dashboard'), defaults = defaultDashboardLayout) {
+    for (const card of dashboardCards(dashboard)) {
+        const value = layout[card.dataset.card] || defaults[card.dataset.card];
+        card.style.setProperty('--card-order', value.order);
+        card.style.setProperty('--card-span', value.span);
+        card.dataset.layoutSpan = value.span;
+        const label = card.querySelector('.layout-size-label');
+        if (label) label.textContent = `${value.span} / 12`
+    }
+}
+
+function saveDashboardLayout(dashboard = $('operator-dashboard'), storageKey = dashboardLayoutKey) {
+    const layout = {};
+    for (const card of dashboardCards(dashboard)) layout[card.dataset.card] = {
+        order: Number(card.style.getPropertyValue('--card-order')),
+        span: Number(card.style.getPropertyValue('--card-span'))
+    };
+    localStorage.setItem(storageKey, JSON.stringify(layout))
+}
+
+function initializeDashboardLayout(dashboard, storageKey, defaults) {
+    let draggedCard = null;
+    for (const card of dashboardCards(dashboard)) {
+        const tools = document.createElement('div');
+        tools.className = 'card-layout-tools';
+        tools.innerHTML = `<button class="card-drag-handle" type="button" aria-label="Move ${esc(card.getAttribute('aria-label') || card.dataset.card)}" title="Drag to reorder">⠿</button><button class="card-resize-handle" type="button" aria-label="Resize ${esc(card.getAttribute('aria-label') || card.dataset.card)}" title="Drag horizontally to resize">↔</button>`;
+        card.append(document.createElement('span'), tools);
+        card.lastElementChild.previousElementSibling.className = 'layout-size-label';
+        const drag = tools.querySelector('.card-drag-handle');
+        const resize = tools.querySelector('.card-resize-handle');
+        drag.addEventListener('pointerdown', () => { if (dashboard.classList.contains('layout-editing')) card.draggable = true });
+        drag.addEventListener('pointerup', () => { card.draggable = false });
+        card.addEventListener('dragstart', event => {
+            if (!dashboard.classList.contains('layout-editing')) return event.preventDefault();
+            draggedCard = card;
+            card.classList.add('layout-dragging');
+            event.dataTransfer.effectAllowed = 'move'
+        });
+        card.addEventListener('dragover', event => {
+            if (!draggedCard || draggedCard === card) return;
+            event.preventDefault();
+            const bounds = card.getBoundingClientRect();
+            card.dataset.dropPosition = event.clientX >= bounds.left + bounds.width / 2 ? 'after' : 'before';
+            card.classList.add('layout-drop-target')
+        });
+        card.addEventListener('dragleave', () => {
+            card.classList.remove('layout-drop-target');
+            delete card.dataset.dropPosition
+        });
+        card.addEventListener('drop', event => {
+            event.preventDefault();
+            card.classList.remove('layout-drop-target');
+            if (!draggedCard || draggedCard === card) return;
+            const cards = dashboardCards(dashboard).sort((left, right) =>
+                Number(left.style.getPropertyValue('--card-order')) - Number(right.style.getPropertyValue('--card-order')));
+            const reordered = cards.filter(item => item !== draggedCard);
+            const targetIndex = reordered.indexOf(card);
+            const insertionIndex = targetIndex + (card.dataset.dropPosition === 'after' ? 1 : 0);
+            reordered.splice(insertionIndex, 0, draggedCard);
+            reordered.forEach((item, index) => item.style.setProperty('--card-order', index + 1));
+            delete card.dataset.dropPosition;
+            saveDashboardLayout(dashboard, storageKey)
+        });
+        card.addEventListener('dragend', () => {
+            draggedCard = null;
+            card.draggable = false;
+            dashboardCards(dashboard).forEach(item => {
+                item.classList.remove('layout-dragging', 'layout-drop-target');
+                delete item.dataset.dropPosition
+            })
+        });
+        resize.addEventListener('pointerdown', event => {
+            if (!dashboard.classList.contains('layout-editing')) return;
+            event.preventDefault();
+            resize.setPointerCapture(event.pointerId);
+            const startX = event.clientX;
+            const startSpan = Number(card.style.getPropertyValue('--card-span')) || 12;
+            const columnWidth = dashboard.getBoundingClientRect().width / 12;
+            const move = moveEvent => {
+                const span = Math.max(3, Math.min(12, startSpan + Math.round((moveEvent.clientX - startX) / columnWidth)));
+                card.style.setProperty('--card-span', span);
+                card.dataset.layoutSpan = span;
+                card.querySelector('.layout-size-label').textContent = `${span} / 12`
+            };
+            const end = endEvent => {
+                resize.releasePointerCapture(endEvent.pointerId);
+                resize.removeEventListener('pointermove', move);
+                resize.removeEventListener('pointerup', end);
+                resize.removeEventListener('pointercancel', end);
+                saveDashboardLayout(dashboard, storageKey)
+            };
+            resize.addEventListener('pointermove', move);
+            resize.addEventListener('pointerup', end);
+            resize.addEventListener('pointercancel', end)
+        })
+    }
+    applyDashboardLayout(readDashboardLayout(storageKey, defaults), dashboard, defaults);
+    return {
+        dashboard,
+        setEditing(editing) { dashboard.classList.toggle('layout-editing', editing) },
+        reset() {
+            localStorage.removeItem(storageKey);
+            applyDashboardLayout(defaults, dashboard, defaults)
+        }
+    }
+}
+
+const operatorLayoutController = initializeDashboardLayout($('operator-dashboard'), dashboardLayoutKey, defaultDashboardLayout);
+let rotatorLayoutController = null;
+
+function initializeRotatorDashboardLayout() {
+    const count = rotatorStatuses.length;
+    const defaults = Object.fromEntries(rotatorStatuses.map((item, index) => [
+        `rotator:${item.id}`,
+        { order: index + 1, span: count === 1 ? 12 : 6 }
+    ]));
+    rotatorLayoutController = initializeDashboardLayout($('rotator-dashboard'), rotatorLayoutKey, defaults)
+}
+
+function layoutControllers() {
+    return [operatorLayoutController, rotatorLayoutController].filter(Boolean)
+}
+
+function activeLayoutController() {
+    return $('rotator-workspace').hidden ? operatorLayoutController : (rotatorLayoutController || operatorLayoutController)
+}
+
+function setLayoutEditing(editing) {
+    layoutControllers().forEach(controller => controller.setEditing(false));
+    if (editing) activeLayoutController().setEditing(true);
+    $('layout-edit').classList.toggle('active', editing);
+    $('layout-edit').setAttribute('aria-pressed', String(editing));
+    $('layout-edit').textContent = editing ? 'Done' : 'Arrange';
+    $('layout-reset').hidden = !editing
+}
+
+$('layout-edit').onclick = () => setLayoutEditing(!activeLayoutController().dashboard.classList.contains('layout-editing'));
+$('layout-reset').onclick = () => activeLayoutController().reset();
+$('operator-ptt').onclick = window.togglePtt;
+$('station-connect').onclick = async () => {
+    if (connected()) {
+        const confirmed = await requestConfirmation({
+            title: 'Disconnect radio?',
+            message: 'The GUI will detach from the station radio. The physical radio will remain powered on.',
+            confirmLabel: 'DISCONNECT'
+        });
+        if (!confirmed) return;
+        await run(disconnect, 'Radio disconnected.');
         return
     }
-    frequencyDialog.close();
-    run(async () => {
-        snapshot = await api(`/radios/${radioId}/frequency/${vfo}`, {
-            method: 'PUT', body: JSON.stringify({ value })
+    await refreshStationSession();
+    if (!stationSession.available && !stationSession.ownedByCurrentUser) {
+        if (!stationSession.canTakeOver) return;
+        const confirmed = await requestConfirmation({
+            title: `Take control from ${stationSession.ownerDisplayName}?`,
+            message: 'Their radio, spectrum, and audio connection will be safely ended before this browser connects.',
+            confirmLabel: 'TAKE CONTROL',
+            tone: 'danger'
         });
-        renderSnapshot(false)
-    }, `VFO ${vfo} frequency updated.`)
+        if (!confirmed) return;
+        await run(async () => {
+            await api('/station-session/takeover', { method: 'POST' });
+            await connect();
+            await globalThis.rig2castAudio?.start()
+        }, 'Station control transferred.');
+        return
+    }
+    await run(async () => {
+        try {
+            await connect();
+            await globalThis.rig2castAudio?.start()
+        } catch (error) {
+            globalThis.rig2castAudio?.stop();
+            throw error
+        }
+    })
 };
-$('mode-open').onclick = () => $('mode-dialog').showModal();
-$('more-modes-toggle').onclick = () => {
-    const panel = $('more-modes');
-    panel.hidden = !panel.hidden;
-    $('more-modes-toggle').textContent = panel.hidden ? 'MORE MODES' : 'FEWER MODES'
+$('header-audio').onclick = () => {
+    if (!connected()) return;
+    if (globalThis.rig2castAudio?.isActive()) globalThis.rig2castAudio.stop();
+    else globalThis.rig2castAudio?.start()
 };
-$('split-soft').onclick = () => run(async () => {
-    snapshot = await api(`/radios/${radioId}/split`, {
-        method: 'PUT', body: JSON.stringify({ value: !snapshot.state.isSplit })
-    });
-    renderSnapshot(false)
-}, 'Split state updated.');
-$('more-open').onclick = () => $('more-dialog').showModal();
-document.querySelectorAll('[data-close-dialog]').forEach(button => button.onclick = () => $(button.dataset.closeDialog).close());
-$('advanced-controls-open').onclick = () => {
-    $('more-dialog').close();
-    document.querySelector('.tab[data-tab="controls"]').click()
-};
-const tuningDial = $('tuning-dial');
-tuningDial.addEventListener('wheel', event => tuneFromDial(event, event.deltaY < 0 ? 1 : -1), { passive: false });
-tuningDial.addEventListener('keydown', event => {
-    if (!['ArrowUp', 'ArrowRight', 'ArrowDown', 'ArrowLeft'].includes(event.key)) return;
-    tuneFromDial(event, event.key === 'ArrowUp' || event.key === 'ArrowRight' ? 1 : -1)
+addEventListener('rig2cast-audio-state', event => {
+    const active = !!event.detail?.active;
+    const button = $('header-audio');
+    button.querySelector('span').textContent = active ? 'Audio on' : 'Audio off';
+    button.setAttribute('aria-pressed', String(active))
 });
-tuningDial.addEventListener('pointerdown', event => {
-    const vfo = tuningDial.dataset.vfo;
-    if (vfo) window.startTuningKnob(event, vfo)
-});
+for (const vfo of ['A', 'B']) {
+    const dial = $(`operator-tuning-dial-${vfo}`);
+    dial.addEventListener('wheel', event => {
+        if (tuneBy(dial.dataset.vfo, event.deltaY < 0 ? 1 : -1, tuningMultiplier(event))) event.preventDefault()
+    }, { passive: false });
+    dial.addEventListener('keydown', event => window.tuneFrequencyKey(event, dial.dataset.vfo));
+    dial.addEventListener('pointerdown', event => {
+        if (dial.getAttribute('aria-disabled') !== 'true') window.startTuningKnob(event, dial.dataset.vfo)
+    })
+}
 $('spectrum-average').addEventListener('change', event => {
     const value = Math.max(1, Math.min(10, Number(event.target.value) || 1));
     event.target.value = String(value);
@@ -1376,6 +2253,74 @@ $('spectrum-average').addEventListener('change', event => {
     if (spectrumFrame) {
         spectrumDisplaySamples = averageSpectrumSamples(spectrumFrame);
         renderSpectrum()
+    }
+});
+for (const id of ['spectrum-minimum', 'spectrum-maximum']) {
+    $(id).addEventListener('change', () => run(async () => {
+        await updateSpectrumLevels();
+        if (spectrumFrame) {
+            spectrumFrame.minimumLevel = Number($('spectrum-minimum').value);
+            spectrumFrame.maximumLevel = Number($('spectrum-maximum').value);
+            renderSpectrum()
+        }
+    }, 'Spectrum display levels updated.'))
+}
+$('spectrum-span').addEventListener('change', event => run(async () => {
+    if (!radioId) throw new Error('Connect to the radio before changing the spectrum span.');
+    await api(`/radios/${radioId}/choices/SpectrumSpan`, {
+        method: 'PUT', body: JSON.stringify({ value: event.target.value })
+    });
+    log(`Spectrum span changed to ${event.target.options[event.target.selectedIndex]?.text || event.target.value}.`)
+}));
+$('radio-power-control').addEventListener('click', async () => {
+    await run(refreshRadioPowerState);
+    if (radioPoweredOn === null) {
+        status('Operation failed', 'The current radio power state could not be read.', 'error');
+        return
+    }
+    const desired = !radioPoweredOn;
+    const verb = desired ? 'ON' : 'OFF';
+    const confirmed = await requestConfirmation({
+        title: `Power radio ${verb.toLowerCase()}?`,
+        message: desired
+            ? 'The physical radio will be powered on through the station USB CAT connection.'
+            : 'The physical radio will stop receiving and transmitting, and this GUI will disconnect.',
+        confirmLabel: `POWER ${verb}`,
+        tone: desired ? 'positive' : 'danger'
+    });
+    if (!confirmed) return;
+    await run(async () => {
+        await api('/radio-power', { method: 'PUT', body: JSON.stringify({ value: desired }) });
+        radioPoweredOn = desired;
+        if (!desired && connected()) {
+            try { await disconnect() } catch { snapshot = null; radioId = null; renderOffline() }
+        }
+        if (desired) await new Promise(resolve => setTimeout(resolve, 4000));
+        await refreshRadioPowerState()
+    }, 'Radio power command completed.')
+});
+
+$('confirmation-cancel').onclick = () => closeConfirmation(false);
+$('confirmation-accept').onclick = () => closeConfirmation(true);
+$('confirmation-modal').addEventListener('pointerdown', event => {
+    if (event.target === $('confirmation-modal')) closeConfirmation(false)
+});
+$('confirmation-dialog').addEventListener('keydown', event => {
+    if (event.key === 'Escape') {
+        event.preventDefault();
+        closeConfirmation(false);
+        return
+    }
+    if (event.key !== 'Tab') return;
+    const focusable = [...$('confirmation-dialog').querySelectorAll('button:not([disabled])')];
+    if (!focusable.length) return;
+    const first = focusable[0], last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus()
+    } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus()
     }
 });
 $('waterfall-toggle').addEventListener('click', () => {
@@ -1416,10 +2361,25 @@ function bindSpectrumTuning(canvas) {
 bindSpectrumTuning($('spectrum-canvas'));
 bindSpectrumTuning($('waterfall-canvas'));
 window.addEventListener('resize', () => requestAnimationFrame(renderSpectrum));
-$('clear-log').onclick = () => $('log').textContent = '';
-document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
-    document.querySelectorAll('.tab,.tab-page').forEach(x => x.classList.remove('active'));
-    t.classList.add('active');
-    $(`tab-${t.dataset.tab}`).classList.add('active')
+$('login-form').addEventListener('submit', submitLogin);
+$('password-change-form').addEventListener('submit', submitPasswordChange);
+$('session-logout').addEventListener('click', logout);
+$('admin-users').addEventListener('click', openAdminUsers);
+$('admin-close').addEventListener('click', closeAdminUsers);
+$('admin-create-select').addEventListener('click', showAdminCreate);
+$('admin-create-form').addEventListener('submit', submitAdminCreate);
+$('admin-user-form').addEventListener('submit', submitAdminUser);
+$('admin-reset-submit').addEventListener('click', resetAdminPassword);
+$('admin-delete-user').addEventListener('click', deleteAdminUser);
+$('admin-modal').addEventListener('pointerdown', event => {
+    if (event.target === $('admin-modal')) closeAdminUsers()
 });
-bootstrap().catch(e => status('Startup failed', e.message, 'error'));
+$('admin-modal').addEventListener('keydown', event => {
+    if (event.key === 'Escape' && $('confirmation-modal').hidden) {
+        event.preventDefault();
+        closeAdminUsers()
+    }
+});
+initializeAuthentication()
+    .then(authenticated => authenticated && bootstrap())
+    .catch(e => status('Startup failed', e.message, 'error'));

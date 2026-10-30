@@ -7,105 +7,188 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <div id="login-modal" class="login-backdrop" hidden>
+    <form id="login-form" class="login-dialog" aria-labelledby="login-title">
+      <span class="confirmation-eyebrow">RIG2CAST ACCESS</span>
+      <h1 id="login-title">Sign in to the station</h1>
+      <p>Use the account assigned by the station administrator.</p>
+      <label>USERNAME<input id="login-username" name="username" type="text" autocomplete="username" required maxlength="64"></label>
+      <label>PASSWORD<input id="login-password" name="password" type="password" autocomplete="current-password" required maxlength="256"></label>
+      <p id="login-error" class="login-error" role="alert" hidden></p>
+      <button id="login-submit" type="submit">SIGN IN</button>
+    </form>
+  </div>
+  <div id="password-change-modal" class="login-backdrop" hidden>
+    <form id="password-change-form" class="login-dialog" aria-labelledby="password-change-title">
+      <span class="confirmation-eyebrow">ACCOUNT SECURITY</span>
+      <h1 id="password-change-title">Choose a new password</h1>
+      <p>The bootstrap password is temporary and must be replaced before using the station.</p>
+      <label>CURRENT PASSWORD<input id="password-current" type="password" autocomplete="current-password" required maxlength="256"></label>
+      <label>NEW PASSWORD<input id="password-new" type="password" autocomplete="new-password" required minlength="12" maxlength="256"></label>
+      <label>CONFIRM NEW PASSWORD<input id="password-confirm" type="password" autocomplete="new-password" required minlength="12" maxlength="256"></label>
+      <p id="password-change-error" class="login-error" role="alert" hidden></p>
+      <button id="password-change-submit" type="submit">CHANGE PASSWORD</button>
+    </form>
+  </div>
+  <header class="station-header">
+    <div class="station-identity">
+      <span class="station-mark" aria-hidden="true"><svg viewBox="0 0 32 32"><path d="M4 19c3.2 0 3.2-10 6.4-10s3.2 14 6.4 14S20 11 23.2 11 26.4 17 28 17"/></svg></span>
+      <div><strong id="station-title">Remote Station</strong><small>Rig2Cast remote radio</small></div>
+    </div>
+    <div class="station-actions">
+      <button id="rotator-view-toggle" class="layout-edit" type="button" hidden>Rotators</button>
+      <button id="admin-users" class="layout-edit" type="button" hidden>Users</button>
+      <button id="layout-edit" class="layout-edit" type="button" aria-pressed="false" title="Arrange and resize dashboard cards">Arrange</button>
+      <button id="layout-reset" class="layout-reset" type="button" title="Restore the default card layout" hidden>Reset layout</button>
+      <button id="header-audio" class="header-audio" type="button" disabled aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5 6.5 9H3v6h3.5l4.5 4V5Zm4 3.5a5 5 0 0 1 0 7m2.8-9.8a9 9 0 0 1 0 12.6"/></svg><span>Audio off</span></button>
+      <button id="station-connect" class="station-connect disconnected" type="button" aria-label="Connect radio" title="Connect radio">CONNECT RADIO</button>
+      <span class="station-action-divider" aria-hidden="true"></span>
+      <button id="radio-power-control" class="radio-power-state power-unknown" type="button" hidden aria-label="Read radio power state" title="Read radio power state">POWER UNKNOWN</button>
+      <button id="session-logout" class="layout-reset" type="button" hidden>Sign out</button>
+    </div>
+  </header>
+  <div id="operator-message" class="operator-message" role="status" aria-live="polite" hidden></div>
+  <div id="admin-modal" class="admin-backdrop" hidden>
+    <section class="admin-dialog" role="dialog" aria-modal="true" aria-labelledby="admin-title">
+      <header class="admin-header">
+        <div><span class="confirmation-eyebrow">STATION ADMINISTRATION</span><h1 id="admin-title">Users and permissions</h1><p>Create station accounts and choose exactly what each operator may use.</p></div>
+        <button id="admin-close" type="button" aria-label="Close user management">CLOSE</button>
+      </header>
+      <div id="admin-error" class="admin-notice error" role="alert" hidden></div>
+      <div id="admin-success" class="admin-notice success" role="status" hidden></div>
+      <div class="admin-workspace">
+        <aside class="admin-user-list">
+          <button id="admin-create-select" class="admin-create-select" type="button">+ NEW USER</button>
+          <div id="admin-user-items"></div>
+        </aside>
+        <main class="admin-editor">
+          <form id="admin-create-form" hidden>
+            <div class="admin-section-heading"><div><span>NEW ACCOUNT</span><h2>Create a user</h2></div></div>
+            <div class="admin-field-grid">
+              <label>USERNAME<input id="admin-create-username" required maxlength="64" autocomplete="off"></label>
+              <label>DISPLAY NAME<input id="admin-create-display-name" required maxlength="128" autocomplete="off"></label>
+              <label>PASSWORD<input id="admin-create-password" type="password" required minlength="12" maxlength="256" autocomplete="new-password"></label>
+              <label>CONFIRM PASSWORD<input id="admin-create-password-confirm" type="password" required minlength="12" maxlength="256" autocomplete="new-password"></label>
+            </div>
+            <label class="admin-check"><input id="admin-create-must-change" type="checkbox" checked><span><strong>Require password change</strong><small>The user must choose a private password on first sign-in.</small></span></label>
+            <div><span class="admin-permission-label">INITIAL PERMISSIONS</span><div id="admin-create-permissions" class="admin-permissions"></div></div>
+            <div class="admin-form-actions"><button class="admin-primary" type="submit">CREATE USER</button></div>
+          </form>
+          <div id="admin-user-empty" class="admin-empty"><strong>Select a user</strong><span>Choose an account from the list or create a new one.</span></div>
+          <form id="admin-user-form" hidden>
+            <div class="admin-section-heading"><div><span>ACCOUNT</span><h2 id="admin-user-display-name"></h2><p id="admin-user-username"></p></div><span id="admin-user-state" class="admin-state"></span></div>
+            <label class="admin-check"><input id="admin-user-enabled" type="checkbox"><span><strong>Account enabled</strong><small>Disabled users cannot sign in or use existing sessions.</small></span></label>
+            <div><span class="admin-permission-label">GLOBAL PERMISSIONS</span><div id="admin-user-permissions" class="admin-permissions"></div><p class="admin-help">Resource-specific grants are preserved when these global permissions are saved.</p></div>
+            <div class="admin-form-actions"><button class="admin-primary" type="submit">SAVE ACCOUNT</button></div>
+            <section class="admin-password-reset">
+              <div class="admin-section-heading"><div><span>SECURITY</span><h3>Reset password</h3></div></div>
+              <div class="admin-field-grid"><label>NEW TEMPORARY PASSWORD<input id="admin-reset-password" type="password" minlength="12" maxlength="256" autocomplete="new-password"></label><label>CONFIRM PASSWORD<input id="admin-reset-confirm" type="password" minlength="12" maxlength="256" autocomplete="new-password"></label></div>
+              <label class="admin-check"><input id="admin-reset-must-change" type="checkbox" checked><span><strong>Require password change</strong><small>Recommended for every administrator-issued password.</small></span></label>
+              <div class="admin-form-actions"><button id="admin-reset-submit" type="button">RESET PASSWORD</button></div>
+            </section>
+            <section class="admin-danger-zone"><div><strong>Delete account</strong><span>Permanently removes this user, grants, and sessions.</span></div><button id="admin-delete-user" type="button">DELETE USER</button></section>
+          </form>
+        </main>
+      </div>
+    </section>
+  </div>
   <div class="app-shell">
-    <aside class="sidebar">
-      <div class="brand"><span class="brand-mark">R2C</span><div><strong>Rig2Cast</strong><small>Web console POC</small></div></div>
-      <section>
-        <h2>Connection</h2>
-        <div id="station-lock-summary" class="station-lock-summary" hidden></div>
-        <div id="connection-form">
-        <label>Radio model<select id="model"></select></label>
-        <label>Transport<select id="transport"></select></label>
-        <div id="serial-fields">
-          <label>Discovered port<div class="inline"><select id="serial-port"></select><button id="refresh-ports" class="icon" title="Refresh ports">↻</button></div></label>
-          <label class="check"><input id="port-override-enabled" type="checkbox">Override discovered port</label>
-          <label id="port-override-row">Port override<input id="port-override" placeholder="COM16 or /dev/ttyUSB0" disabled></label>
-          <label>Baud rate<select id="baud"></select></label>
-        </div>
-        <div id="tcp-fields" hidden>
-          <label>Raw TCP host<input id="tcp-host" value="127.0.0.1"></label>
-          <label>Raw TCP port<input id="tcp-port" type="number" min="1" max="65535" value="5555"></label>
-        </div>
-        <div id="model-settings"></div>
-        <label>Mode restrictions<select id="mode-policy"><option>Enforce</option><option>Advisory</option></select></label>
-        <label class="check"><input id="enable-writes" type="checkbox">Enable radio writes, including PTT</label>
-        </div>
-        <div class="actions"><button id="connect" class="primary">Connect</button><button id="disconnect" disabled>Disconnect</button></div>
-      </section>
-      <div id="status-card" class="status-card"><span class="dot"></span><div><strong id="status-title">Offline</strong><small id="status-text">Select a radio and transport.</small></div></div>
-      <p class="safety">PTT uses a 10-second safety lease renewed by this page. If the page or connection is lost, the lease expires and the runtime forces RX.</p>
-    </aside>
-
     <main>
-      <section class="radio-console" aria-label="Radio front panel">
-        <header class="console-header">
-          <div><span class="eyebrow">LIVE RADIO</span><h1 id="radio-title">No radio connected</h1><p id="radio-summary">Capability-driven controls appear after connection.</p></div>
-          <div class="header-actions"><button id="sidebar-toggle" class="view-toggle" type="button" aria-pressed="false" title="Show or hide the connection panel">CONNECTION</button><button id="panels-toggle" class="view-toggle" type="button" aria-pressed="false" title="Show or hide the lower panels">PANELS</button><div id="connection-badge" class="badge offline">OFFLINE</div></div>
-        </header>
-        <div class="console-face">
-          <aside id="common-knobs" class="common-knobs" aria-label="Common gain controls"></aside>
-          <div class="console-main">
-            <div id="vfo-deck" class="vfo-deck empty"><div class="empty-state">Connect to display the radio's advertised VFO topology.</div></div>
-            <div id="front-meters" class="front-meters empty-state">Advertised meters appear after connection.</div>
-            <div class="soft-keys" aria-label="Common radio controls">
-              <button id="mode-open" disabled>MODE</button>
-              <button id="direct-open" disabled>DIRECT</button>
-              <button id="split-soft" disabled>SPLIT</button>
-              <button id="more-open" disabled>MORE</button>
-            </div>
-          </div>
-          <aside class="tuning-cluster" aria-label="Tuning controls">
-            <div class="tuning-heading"><span>MAIN TUNING</span><small id="tuning-step">—</small></div>
-            <div id="tuning-dial" class="tuning-dial" role="slider" aria-label="Main VFO tuning" aria-disabled="true" tabindex="-1">
-              <div id="dial-motion" class="dial-motion"><div class="dial-marker"></div></div><div class="dial-cap"><span>VFO</span></div>
-            </div>
-            <p class="dial-help">Turn with your finger to tune<br>Wheel and arrow keys supported</p>
-            <div class="transmit-controls">
-              <button id="ptt" class="ptt" disabled>PTT OFF</button>
-              <div id="rx-state" class="rx-state">RX</div>
-            </div>
-          </aside>
-        </div>
+      <div id="operator-dashboard" class="operator-dashboard">
+      <section id="operator-vfo" class="operator-card operator-vfo-card" data-card="vfo" aria-label="VFO control">
+        <div class="operator-card-heading"><span>RADIO</span><strong id="operator-radio-state">OFFLINE</strong></div>
+        <div class="operator-flags"><span id="operator-rx-flag">RX</span><button id="operator-active-vfo" type="button" disabled>VFO A</button><span id="operator-mode">---</span><button id="operator-split" type="button" disabled>SPLIT OFF</button></div>
+        <div id="operator-frequency" class="operator-frequency">--.---.---</div>
+        <div class="operator-frequency-unit">MHz</div>
+        <div class="operator-meter"><div class="operator-meter-label"><span>S-METER</span><strong id="operator-signal-value">--</strong></div><div class="operator-meter-track"><div id="operator-signal-fill"></div></div></div>
+        <div class="operator-vfo-secondary"><span id="operator-secondary-name">VFO B</span><strong id="operator-secondary-frequency">--.---.---</strong></div>
+        <div id="operator-vfo-actions" class="operator-vfo-actions"></div>
       </section>
-      <section id="spectrum-panel" class="spectrum-panel" aria-label="Live radio spectrum">
+      <section id="spectrum-panel" class="spectrum-panel operator-spectrum-card" data-card="spectrum" aria-label="Live radio spectrum">
         <div class="spectrum-header">
           <div><span class="eyebrow">LIVE SPECTRUM</span><strong id="spectrum-range">Waiting for spectrum source</strong></div>
-          <div class="spectrum-tools"><label>AVERAGE <select id="spectrum-average" aria-label="Spectrum frame average"></select></label><button id="waterfall-toggle" class="view-toggle spectrum-toggle" type="button" aria-pressed="false">WATERFALL</button><div id="spectrum-state" class="badge offline">OFFLINE</div></div>
+          <div class="spectrum-tools"><label>MIN <input id="spectrum-minimum" type="number" min="0" max="254" step="1" aria-label="Spectrum minimum level"></label><label>MAX <input id="spectrum-maximum" type="number" min="1" max="255" step="1" aria-label="Spectrum maximum level"></label><label>SPAN <select id="spectrum-span" aria-label="Spectrum span" disabled></select></label><label>AVERAGE <select id="spectrum-average" aria-label="Spectrum frame average"></select></label><button id="waterfall-toggle" class="view-toggle spectrum-toggle" type="button" aria-pressed="false">WATERFALL</button><div id="spectrum-state" class="badge offline">OFFLINE</div></div>
         </div>
         <canvas id="spectrum-canvas" aria-label="Spectrum plot with draggable VFO A and B markers"></canvas>
         <div id="waterfall-wrap" class="waterfall-wrap"><canvas id="waterfall-canvas" aria-label="Scrolling waterfall with draggable VFO A and B markers"></canvas></div>
         <div class="spectrum-footer"><span id="spectrum-vfo-a">VFO A —</span><span id="spectrum-help">Click to tune the active VFO · drag a marker to tune that VFO</span><span id="spectrum-vfo-b">VFO B —</span></div>
       </section>
-      <dialog id="frequency-dialog" class="console-dialog">
-        <form method="dialog" class="dialog-card">
-          <div class="dialog-heading"><div><span class="eyebrow">DIRECT ENTRY</span><h2 id="frequency-dialog-title">Set frequency</h2></div><button class="dialog-close" value="cancel" aria-label="Close">×</button></div>
-          <label>Frequency (Hz)<input id="direct-frequency" inputmode="numeric" type="number"></label>
-          <div class="dialog-actions"><button value="cancel">Cancel</button><button id="direct-apply" value="default" class="primary">Apply</button></div>
-        </form>
-      </dialog>
-      <dialog id="mode-dialog" class="console-dialog">
-        <div class="dialog-card">
-          <div class="dialog-heading"><div><span class="eyebrow">OPERATING MODE</span><h2>Select mode</h2></div><button class="dialog-close" data-close-dialog="mode-dialog" aria-label="Close">×</button></div>
-          <div id="primary-modes" class="mode-buttons"></div>
-          <button id="more-modes-toggle" class="more-modes-toggle" hidden>MORE MODES</button>
-          <div id="more-modes" class="mode-buttons secondary-modes" hidden></div>
+      <section class="operator-card operator-tuning-card" data-card="tuning" aria-label="VFO tuning controls">
+        <div class="operator-tuning-heading"><div><span>TUNING</span><strong>Independent VFO control</strong></div><div class="operator-tuning-step"><span>STEP</span><div id="operator-tuning-step" class="operator-selector-buttons" role="group" aria-label="VFO tuning step"></div></div></div>
+        <div class="dual-tuning-grid">
+          <div class="operator-tuner"><div class="operator-tuner-title"><span>VFO A</span><strong id="operator-tuning-frequency-A">--.---.---</strong></div><div id="operator-tuning-dial-A" class="operator-tuning-dial" role="slider" aria-label="Tune VFO A" aria-disabled="true" tabindex="-1" data-vfo="A"><div id="operator-tuning-motion-A" class="operator-tuning-motion"><i></i></div><div class="operator-tuning-cap">A</div></div><small id="operator-tuning-state-A">READ ONLY</small></div>
+          <div class="operator-tuner"><div class="operator-tuner-title"><span>VFO B</span><strong id="operator-tuning-frequency-B">--.---.---</strong></div><div id="operator-tuning-dial-B" class="operator-tuning-dial" role="slider" aria-label="Tune VFO B" aria-disabled="true" tabindex="-1" data-vfo="B"><div id="operator-tuning-motion-B" class="operator-tuning-motion"><i></i></div><div class="operator-tuning-cap">B</div></div><small id="operator-tuning-state-B">READ ONLY</small></div>
         </div>
-      </dialog>
-      <dialog id="more-dialog" class="console-dialog">
-        <div class="dialog-card wide-dialog">
-          <div class="dialog-heading"><div><span class="eyebrow">RADIO CAPABILITIES</span><h2>More controls</h2></div><button class="dialog-close" data-close-dialog="more-dialog" aria-label="Close">×</button></div>
-          <div id="more-capabilities" class="capability-summary"></div>
-          <section class="meter-picker-section"><h3>Front-panel meters <small>Choose up to three</small></h3><div id="meter-picker" class="meter-picker"></div></section>
-          <button id="advanced-controls-open" class="primary">Open advanced controls</button>
+        <p class="operator-tuning-help">Drag, scroll or use arrow keys · Shift 10× · Ctrl 100×</p>
+      </section>
+      <section class="operator-card operator-band-card" data-card="band" aria-label="Active VFO band controls">
+        <div class="operator-selector-group"><div class="operator-selector-heading"><span>BAND</span><strong>Active VFO band</strong></div><div id="operator-band-buttons" class="operator-selector-buttons band-buttons"></div></div>
+      </section>
+      <section class="operator-card operator-mode-card" data-card="mode" aria-label="Operating mode controls">
+        <div class="operator-selector-group"><div class="operator-selector-heading"><span>MODE</span><strong>Operating mode</strong></div><div id="operator-mode-buttons" class="operator-selector-buttons mode-buttons-operator"></div></div>
+      </section>
+      <section class="operator-card operator-dsp-card" data-card="dsp" aria-label="DSP controls">
+        <div class="operator-card-heading"><span>DSP</span><strong>Signal processing</strong></div>
+        <div id="operator-dsp-switches" class="operator-dsp-switches"></div>
+      </section>
+      <section class="operator-card operator-receiver-card" data-card="receiver" aria-label="Receiver controls">
+        <div class="operator-card-heading"><span>RECEIVER</span><strong>Active signal path</strong></div>
+        <div id="operator-receiver-choices" class="operator-receiver-choices"></div>
+        <div id="operator-receiver-levels" class="operator-receiver-levels"></div>
+      </section>
+      <section class="operator-card operator-transmit-card" data-card="transmit" aria-label="Transmit controls">
+        <div class="operator-card-heading"><span>TRANSMIT</span><strong id="operator-transmit-state">RX · READY</strong></div>
+        <div class="operator-transmit-grid">
+          <button id="operator-ptt" class="operator-ptt" type="button" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4M9 21h6"/></svg><span>PTT</span></button>
+          <div id="operator-transmit-meters" class="operator-transmit-meters"></div>
         </div>
-      </dialog>
-      <nav><button class="tab active" data-tab="radio">Radio</button><button class="tab" data-tab="controls">Controls</button><button class="tab" data-tab="meters">Meters</button><button class="tab" data-tab="audio">Audio</button><button class="tab" data-tab="diagnostics">Diagnostics</button><button id="refresh-all" class="refresh" disabled>Refresh all</button></nav>
-      <section id="tab-radio" class="tab-page active"><div id="core-card" class="panel empty-state">Runtime capabilities and core state will appear here.</div></section>
-      <section id="tab-controls" class="tab-page"><div id="controls-grid" class="control-groups"></div></section>
-      <section id="tab-meters" class="tab-page"><div id="meters-grid" class="meter-grid"></div></section>
-      <section id="tab-audio" class="tab-page"><div class="panel audio-panel"><div class="panel-title"><div><h3>GhostLink audio stream</h3><p>Duplex 48 kHz mono audio via the AUDIO_STREAMING_CS_LINUX server.</p></div><div id="audio-badge" class="badge offline">OFFLINE</div></div><div id="audio-config" class="audio-grid"><label>Server host<input id="audio-host" value="127.0.0.1"></label><label>Server TX port <small>radio audio → browser</small><input id="audio-tx-port" type="number" min="1" max="65535" value="6001"></label><label>Server RX port <small>browser mic → radio</small><input id="audio-rx-port" type="number" min="1" max="65535" value="6002"></label><label>Opus bitrate<input id="audio-bitrate" type="number" min="6000" max="128000" step="1000" value="16000"></label></div><label class="check"><input id="audio-mic" type="checkbox" checked>Send microphone audio to the server</label><div class="actions audio-actions"><button id="audio-connect" class="primary">Start audio</button><button id="audio-disconnect" disabled>Stop audio</button></div><p class="audio-note">Microphone access requires HTTPS or localhost. Use headphones to prevent feedback.</p></div></section>
-      <section id="tab-diagnostics" class="tab-page"><div class="panel"><div class="panel-title"><h3>Session log</h3><button id="clear-log">Clear</button></div><pre id="log"></pre></div></section>
+        <div id="operator-transmit-levels" class="operator-transmit-levels"></div>
+        <p id="operator-ptt-note" class="operator-ptt-note">PTT requires an Operator session and writable transmit capability.</p>
+      </section>
+      </div>
+      <section id="rotator-workspace" class="rotator-workspace" hidden aria-label="Rotator controls">
+        <header class="rotator-workspace-header">
+          <div><span class="eyebrow">ANTENNA DIRECTION</span><h1>Rotator control</h1></div>
+        </header>
+        <div id="rotator-dashboard" class="operator-dashboard rotator-dashboard">
+          <section class="operator-card rotator-unit-card" data-card="rotator" aria-label="Rotator dial and controls">
+            <div class="operator-card-heading"><span id="rotator-name">ROTATOR</span><strong id="rotator-status">OFFLINE</strong></div>
+            <div class="rotator-unit-body">
+            <div class="rotator-dial-pane"><div id="rotator-map" class="rotator-map">
+              <div id="rotator-map-image" class="rotator-map-image"></div>
+              <div id="rotator-beam" class="rotator-beam"></div>
+              <div class="rotator-compass-ring"></div>
+              <div id="rotator-scale" class="rotator-scale" aria-hidden="true"></div>
+              <div id="rotator-bearing" class="rotator-bearing"><i></i></div>
+              <div id="rotator-target-bearing" class="rotator-target-bearing"><i></i></div>
+              <div class="rotator-map-center"></div>
+            </div></div>
+          <div class="rotator-control-card">
+            <div class="rotator-readout"><span>CURRENT AZIMUTH</span><strong id="rotator-azimuth">---°</strong><em id="rotator-overlap" class="rotator-overlap" hidden><i></i>OVERLAP</em></div>
+            <div class="rotator-manual-controls"><button id="rotator-ccw" type="button">CCW</button><button id="rotator-stop" class="rotator-stop" type="button">STOP</button><button id="rotator-cw" type="button">CW</button></div>
+            <label class="rotator-target-entry">TARGET AZIMUTH<div><input id="rotator-target" type="number" min="0" max="450" step="1"><button id="rotator-go" type="button">GO</button></div></label>
+            <div class="rotator-presets" aria-label="Azimuth presets">
+              <button type="button" data-rotator-preset="0">0°</button><button type="button" data-rotator-preset="60">60°</button><button type="button" data-rotator-preset="90">90°</button><button type="button" data-rotator-preset="180">180°</button><button type="button" data-rotator-preset="270">270°</button><button type="button" data-rotator-preset="360">360°</button>
+            </div>
+            <button id="rotator-park" type="button" hidden>PARK</button>
+            <p id="rotator-error" class="operator-ptt-note warning"></p>
+          </div>
+            </div>
+          </section>
+        </div>
+      </section>
     </main>
+  </div>
+  <div id="confirmation-modal" class="confirmation-backdrop" hidden>
+    <div id="confirmation-dialog" class="confirmation-dialog" role="alertdialog" aria-modal="true" aria-labelledby="confirmation-title" aria-describedby="confirmation-message" tabindex="-1">
+      <span class="confirmation-eyebrow">RIG2CAST CONFIRMATION</span>
+      <h2 id="confirmation-title">Confirm action</h2>
+      <p id="confirmation-message"></p>
+      <div class="confirmation-actions">
+        <button id="confirmation-cancel" type="button">CANCEL</button>
+        <button id="confirmation-accept" type="button">CONFIRM</button>
+      </div>
+    </div>
   </div>
   <script src="audio.js"></script>
   <script src="app.js"></script>

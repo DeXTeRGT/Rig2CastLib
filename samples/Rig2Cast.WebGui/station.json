@@ -6,6 +6,7 @@
     "AutoConnect": true
   },
   "Radio": {
+    "AllowPowerControl": true,
     "ModelId": "yaesu.ftdx10",
     "Transport": "Tcp",
     "TcpHost": "192.168.0.68",
@@ -15,17 +16,22 @@
     },
     "ModeRestrictions": "Enforce"
   },
-    "Spectrum": {
+    "UserManagement": {
+    "Enabled": true,
+    "DatabasePath": "rig2cast-users.db",
+    "SessionHours": 12,
+  },
+  "Spectrum": {
     "Enabled": true,
     "SourceHost": "192.168.0.39",
     "UdpPort": 51235,
     "HelloIntervalSeconds": 2,
     "MaximumFramesPerSecond": 30,
-	"Average": 4,
+    "Average": 4,
     "MinimumLevel": 60,
     "MaximumLevel": 170
   },
-    "Audio": {
+  "Audio": {
     "Host": "192.168.0.68",
     "ServerTxPort": 6001,
     "ServerRxPort": 6002,
@@ -38,8 +44,101 @@
     "AllowRadioWrites": true,
     "AllowPtt": true,
     "AllowAudioReceive": true,
-    "AllowAudioTransmit": true
+    "AllowAudioTransmit": true,
+    "AllowRotatorControl": true
   },
+  "Presentation": {
+    "ShowRotatorGui": true,
+    "Modes": [
+      "Lsb",
+      "Usb",
+      "Cw",
+      "CwReverse"
+    ],
+    "Choices": [
+      "Band",
+      "TuningStep",
+      "Attenuator",
+      "Preamp",
+      "RoofingFilter",
+      "Agc",
+      "FilterWidth"
+    ],
+    "Controls": [
+      "AfGain",
+      "RfGain",
+      "TransmitPower",
+      "IfShiftHz"
+    ],
+    "Switches": [
+      "NoiseBlanker",
+      "NoiseReduction",
+      "AutoNotch"
+    ],
+    "Actions": [
+      "CopyVfoAToB",
+      "CopyVfoBToA",
+      "SwapVfos"
+    ],
+    "Meters": [
+      "SignalStrength",
+      "Power",
+      "SWR"
+    ]
+  },
+  "Rotators": [
+    {
+      "Id": "YO8KGA",
+      "DisplayName": "Main HF Rotator",
+      "Enabled": true,
+      "AutoConnect": true,
+      "AllowControl": true,
+      "ModelId": "prosistel.pst",
+      "Transport": "Tcp",
+      "TcpHost": "192.168.1.112",
+      "TcpPort": 5005,
+      "PollIntervalMilliseconds": 500,
+      "CommandSettleMilliseconds": 100,
+      "ResponseTimeoutMilliseconds": 1500,
+      "ParkAzimuth": 0,
+      "MapImage": "maps/Kn37DP.png",
+      "MapNorthOffsetDegrees": 0,
+      "BezelColor": "#36cfe0",
+      "ShowBeam": true,
+      "BeamWidthDegrees": 60,
+      "BeamColor": "#ffb548",
+      "BeamOpacity": 0.28,
+      "Settings": {
+        "maximumAzimuth": "360"
+      }
+    },
+    {
+      "Id": "second",
+      "DisplayName": "Second HF Rotator",
+      "Enabled": true,
+      "AutoConnect": true,
+      "AllowControl": true,
+      "ModelId": "yaesu.gs232",
+      "Transport": "Tcp",
+      "TcpHost": "192.168.0.133",
+      "TcpPort": 6109,
+      "PollIntervalMilliseconds": 500,
+      "CommandSettleMilliseconds": 100,
+      "ResponseTimeoutMilliseconds": 1500,
+      "ParkAzimuth": 0,
+      "MapImage": "maps/Kn37DP.png",
+      "MapNorthOffsetDegrees": 0,
+      "MapOpacity": 0.65,
+      "BezelColor": "#36cfe0",
+      "ShowBeam": true,
+      "BeamWidthDegrees": 60,
+      "BeamColor": "#ffb548",
+      "BeamOpacity": 0.28,
+      "Settings": {
+        "maximumAzimuth": "450"
+      }
+    }
+  ],
   "RemoteFrequencyPolicy": {
     "AllowedRanges": [
       {

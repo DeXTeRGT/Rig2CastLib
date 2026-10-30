@@ -15,6 +15,33 @@ namespace Rig2Cast.Runtime.Tests;
 public sealed class Ftdx10DriverTests
 {
     [Fact]
+    public async Task SpectrumSpanReadsSsSelectorFive()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("SS05;", "SS0550000;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+
+        RadioChoiceValue value = await driver.ReadChoiceAsync(RadioChoiceId.SpectrumSpan);
+
+        Assert.Equal("50khz", value.Value);
+        transport.AssertComplete();
+    }
+
+    [Fact]
+    public async Task SpectrumSpanWritesFullSsFrame()
+    {
+        var transport = new ScriptedRadioTransport();
+        transport.Add("ID;", "ID0761;");
+        transport.Add("SS0570000;");
+        await using Ftdx10Driver driver = await Ftdx10Driver.OpenAsync(transport);
+
+        await driver.WriteChoiceAsync(RadioChoiceId.SpectrumSpan, "200khz");
+
+        transport.AssertComplete();
+    }
+
+    [Fact]
     public async Task DisposeClosesTransportBeforeWaitingForCancellationInsensitiveReader()
     {
         var transport = new ScriptedRadioTransport(ignoreReadCancellation: true);

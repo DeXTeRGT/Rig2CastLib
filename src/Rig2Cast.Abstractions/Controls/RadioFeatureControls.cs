@@ -75,7 +75,8 @@ public enum RadioChoiceId
     BreakInDelay,
     IfNotchWidth,
     NoiseBlankerWidth,
-    NoiseBlankerRejection
+    NoiseBlankerRejection,
+    SpectrumSpan
 }
 
 public sealed record RadioChoiceOption(

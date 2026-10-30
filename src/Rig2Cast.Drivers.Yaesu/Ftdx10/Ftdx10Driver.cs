@@ -549,6 +549,14 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioActionDriver, IRadioContr
         CancellationToken cancellationToken = default)
     {
         EnsureActive();
+        if (control == RadioChoiceId.SpectrumSpan)
+        {
+            string spanResponse = await _protocol.QueryAsync("SS05", "SS05",
+                candidate => candidate.Length == 10 && candidate[^1] == ';' &&
+                    candidate.StartsWith("SS05", StringComparison.Ordinal) && candidate[4] is >= '0' and <= '9' &&
+                    candidate.AsSpan(5, 4).SequenceEqual("0000"), cancellationToken).ConfigureAwait(false);
+            return new RadioChoiceValue(control, SpectrumSpanValues[spanResponse[4] - '0'].Value, _timeProvider.GetUtcNow());
+        }
         if (control == RadioChoiceId.VoxDelay)
             return await ReadVoxDelayAsync(cancellationToken).ConfigureAwait(false);
         if (control == RadioChoiceId.BreakInDelay)
@@ -603,6 +611,13 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioActionDriver, IRadioContr
         CancellationToken cancellationToken = default)
     {
         EnsureActive();
+        if (control == RadioChoiceId.SpectrumSpan)
+        {
+            int code = Array.FindIndex(SpectrumSpanValues, option =>
+                StringComparer.OrdinalIgnoreCase.Equals(option.Value, value));
+            if (code < 0) throw new ArgumentOutOfRangeException(nameof(value));
+            return _protocol.SendAsync($"SS05{code}0000", cancellationToken);
+        }
         if (control == RadioChoiceId.VoxDelay)
             return WriteVoxDelayAsync(value, cancellationToken);
         if (control == RadioChoiceId.BreakInDelay)
@@ -1158,6 +1173,11 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioActionDriver, IRadioContr
             new FeatureDescriptor(CapabilitySupport.Supported, FeatureAccess.Write));
         choices[RadioChoiceId.Band] = CreateBandCapability(
             new FeatureDescriptor(CapabilitySupport.Supported, FeatureAccess.Write));
+        choices[RadioChoiceId.SpectrumSpan] = new ChoiceControlDescriptor(
+            RadioChoiceId.SpectrumSpan, "Spectrum span", feature,
+            SpectrumSpanValues.ToDictionary(option => option.Value,
+                option => new RadioChoiceOption(option.Value, option.DisplayName),
+                StringComparer.OrdinalIgnoreCase));
         choices[RadioChoiceId.AudioPeakFilterWidth] = choices[RadioChoiceId.AudioPeakFilterWidth] with
         {
             ModeApplicability = CwOnlyApplicability()
@@ -1166,6 +1186,13 @@ public sealed class Ftdx10Driver : IRadioDriver, IRadioActionDriver, IRadioContr
             pair => pair.Key,
             pair => pair.Value with { ReceiverTargets = MainReceiverTargets() });
     }
+
+    private static readonly (string Value, string DisplayName)[] SpectrumSpanValues =
+    [
+        ("1khz", "1 kHz"), ("2khz", "2 kHz"), ("5khz", "5 kHz"), ("10khz", "10 kHz"),
+        ("20khz", "20 kHz"), ("50khz", "50 kHz"), ("100khz", "100 kHz"),
+        ("200khz", "200 kHz"), ("500khz", "500 kHz"), ("1mhz", "1 MHz")
+    ];
 
     private static ModeApplicabilityDescriptor CwOnlyApplicability()
     {

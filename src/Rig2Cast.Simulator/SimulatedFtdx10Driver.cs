@@ -690,7 +690,12 @@ public sealed class SimulatedFtdx10Driver : IRadioDriver, IRadioActionDriver, IR
             [RadioChoiceId.NoiseBlankerWidth] = CreateChoice(RadioChoiceId.NoiseBlankerWidth,
                 ("1ms", "1 ms", true), ("3ms", "3 ms", true), ("10ms", "10 ms", true)),
             [RadioChoiceId.NoiseBlankerRejection] = CreateChoice(RadioChoiceId.NoiseBlankerRejection,
-                ("10db", "10 dB", true), ("30db", "30 dB", true), ("50db", "50 dB", true))
+                ("10db", "10 dB", true), ("30db", "30 dB", true), ("50db", "50 dB", true)),
+            [RadioChoiceId.SpectrumSpan] = CreateChoice(RadioChoiceId.SpectrumSpan,
+                ("1khz", "1 kHz", true), ("2khz", "2 kHz", true), ("5khz", "5 kHz", true),
+                ("10khz", "10 kHz", true), ("20khz", "20 kHz", true), ("50khz", "50 kHz", true),
+                ("100khz", "100 kHz", true), ("200khz", "200 kHz", true),
+                ("500khz", "500 kHz", true), ("1mhz", "1 MHz", true))
         };
 
         ChoiceControlDescriptor CreateChoice(

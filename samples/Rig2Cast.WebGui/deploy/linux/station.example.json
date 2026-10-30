@@ -6,6 +6,7 @@
     "AutoConnect": true
   },
   "Radio": {
+    "AllowPowerControl": false,
     "ModelId": "yaesu.ftdx10",
     "Transport": "Serial",
     "SerialPort": "/dev/serial/by-id/replace-with-your-radio-device",
@@ -42,6 +43,11 @@
     "AllowPtt": true,
     "AllowAudioReceive": true,
     "AllowAudioTransmit": true
+  },
+  "UserManagement": {
+    "Enabled": false,
+    "DatabasePath": "/var/lib/rig2cast/users.db",
+    "SessionHours": 12
   },
   "RemoteFrequencyPolicy": {
     "AllowedRanges": [

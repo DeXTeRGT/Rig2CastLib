@@ -12,6 +12,7 @@
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.0" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.33" />
     <PackageReference Include="xunit" Version="2.5.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" />
   </ItemGroup>
@@ -24,6 +25,7 @@
     <ProjectReference Include="..\..\src\Rig2Cast.Drivers.Icom\Rig2Cast.Drivers.Icom.csproj" />
     <ProjectReference Include="..\..\src\Rig2Cast.Drivers.Xiegu\Rig2Cast.Drivers.Xiegu.csproj" />
     <ProjectReference Include="..\..\src\Rig2Cast.Transports\Rig2Cast.Transports.csproj" />
+    <ProjectReference Include="..\..\src\Rig2Cast.Rotators\Rig2Cast.Rotators.csproj" />
     <ProjectReference Include="..\..\src\Rig2Cast.Adapters.Rigctld\Rig2Cast.Adapters.Rigctld.csproj" />
     <ProjectReference Include="..\..\src\Rig2Cast.PluginHost\Rig2Cast.PluginHost.csproj" />
     <ProjectReference Include="..\..\samples\Rig2Cast.WebGui\Rig2Cast.WebGui.csproj" />

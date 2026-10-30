@@ -1,0 +1,54 @@
+{
+  "Presentation": {
+    "ShowRotatorGui": true
+  },
+  "Rotators": [
+    {
+      "Id": "main",
+      "DisplayName": "Main HF Rotator",
+      "Enabled": true,
+      "AutoConnect": true,
+      "AllowControl": true,
+      "ModelId": "yaesu.gs232",
+      "Transport": "Tcp",
+      "TcpHost": "192.168.0.70",
+      "TcpPort": 5001,
+      "PollIntervalMilliseconds": 500,
+      "CommandSettleMilliseconds": 100,
+      "ResponseTimeoutMilliseconds": 1500,
+      "ParkAzimuth": 180,
+      "MapImage": "maps/main-rotator.png",
+      "MapNorthOffsetDegrees": 0,
+      "MapOpacity": 0.65,
+      "BezelColor": "#36cfe0",
+      "ShowBeam": true,
+      "BeamWidthDegrees": 60,
+      "BeamColor": "#ffb548",
+      "BeamOpacity": 0.28,
+      "Settings": {
+        "maximumAzimuth": "450"
+      }
+    },
+    {
+      "Id": "vhf",
+      "DisplayName": "VHF Rotator",
+      "Enabled": true,
+      "AutoConnect": true,
+      "AllowControl": true,
+      "ModelId": "yaesu.gs232",
+      "Transport": "Serial",
+      "SerialPort": "COM8",
+      "BaudRate": 9600,
+      "PollIntervalMilliseconds": 750,
+      "CommandSettleMilliseconds": 100,
+      "ResponseTimeoutMilliseconds": 1500,
+      "MapImage": "maps/vhf-rotator.png",
+      "MapOpacity": 0.65,
+      "BezelColor": "#ffb548",
+      "ShowBeam": false,
+      "BeamWidthDegrees": 30,
+      "BeamColor": "#59dce6",
+      "BeamOpacity": 0.25
+    }
+  ]
+}

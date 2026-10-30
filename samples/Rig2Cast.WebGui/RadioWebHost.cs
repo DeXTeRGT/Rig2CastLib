@@ -17,6 +17,7 @@ using Rig2Cast.Drivers.Icom.Ic7300;
 using Rig2Cast.Drivers.Icom.Ic7600;
 using Rig2Cast.Drivers.Xiegu.G90;
 using Rig2Cast.Drivers.Yaesu.Ftdx10;
+using Rig2Cast.Drivers.Yaesu.Protocol;
 using Rig2Cast.Runtime.Sessions;
 using Rig2Cast.Simulator;
 using Rig2Cast.Transports.Serial;
@@ -36,6 +37,8 @@ public sealed record ConnectRequest(
     bool EnableWrites = false,
     string ModeRestrictions = "Enforce");
 
+public sealed record DoubleValue(double Value);
+
 public sealed class RadioWebHost : IAsyncDisposable
 {
     private static readonly TimeSpan WebTransmitLeaseDuration = TimeSpan.FromSeconds(10);
@@ -46,6 +49,7 @@ public sealed class RadioWebHost : IAsyncDisposable
     private readonly Dictionary<string, string> _radioIdsByEndpoint = new(StringComparer.OrdinalIgnoreCase);
     private readonly bool _serverAllowsWrites;
     private readonly StationConfiguration _station;
+    private readonly SemaphoreSlim _powerGate = new(1, 1);
     private readonly JsonSerializerOptions _json = new(JsonSerializerDefaults.Web)
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
@@ -80,7 +84,11 @@ public sealed class RadioWebHost : IAsyncDisposable
                     _station.Station.Id,
                     _station.Station.DisplayName,
                     audioAllowMicrophone = _station.Audio.AllowMicrophone && _station.Access.AllowAudioTransmit,
-                    remoteFrequencyRanges = _station.RemoteFrequencyPolicy.AllowedRanges
+                    powerControlAvailable = _serverAllowsWrites && _station.Access.AllowRadioWrites &&
+                        _station.Radio.AllowPowerControl &&
+                        _station.Radio.ModelId.Equals(Ftdx10CatProfile.ModelId, StringComparison.OrdinalIgnoreCase),
+                    remoteFrequencyRanges = _station.RemoteFrequencyPolicy.AllowedRanges,
+                    presentation = _station.Presentation
                 } : null
             };
         }
@@ -102,6 +110,64 @@ public sealed class RadioWebHost : IAsyncDisposable
     });
 
     public IReadOnlyList<SerialPortDescriptor> GetSerialPorts() => _station.IsLocked ? [] : _ports.GetPorts();
+
+    public async Task<object> GetPowerStateAsync(CancellationToken cancellationToken)
+    {
+        EnsurePowerControlAllowed();
+        await _powerGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            string response = await WithPowerProtocolAsync(protocol => protocol.QueryAsync(
+                "PS", "PS", candidate => candidate is "PS0;" or "PS1;", cancellationToken), cancellationToken)
+                .ConfigureAwait(false);
+            return new { poweredOn = response == "PS1;" };
+        }
+        finally { _powerGate.Release(); }
+    }
+
+    public async Task<object> SetPowerStateAsync(bool poweredOn, CancellationToken cancellationToken)
+    {
+        EnsurePowerControlAllowed();
+        await _powerGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await WithPowerProtocolAsync(async protocol =>
+            {
+                string command = poweredOn ? "PS1" : "PS0";
+                await protocol.SendAsync(command, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false);
+                await protocol.SendAsync(command, cancellationToken).ConfigureAwait(false);
+                return true;
+            }, cancellationToken).ConfigureAwait(false);
+            return new { poweredOn };
+        }
+        finally { _powerGate.Release(); }
+    }
+
+    private void EnsurePowerControlAllowed()
+    {
+        if (!_serverAllowsWrites || !_station.Access.AllowRadioWrites || !_station.Radio.AllowPowerControl ||
+            !_station.Radio.ModelId.Equals(Ftdx10CatProfile.ModelId, StringComparison.OrdinalIgnoreCase))
+            throw new UnauthorizedAccessException("Radio power control is disabled by station policy.");
+    }
+
+    private async Task<T> WithPowerProtocolAsync<T>(
+        Func<YaesuAsciiProtocol, ValueTask<T>> operation, CancellationToken cancellationToken)
+    {
+        ConnectRequest request = _station.RadioRequest("power-control");
+        RadioModelRegistration registration = _catalog.Find(request.ModelId);
+        RadioTransportKind kind = Enum.Parse<RadioTransportKind>(request.Transport, true);
+        Func<IRadioTransport> factory = kind switch
+        {
+            RadioTransportKind.Serial => CreateSerialTransport(registration.Model, request),
+            RadioTransportKind.Tcp => CreateTcpTransport(request),
+            _ => throw new NotSupportedException("Power control requires a serial or TCP CAT transport.")
+        };
+        await using IRadioTransport transport = factory();
+        await transport.ConnectAsync(cancellationToken).ConfigureAwait(false);
+        await using var protocol = new YaesuAsciiProtocol(transport, TimeSpan.FromSeconds(2));
+        return await operation(protocol).ConfigureAwait(false);
+    }
 
     public object GetRadios()
     {
@@ -226,6 +292,23 @@ public sealed class RadioWebHost : IAsyncDisposable
         }
         finally { _registryGate.Release(); }
         await attachment.DisposeAsync();
+    }
+
+    public async Task DetachClientAsync(string clientId)
+    {
+        List<ClientAttachment> removed = [];
+        await _registryGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            foreach (RadioEntry entry in _radios.Values)
+            {
+                if (!entry.Attachments.Remove(clientId, out ClientAttachment? attachment)) continue;
+                if (StringComparer.Ordinal.Equals(entry.OperatorClientId, clientId)) entry.OperatorClientId = null;
+                removed.Add(attachment);
+            }
+        }
+        finally { _registryGate.Release(); }
+        foreach (ClientAttachment attachment in removed) await attachment.DisposeAsync().ConfigureAwait(false);
     }
 
     public async Task CloseRadioAsync(string radioId, string clientId)

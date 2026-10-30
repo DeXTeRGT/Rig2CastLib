@@ -3,12 +3,15 @@
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+	<DefaultItemExcludes>$(DefaultItemExcludes);publish/**;artifacts/**</DefaultItemExcludes>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Concentus" Version="2.2.2" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.33" />
     <ProjectReference Include="..\..\src\Rig2Cast.Abstractions\Rig2Cast.Abstractions.csproj" />
     <ProjectReference Include="..\..\src\Rig2Cast.Core\Rig2Cast.Core.csproj" />
     <ProjectReference Include="..\..\src\Rig2Cast.Runtime\Rig2Cast.Runtime.csproj" />
+    <ProjectReference Include="..\..\src\Rig2Cast.Rotators\Rig2Cast.Rotators.csproj" />
     <ProjectReference Include="..\..\src\Rig2Cast.Transports\Rig2Cast.Transports.csproj" />
     <ProjectReference Include="..\..\src\Rig2Cast.Simulator\Rig2Cast.Simulator.csproj" />
     <ProjectReference Include="..\..\src\Rig2Cast.Drivers.Yaesu\Rig2Cast.Drivers.Yaesu.csproj" />

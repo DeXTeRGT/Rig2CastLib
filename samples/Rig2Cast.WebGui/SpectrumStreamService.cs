@@ -22,8 +22,19 @@ public sealed class SpectrumStreamService(StationConfiguration station, ILogger<
     private readonly ConcurrentDictionary<Guid, Channel<SpectrumMessage>> _clients = new();
     private readonly JsonSerializerOptions _json = new(JsonSerializerDefaults.Web);
     private SpectrumStatus _status = new(false, false, "Spectrum disabled", 0, 0, 0, null);
+    private SpectrumLevels _levels = new(station.Spectrum.MinimumLevel, station.Spectrum.MaximumLevel);
 
     public SpectrumStatus GetStatus() => Volatile.Read(ref _status);
+    public SpectrumLevels GetLevels() => Volatile.Read(ref _levels);
+    public SpectrumLevels SetLevels(int minimumLevel, int maximumLevel)
+    {
+        if (minimumLevel is < 0 or > 254) throw new ArgumentOutOfRangeException(nameof(minimumLevel));
+        if (maximumLevel is < 1 or > 255 || maximumLevel <= minimumLevel)
+            throw new ArgumentOutOfRangeException(nameof(maximumLevel), "Maximum level must be greater than minimum level and no more than 255.");
+        var levels = new SpectrumLevels(minimumLevel, maximumLevel);
+        Volatile.Write(ref _levels, levels);
+        return levels;
+    }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -80,8 +91,9 @@ public sealed class SpectrumStreamService(StationConfiguration station, ILogger<
             SetStatus(true, true, $"Receiving from {remote}", datagrams, assembler.Frames, assembler.DroppedFrames, now);
             if (now.UtcTicks - lastPublishedTicks < minimumTicks) continue;
             lastPublishedTicks = now.UtcTicks;
+            SpectrumLevels levels = GetLevels();
             SpectrumMessage? message = Decode(payload!, now, station.Spectrum.Average,
-                station.Spectrum.MinimumLevel, station.Spectrum.MaximumLevel,
+                levels.MinimumLevel, levels.MaximumLevel,
                 station.Spectrum.ShowWaterfall, station.Spectrum.WaterfallHeight, station.Spectrum.WaterfallRate);
             if (message is null) continue;
             foreach (Channel<SpectrumMessage> client in _clients.Values) client.Writer.TryWrite(message);
@@ -196,6 +208,7 @@ public sealed class SpectrumStreamService(StationConfiguration station, ILogger<
 }
 
 public sealed record SpectrumStatus(bool Running, bool Receiving, string Message, long Datagrams, long Frames, long DroppedFrames, DateTimeOffset? LastFrameAt);
+public sealed record SpectrumLevels(int MinimumLevel, int MaximumLevel);
 public sealed record SpectrumMessage(string Type, int LeftHz, int RightHz, int SpanHz, byte[] Samples,
     int DefaultAverage, int MinimumLevel, int MaximumLevel,
     bool ShowWaterfall, int WaterfallHeight, int WaterfallRate,
